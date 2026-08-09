@@ -1,0 +1,63 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function myRole() {
+      return isSignedIn() ? myProfile().role : null;
+    }
+
+    function isActive() {
+      return isSignedIn() && myProfile().active == true;
+    }
+
+    function isAdmin() {
+      return isActive() && myRole() == 'admin';
+    }
+
+    // --- User Master ---
+    // Only Admins can list/create/edit user profiles. A signed-in user may
+    // read their own profile (needed at login to discover their own role).
+    match /users/{uid} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    // --- Company Master ---
+    // Everyone active can view company details; only Admins edit them.
+    match /companies/{companyId} {
+      allow read: if isActive();
+      allow write: if isAdmin();
+    }
+
+    // --- Phase 2 placeholders ---
+    // Once business data (parts, sales, inwardLogs, etc.) moves to Firestore,
+    // add matching collections here with rules like:
+    //
+    // match /parts/{partId} {
+    //   allow read: if isActive();
+    //   allow write: if isAdmin() || myRole() == 'store';
+    // }
+    // match /schedules/{partId} {
+    //   allow read: if isActive();
+    //   allow write: if isAdmin() || myRole() == 'ppc';
+    // }
+    // match /sales/{saleId} {
+    //   allow read: if isActive();
+    //   allow write: if isAdmin() || myRole() == 'accounts';
+    // }
+
+    // Deny everything else by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

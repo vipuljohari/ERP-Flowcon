@@ -1,0 +1,10 @@
+{
+  "name": "AutoPartIQ Inventory Manager",
+  "description": "A high-performance inventory and sales management dashboard for specialized auto parts, featuring real-time AI analytics for demand forecasting and stock optimization.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

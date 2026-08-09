@@ -1,0 +1,29 @@
+
+{
+  "short_name": "FlowconAuto",
+  "name": "Flowcon Auto Inventory Manager",
+  "description": "Professional inventory and sales management for Flowcon IMT Faridabad.",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/761/761480.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0f172a",
+  "background_color": "#f8fafc",
+  "categories": ["business", "productivity"],
+  "screenshots": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/761/761480.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "wide"
+    }
+  ]
+}
