@@ -19,6 +19,7 @@ export interface Company {
   address: string;
   gstNumber?: string;
   plantCode?: string; // e.g. "PALWAL", useful once a second plant is added
+  isActive?: boolean; // the one company/plant whose branding shows in the app
 }
 
 // Which views each role may access. 'admin' implicitly gets everything.

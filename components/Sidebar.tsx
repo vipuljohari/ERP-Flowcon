@@ -1,5 +1,6 @@
 import React from 'react';
 import { UserRole, canAccessView } from '../types';
+import { useActiveCompany } from '../contexts/CompanyContext';
 
 interface SidebarProps {
   currentView: string;
@@ -27,6 +28,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onUserNameChange
 }) => {
   const isAdmin = role === 'admin';
+  const company = useActiveCompany();
   const summaryLabel = `Summary ${currentMonthDisplay}`;
 
   const allNavItems = [
@@ -63,11 +65,11 @@ const Sidebar: React.FC<SidebarProps> = ({
               {isAdmin ? '👑' : 'F'}
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight leading-tight">Flowcon Auto</h1>
+              <h1 className="text-lg font-bold tracking-tight leading-tight">{company.name}</h1>
               {isAdmin && <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest animate-pulse">Admin Active</span>}
             </div>
           </div>
-          <p className="text-[10px] text-slate-500 font-medium ml-13 mt-1 uppercase tracking-tighter">IMT Faridabad • Plot 835</p>
+          <p className="text-[10px] text-slate-500 font-medium ml-13 mt-1 uppercase tracking-tighter">{company.address}</p>
         </div>
 
         <nav className="space-y-1 flex-1 overflow-y-auto pr-2 custom-scrollbar">

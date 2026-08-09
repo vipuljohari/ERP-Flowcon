@@ -17,6 +17,7 @@ import Login from './components/Login';
 import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { CompanyProvider } from './contexts/CompanyContext';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
@@ -1302,7 +1303,9 @@ const AuthGate: React.FC = () => {
 
 const App: React.FC = () => (
   <AuthProvider>
-    <AuthGate />
+    <CompanyProvider>
+      <AuthGate />
+    </CompanyProvider>
   </AuthProvider>
 );
 
