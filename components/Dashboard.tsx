@@ -2,6 +2,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Part, Sale, InventoryStats, Customer, RawMaterial } from '../types';
 import ReportGenerator from './ReportGenerator';
+import { useActiveCompany } from '../contexts/CompanyContext';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -30,6 +31,7 @@ interface DashboardProps {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMonthDisplay, activeCustomer, onCustomerChange, customers, selectedDate, rawMaterials, localRMOpeningBalances, rmInwardLogs }) => {
+  const company = useActiveCompany();
   const [triggerReport, setTriggerReport] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [show1PMAlert, setShow1PMAlert] = useState(false);
@@ -470,7 +472,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-6 text-left">
         <div>
           <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none mb-2 text-left">Summary {currentMonthYear}</h2>
-          <p className="text-slate-500 font-medium text-left">Operations Monitoring - Flowcon IMT Faridabad</p>
+          <p className="text-slate-500 font-medium text-left">Operations Monitoring - {company.name}</p>
         </div>
         
         <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4 text-left">
