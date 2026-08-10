@@ -32,9 +32,12 @@ service cloud.firestore {
     }
 
     // --- Company Master ---
-    // Everyone active can view company details; only Admins edit them.
+    // Branding (name/address) needs to be visible on the Login screen too,
+    // before anyone is signed in — this data isn't sensitive (it's already
+    // printed on invoices sent to customers), so read is public. Only
+    // Admins can edit it.
     match /companies/{companyId} {
-      allow read: if isActive();
+      allow read: if true;
       allow write: if isAdmin();
     }
 

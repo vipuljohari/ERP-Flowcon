@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useBrandName } from '../contexts/CompanyContext';
 
 const Login: React.FC = () => {
   const { login, error } = useAuth();
+  const brandName = useBrandName();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -28,7 +30,7 @@ const Login: React.FC = () => {
           <div className="w-16 h-16 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-bold mx-auto mb-4">
             F
           </div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">Flowcon Auto ERP</h1>
+          <h1 className="text-xl font-black text-slate-900 tracking-tight">{brandName}</h1>
           <p className="text-xs text-slate-500 font-medium mt-1">Sign in to continue</p>
         </div>
 

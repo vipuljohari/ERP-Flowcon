@@ -16,6 +16,7 @@ export interface AppUser {
 export interface Company {
   id: string;
   name: string;
+  brandingName?: string; // shown across app UI (header, tab title, login, AI assistant). Falls back to `name` if blank.
   address: string;
   gstNumber?: string;
   plantCode?: string; // e.g. "PALWAL", useful once a second plant is added

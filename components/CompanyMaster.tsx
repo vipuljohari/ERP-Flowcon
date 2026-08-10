@@ -3,7 +3,7 @@ import { collection, onSnapshot, doc, setDoc, deleteDoc, writeBatch, getDocs } f
 import { db } from '../services/firebase';
 import { Company } from '../types';
 
-const emptyForm: Omit<Company, 'id'> = { name: '', address: '', gstNumber: '', plantCode: '' };
+const emptyForm: Omit<Company, 'id'> = { name: '', brandingName: '', address: '', gstNumber: '', plantCode: '' };
 
 const CompanyMaster: React.FC = () => {
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -27,7 +27,7 @@ const CompanyMaster: React.FC = () => {
 
   const handleEdit = (c: Company) => {
     setEditingId(c.id);
-    setForm({ name: c.name, address: c.address, gstNumber: c.gstNumber || '', plantCode: c.plantCode || '' });
+    setForm({ name: c.name, brandingName: c.brandingName || '', address: c.address, gstNumber: c.gstNumber || '', plantCode: c.plantCode || '' });
   };
 
   const handleDelete = async (id: string) => {
@@ -55,9 +55,17 @@ const CompanyMaster: React.FC = () => {
       </p>
 
       <form onSubmit={handleSave} className="bg-slate-50 rounded-2xl p-6 mb-6 space-y-3">
-        <input required placeholder="Company / plant name" value={form.name}
+        <input required placeholder="Company / plant name (legal name)" value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+        <div>
+          <input placeholder="App branding name (e.g. 'Flowcon ERP') — leave blank to use legal name above" value={form.brandingName}
+            onChange={(e) => setForm({ ...form, brandingName: e.target.value })}
+            className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <p className="text-[10px] text-slate-400 mt-1 px-1">
+            Shown in the sidebar, browser tab, login screen, and AI assistant name across the whole app.
+          </p>
+        </div>
         <textarea required placeholder="Address" value={form.address}
           onChange={(e) => setForm({ ...form, address: e.target.value })}
           className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" rows={2} />

@@ -17,7 +17,7 @@ import Login from './components/Login';
 import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { CompanyProvider } from './contexts/CompanyContext';
+import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
@@ -1288,6 +1288,12 @@ const MainApp: React.FC = () => {
 
 const AuthGate: React.FC = () => {
   const { appUser, loading } = useAuth();
+  const brandName = useBrandName();
+
+  useEffect(() => {
+    document.title = brandName;
+  }, [brandName]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400 text-sm font-bold">

@@ -51,3 +51,11 @@ export const useActiveCompany = (): Company => {
   const { activeCompany } = useContext(CompanyContext);
   return activeCompany || FALLBACK;
 };
+
+// The name to show across app UI (header, tab title, login, AI assistant).
+// Uses the dedicated branding name if set, otherwise falls back to the
+// company's legal name.
+export const useBrandName = (): string => {
+  const company = useActiveCompany();
+  return company.brandingName?.trim() || company.name;
+};

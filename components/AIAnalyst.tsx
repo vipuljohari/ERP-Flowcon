@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Part, Sale } from '../types';
 import { getInventoryInsights, chatWithAI } from '../services/gemini';
+import { useBrandName } from '../contexts/CompanyContext';
 
 interface AIAnalystProps {
   parts: Part[];
@@ -9,6 +10,7 @@ interface AIAnalystProps {
 }
 
 const AIAnalyst: React.FC<AIAnalystProps> = ({ parts, sales }) => {
+  const brandName = useBrandName();
   const [insight, setInsight] = useState<string>('');
   const [loadingInsight, setLoadingInsight] = useState(false);
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; content: string }[]>([]);
@@ -94,7 +96,7 @@ const AIAnalyst: React.FC<AIAnalystProps> = ({ parts, sales }) => {
         <div className="p-4 bg-white border-b border-slate-200 flex items-center gap-3">
           <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">🤖</div>
           <div>
-            <h3 className="font-bold text-slate-800">AutoPartIQ Assistant</h3>
+            <h3 className="font-bold text-slate-800">{brandName} Assistant</h3>
             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Always Online • Powered by Gemini</p>
           </div>
         </div>
@@ -146,7 +148,7 @@ const AIAnalyst: React.FC<AIAnalystProps> = ({ parts, sales }) => {
           <div className="relative">
             <input 
               type="text" 
-              placeholder="Ask AutoPartIQ..." 
+              placeholder={`Ask ${brandName}...`}
               className="w-full pl-4 pr-12 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none focus:bg-white transition-all"
               value={input}
               onChange={(e) => setInput(e.target.value)}

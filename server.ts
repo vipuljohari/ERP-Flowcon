@@ -134,7 +134,7 @@ async function startServer() {
       }
 
       const systemPrompt = `
-        You are AutoPartIQ AI, tracking SIAC-SKH manufacturing data.
+        You are the Flowcon ERP AI Assistant, tracking SIAC-SKH manufacturing data.
         You have access to Rates, Dimensions (Size), Inward logs, and Dispatch targets.
         Data Context: ${JSON.stringify(parts)}
         Help the owner optimize inventory value and hit dispatch targets.
