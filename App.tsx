@@ -18,6 +18,7 @@ import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider } from './contexts/CompanyContext';
+import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
@@ -58,14 +59,14 @@ const MainApp: React.FC = () => {
     }
   };
 
-  const [parts, setParts] = useState<Part[]>(() => JSON.parse(localStorage.getItem('autopart_inventory') || JSON.stringify(INITIAL_PARTS)));
-  const [sales, setSales] = useState<Sale[]>(() => JSON.parse(localStorage.getItem('autopart_sales') || '[]'));
-  const [inwardLogs, setInwardLogs] = useState<InwardLog[]>(() => JSON.parse(localStorage.getItem('autopart_inward_logs') || '[]'));
-  const [archives, setArchives] = useState<MonthlyArchive[]>(() => JSON.parse(localStorage.getItem('autopart_archives') || '[]'));
-  const [customers, setCustomers] = useState<Customer[]>(() => JSON.parse(localStorage.getItem('autopart_customers') || JSON.stringify(INITIAL_CUSTOMERS)));
+  const [parts, setParts] = useFirestoreArray<Part>('parts', INITIAL_PARTS);
+  const [sales, setSales] = useFirestoreArray<Sale>('sales');
+  const [inwardLogs, setInwardLogs] = useFirestoreArray<InwardLog>('inwardLogs');
+  const [archives, setArchives] = useFirestoreArray<MonthlyArchive>('archives', [], (a) => a.monthKey);
+  const [customers, setCustomers] = useFirestoreArray<Customer>('customers', INITIAL_CUSTOMERS);
   const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
-  const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>(() => JSON.parse(localStorage.getItem('autopart_raw_materials') || '[]'));
-  const [rmInwardLogs, setRmInwardLogs] = useState<RMInwardLog[]>(() => JSON.parse(localStorage.getItem('autopart_rm_inward_logs') || '[]'));
+  const [rawMaterials, setRawMaterials] = useFirestoreArray<RawMaterial>('rawMaterials');
+  const [rmInwardLogs, setRmInwardLogs] = useFirestoreArray<RMInwardLog>('rmInwardLogs');
   const [localRMOpeningBalances, setLocalRMOpeningBalances] = useState<Record<string, string>>(() => {
     return JSON.parse(localStorage.getItem('autopart_local_rm_opening_balances') || '{}');
   });
@@ -87,14 +88,11 @@ const MainApp: React.FC = () => {
     activeCustomerRef.current = activeCustomer;
     rawMaterialsRef.current = rawMaterials; rmInwardLogsRef.current = rmInwardLogs;
     localRMOpeningBalancesRef.current = localRMOpeningBalances;
-    
-    localStorage.setItem('autopart_inventory', JSON.stringify(parts));
-    localStorage.setItem('autopart_sales', JSON.stringify(sales));
-    localStorage.setItem('autopart_inward_logs', JSON.stringify(inwardLogs));
-    localStorage.setItem('autopart_archives', JSON.stringify(archives));
-    localStorage.setItem('autopart_customers', JSON.stringify(customers));
-    localStorage.setItem('autopart_raw_materials', JSON.stringify(rawMaterials));
-    localStorage.setItem('autopart_rm_inward_logs', JSON.stringify(rmInwardLogs));
+
+    // parts/sales/inwardLogs/archives/customers/rawMaterials/rmInwardLogs now
+    // live in Firestore (see useFirestoreArray above) — no longer written to
+    // localStorage. Only small local-only preferences stay here.
+    localStorage.setItem('autopart_local_rm_opening_balances', JSON.stringify(localRMOpeningBalances));
     localStorage.setItem('autopart_username', userName);
   }, [parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, localRMOpeningBalances, userName]);
 
