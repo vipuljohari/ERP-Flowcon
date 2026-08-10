@@ -16,6 +16,7 @@ import RMMaster from './components/RMMaster';
 import Login from './components/Login';
 import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
+import ImportLegacyData from './components/ImportLegacyData';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
@@ -1153,6 +1154,7 @@ const MainApp: React.FC = () => {
           )}
           {isAdmin && currentView === 'user_master' && <UserMaster />}
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
+          {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}
         </div>
       </main>

@@ -54,6 +54,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     navItems.push(
       { id: 'user_master', label: 'User Master', icon: '👤' },
       { id: 'company_master', label: 'Company Master', icon: '🏭' },
+      { id: 'import_legacy', label: 'Import Legacy Data', icon: '📤' },
     );
   }
 
