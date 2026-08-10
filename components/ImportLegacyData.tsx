@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { doc, writeBatch } from 'firebase/firestore';
+import { doc, writeBatch, setDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { Part, Sale, InwardLog, MonthlyArchive, Customer, RawMaterial, RMInwardLog } from '../types';
 
@@ -11,6 +11,7 @@ interface LegacyBackup {
   customers?: Customer[];
   rawMaterials?: RawMaterial[];
   rmInwardLogs?: RMInwardLog[];
+  localRMOpeningBalances?: Record<string, string>;
   timestamp?: string;
   lastModifiedBy?: string;
 }
@@ -53,7 +54,10 @@ const ImportLegacyData: React.FC = () => {
   };
 
   const counts = backup
-    ? COLLECTION_MAP.map(({ key }) => ({ key, count: (backup[key] as any[])?.length || 0 }))
+    ? [
+        ...COLLECTION_MAP.map(({ key }) => ({ key, count: (backup[key] as any[])?.length || 0 })),
+        { key: 'localRMOpeningBalances', count: Object.keys(backup.localRMOpeningBalances || {}).length },
+      ]
     : [];
 
   const handleImport = async () => {
@@ -77,6 +81,14 @@ const ImportLegacyData: React.FC = () => {
           await batch.commit();
         }
         summary.push({ collection: firestoreName, count: items.length });
+      }
+
+      // Opening balances aren't a per-record collection — they're a single
+      // settings-style map (RM identifier -> balance string). This is what
+      // was missing before, causing the negative "phantom consumption" you saw.
+      if (backup.localRMOpeningBalances && Object.keys(backup.localRMOpeningBalances).length > 0) {
+        await setDoc(doc(db, 'settings', 'rmOpeningBalances'), backup.localRMOpeningBalances);
+        summary.push({ collection: 'localRMOpeningBalances (settings)', count: Object.keys(backup.localRMOpeningBalances).length });
       }
       setResult(summary);
     } catch (e: any) {

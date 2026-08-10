@@ -65,6 +65,7 @@ export interface Part {
   customerRMMappings?: Record<string, string>; // Mapping of: { "Customer Name": "RM ID" }
   hasCustomScrap?: boolean; // toggle for custom end-piece scrap override
   customScrapMm?: number; // custom scrap value in mm
+  sortOrder?: number; // Admin-controlled manual display order
 }
 
 export interface RawMaterial {
@@ -77,6 +78,7 @@ export interface RawMaterial {
   partName: string; // Mapped Item/part Name
   stock: number; // Current stock (can be in Kg or number of bars. We will represent as total weight in Kg, or tracked as starting/current bars)
   partIds?: string[]; // Mapped Item/Part IDs from item master
+  sortOrder?: number; // Admin-controlled manual display order
 }
 
 export interface RMInwardLog {

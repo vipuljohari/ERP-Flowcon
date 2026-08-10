@@ -69,6 +69,14 @@ service cloud.firestore {
       allow write: if isAdmin() || myRole() == 'store';
     }
 
+    // RM opening balances — same ownership as rawMaterials (Store enters
+    // physical stock counts). A single settings-style document, not a
+    // per-record collection.
+    match /settings/{settingId} {
+      allow read: if isActive();
+      allow write: if isAdmin() || myRole() == 'store';
+    }
+
     match /rmInwardLogs/{logId} {
       allow read: if isActive();
       allow write: if isAdmin() || myRole() == 'store';

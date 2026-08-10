@@ -9,12 +9,42 @@ interface ItemMasterProps {
   onDelete: (id: string) => void;
   customers: Customer[];
   rawMaterials: RawMaterial[];
+  setParts?: (update: Part[] | ((prev: Part[]) => Part[])) => void;
 }
 
-const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials }) => {
+const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // --- Admin reorder mode ---
+  const [reorderMode, setReorderMode] = useState(false);
+  const [draftOrder, setDraftOrder] = useState<Part[]>([]);
+
+  const enterReorderMode = () => {
+    setDraftOrder([...parts]); // `parts` prop already arrives pre-sorted from App.tsx
+    setReorderMode(true);
+  };
+
+  const moveDraftItem = (index: number, direction: -1 | 1) => {
+    setDraftOrder((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const saveOrder = () => {
+    if (!setParts) return;
+    const withOrder = draftOrder.map((p, i) => ({ ...p, sortOrder: i }));
+    setParts((prev) => prev.map((p) => {
+      const updated = withOrder.find((w) => w.id === p.id);
+      return updated ? updated : p;
+    }));
+    setReorderMode(false);
+  };
   
   const [formData, setFormData] = useState({
     name: '',
@@ -128,7 +158,28 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     <div className="space-y-8 text-left">
       <header className="flex flex-col md:flex-row justify-between items-end gap-6">
         <div>
-          <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none mb-2 text-left">Item Master</h2>
+          <div className="flex items-center gap-3 mb-2">
+            {!reorderMode && (
+              <button
+                onClick={enterReorderMode}
+                title="Reorder items"
+                className="w-9 h-9 flex items-center justify-center rounded-xl border-2 border-slate-200 text-slate-500 hover:border-indigo-500 hover:text-indigo-600 transition-all"
+              >
+                ✏️
+              </button>
+            )}
+            {reorderMode && (
+              <div className="flex items-center gap-2">
+                <button onClick={saveOrder} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest">
+                  Save Order
+                </button>
+                <button onClick={() => setReorderMode(false)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest">
+                  Cancel
+                </button>
+              </div>
+            )}
+            <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none text-left">Item Master</h2>
+          </div>
           <p className="text-slate-500 font-medium text-left">Define technical specifications and customer-specific commercial rates</p>
         </div>
         <div className="flex gap-4">
@@ -146,6 +197,41 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
         </div>
       </header>
 
+      {reorderMode && (
+        <div className="bg-white rounded-[2rem] shadow-sm border border-indigo-200 p-6">
+          <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-4">
+            Reorder items — use the arrows, then click Save Order above
+          </p>
+          <div className="space-y-2">
+            {draftOrder.map((p, i) => (
+              <div key={p.id} className="flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3">
+                <div>
+                  <p className="font-bold text-slate-900 text-sm">{p.name}</p>
+                  <p className="text-xs text-slate-500 font-mono">{p.sapCode}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => moveDraftItem(i, -1)}
+                    disabled={i === 0}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 disabled:opacity-30 hover:border-indigo-500 hover:text-indigo-600"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    onClick={() => moveDraftItem(i, 1)}
+                    disabled={i === draftOrder.length - 1}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 disabled:opacity-30 hover:border-indigo-500 hover:text-indigo-600"
+                  >
+                    ↓
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!reorderMode && (
       <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
@@ -226,6 +312,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
           </tbody>
         </table>
       </div>
+      )}
 
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 text-left">

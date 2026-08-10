@@ -20,6 +20,7 @@ import ImportLegacyData from './components/ImportLegacyData';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
+import { useFirestoreDoc } from './hooks/useFirestoreDoc';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
@@ -68,9 +69,20 @@ const MainApp: React.FC = () => {
   const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
   const [rawMaterials, setRawMaterials] = useFirestoreArray<RawMaterial>('rawMaterials');
   const [rmInwardLogs, setRmInwardLogs] = useFirestoreArray<RMInwardLog>('rmInwardLogs');
-  const [localRMOpeningBalances, setLocalRMOpeningBalances] = useState<Record<string, string>>(() => {
-    return JSON.parse(localStorage.getItem('autopart_local_rm_opening_balances') || '{}');
-  });
+  const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
+
+  // Single source of truth for display order across the WHOLE app — the
+  // Admin's sortOrder (set via the reorder pencil icon) applies everywhere
+  // parts/RM are listed, for every role, on every device. Anything that
+  // doesn't have a sortOrder yet sorts to the end, keeping its relative order.
+  const sortedParts = useMemo(
+    () => [...parts].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999)),
+    [parts]
+  );
+  const sortedRawMaterials = useMemo(
+    () => [...rawMaterials].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999)),
+    [rawMaterials]
+  );
 
   const partsRef = useRef(parts);
   const salesRef = useRef(sales);
@@ -774,7 +786,7 @@ const MainApp: React.FC = () => {
     const sMonth = sD.getMonth();
     const sDay = sD.getDate();
 
-    return parts.map(p => {
+    return sortedParts.map(p => {
       const aP = arc?.parts.find(ap => ap.id === p.id);
       
       const mappedRMs = rawMaterials.filter(rm => {
@@ -900,7 +912,7 @@ const MainApp: React.FC = () => {
         status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus 
       };
     });
-  }, [sD, parts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
+  }, [sD, sortedParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
 
   return (
     <div className={`min-h-screen flex ${isH ? 'bg-slate-100' : 'bg-slate-50'}`}>
@@ -934,7 +946,7 @@ const MainApp: React.FC = () => {
               customers={customers} 
               forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} 
               selectedDate={sD} 
-              rawMaterials={rawMaterials} 
+              rawMaterials={sortedRawMaterials} 
               localRMOpeningBalances={resolvedRMOpeningBalances}
               rmInwardLogs={contextRmInwardLogs}
             />
@@ -948,15 +960,16 @@ const MainApp: React.FC = () => {
               isAdmin={isAdmin} 
               selectedDate={sD} 
               selectedDateDisplay={sD.toLocaleDateString('en-GB')}
-              rawMaterials={rawMaterials}
+              rawMaterials={sortedRawMaterials}
               rmInwardLogs={contextRmInwardLogs}
               customers={customers}
               onAddRMInward={handleAddRMInward}
               localRMOpeningBalances={resolvedRMOpeningBalances}
               setLocalRMOpeningBalances={setLocalRMOpeningBalances}
+              setRawMaterials={setRawMaterials}
             />
           )}
-          {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={rawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
+          {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={sortedRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
              const log = inwardLogs.find(l => l.id === id);
              if (log) {
                setInwardLogs(prev => prev.filter(l => l.id !== id));
@@ -995,9 +1008,10 @@ const MainApp: React.FC = () => {
           {canAccessView(role, currentView) && currentView === 'data_mgmt' && <DataManagement parts={parts} sales={sales} inwardLogs={inwardLogs} archives={archives} customers={customers} rawMaterials={rawMaterials} rmInwardLogs={rmInwardLogs} localRMOpeningBalances={localRMOpeningBalances} isAdmin={isAdmin} onImportData={handleFullImport} syncLog={syncLog} userName={userName} />}
           {canAccessView(role, currentView) && currentView === 'item_master' && isAdmin && (
             <ItemMaster 
-              parts={parts} 
+              parts={sortedParts} 
               customers={customers} 
-              rawMaterials={rawMaterials}
+              rawMaterials={sortedRawMaterials}
+              setParts={setParts}
               onAdd={(p) => {
                 const newPartId = Math.random().toString(36).substr(2, 9);
                 const newPart = { ...p, id: newPartId, stock: 0, inward: 0, revisionCount: 0, lastUpdated: new Date().toISOString(), status: 'Out of Stock', schedules: {} } as Part;
@@ -1047,8 +1061,8 @@ const MainApp: React.FC = () => {
           )}
           {canAccessView(role, currentView) && currentView === 'rm_master' && isAdmin && (
             <RMMaster 
-              rawMaterials={rawMaterials} 
-              parts={parts} 
+              rawMaterials={sortedRawMaterials} 
+              parts={sortedParts} 
               customers={customers} 
               onAdd={(rm) => {
                 const newRMId = Math.random().toString(36).substr(2, 9);

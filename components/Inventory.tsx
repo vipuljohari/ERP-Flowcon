@@ -24,6 +24,7 @@ interface InventoryProps {
   onAddRMInward?: (rmId: string, quantity: number, supplier: string, remarks?: string, timestamp?: string, invoiceNumber?: string) => void;
   localRMOpeningBalances?: Record<string, string>;
   setLocalRMOpeningBalances?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setRawMaterials?: (update: RawMaterial[] | ((prev: RawMaterial[]) => RawMaterial[])) => void;
 }
 
 const Inventory: React.FC<InventoryProps> = ({ 
@@ -41,7 +42,8 @@ const Inventory: React.FC<InventoryProps> = ({
   customers = [],
   onAddRMInward,
   localRMOpeningBalances: propRMOpeningBalances,
-  setLocalRMOpeningBalances: propSetRMOpeningBalances
+  setLocalRMOpeningBalances: propSetRMOpeningBalances,
+  setRawMaterials,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -52,6 +54,36 @@ const Inventory: React.FC<InventoryProps> = ({
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
+
+  // --- Admin RM reorder mode ---
+  const [rmReorderMode, setRmReorderMode] = useState(false);
+  const [rmDraftOrder, setRmDraftOrder] = useState<RawMaterial[]>([]);
+
+  const enterRmReorderMode = () => {
+    const sorted = [...rawMaterials].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
+    setRmDraftOrder(sorted);
+    setRmReorderMode(true);
+  };
+
+  const moveRmDraftItem = (index: number, direction: -1 | 1) => {
+    setRmDraftOrder((prev) => {
+      const next = [...prev];
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const saveRmOrder = () => {
+    if (!setRawMaterials) return;
+    const withOrder = rmDraftOrder.map((rm, i) => ({ ...rm, sortOrder: i }));
+    setRawMaterials((prev) => prev.map((rm) => {
+      const updated = withOrder.find((w) => w.id === rm.id);
+      return updated ? updated : rm;
+    }));
+    setRmReorderMode(false);
+  };
   
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
@@ -159,7 +191,8 @@ const Inventory: React.FC<InventoryProps> = ({
 
   // Combined Filters for RM Inventory
   const filteredRawMaterials = useMemo(() => {
-    return rawMaterials.filter(rm => {
+    const sorted = [...rawMaterials].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999));
+    return sorted.filter(rm => {
       const matchesSearch = rm.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             rm.partName.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCustomer = selectedCustomer === 'All' || rm.customerName.toUpperCase().trim() === selectedCustomer.toUpperCase().trim();
@@ -286,6 +319,31 @@ const Inventory: React.FC<InventoryProps> = ({
       <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
         <div>
           <div className="flex items-center gap-3 mb-2">
+            {isAdmin && inventoryMode === 'rm' && !rmReorderMode && (
+              <button
+                onClick={enterRmReorderMode}
+                title="Reorder RM items"
+                className="w-9 h-9 flex items-center justify-center rounded-xl border-2 border-slate-200 text-slate-500 hover:border-indigo-500 hover:text-indigo-600 transition-all"
+              >
+                ✏️
+              </button>
+            )}
+            {rmReorderMode && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={saveRmOrder}
+                  className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest"
+                >
+                  Save Order
+                </button>
+                <button
+                  onClick={() => setRmReorderMode(false)}
+                  className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
             <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none">Inventory Ledger</h2>
             {isAdmin && <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border border-amber-200 shadow-sm">Owner Management Active</span>}
           </div>
@@ -795,7 +853,41 @@ const Inventory: React.FC<InventoryProps> = ({
       )}
 
       {/* RENDER RM-WISE INVENTORY */}
-      {inventoryMode === 'rm' && (
+      {rmReorderMode && (
+        <div className="bg-white rounded-[2rem] shadow-sm border border-indigo-200 p-6">
+          <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-4">
+            Reorder RM items — use the arrows, then click Save Order above
+          </p>
+          <div className="space-y-2">
+            {rmDraftOrder.map((rm, i) => (
+              <div key={rm.id} className="flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3">
+                <div>
+                  <p className="font-bold text-slate-900 text-sm">{rm.size}</p>
+                  <p className="text-xs text-slate-500">{rm.partName} • {rm.customerName}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => moveRmDraftItem(i, -1)}
+                    disabled={i === 0}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 disabled:opacity-30 hover:border-indigo-500 hover:text-indigo-600"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    onClick={() => moveRmDraftItem(i, 1)}
+                    disabled={i === rmDraftOrder.length - 1}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 disabled:opacity-30 hover:border-indigo-500 hover:text-indigo-600"
+                  >
+                    ↓
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {inventoryMode === 'rm' && !rmReorderMode && (
         <div className={`bg-white rounded-[2.5rem] shadow-sm border overflow-hidden transition-all duration-500 border-indigo-500 shadow-indigo-500/5`}>
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
