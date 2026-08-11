@@ -3,6 +3,12 @@ export type StockStatus = 'In Stock' | 'Low Stock' | 'Out of Stock';
 // --- Auth / Roles ---
 export type UserRole = 'admin' | 'store' | 'accounts' | 'ppc';
 
+export interface PendingDevice {
+  token: string;
+  requestedAt: string;
+  userAgent: string;
+}
+
 export interface AppUser {
   uid: string;
   email: string;
@@ -11,6 +17,8 @@ export interface AppUser {
   companyId: string;
   active: boolean;
   createdAt: string;
+  authorizedDevices?: string[]; // device tokens approved to log in as this user
+  pendingDevices?: PendingDevice[]; // device tokens awaiting Admin approval
 }
 
 export interface Company {

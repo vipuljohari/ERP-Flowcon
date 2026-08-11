@@ -28,7 +28,10 @@ service cloud.firestore {
     // read their own profile (needed at login to discover their own role).
     match /users/{uid} {
       allow read: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
-      allow write: if isAdmin();
+      allow write: if isAdmin() || (
+        isSignedIn() && request.auth.uid == uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingDevices'])
+      );
     }
 
     // --- Company Master ---

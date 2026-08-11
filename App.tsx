@@ -67,6 +67,18 @@ const MainApp: React.FC = () => {
   const [archives, setArchives] = useFirestoreArray<MonthlyArchive>('archives', [], (a) => a.monthKey);
   const [customers, setCustomers] = useFirestoreArray<Customer>('customers', INITIAL_CUSTOMERS);
   const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
+
+  // customers loads asynchronously from Firestore — it's empty for a moment
+  // when the app first opens, so the line above picks "no customer" before
+  // real data arrives. This catches up once the list is actually populated,
+  // and also recovers if the previously active customer gets deleted.
+  useEffect(() => {
+    if (customers.length === 0) return;
+    const stillValid = customers.some(c => c.name === activeCustomer);
+    if (!activeCustomer || !stillValid) {
+      setActiveCustomer(customers[0].name);
+    }
+  }, [customers, activeCustomer]);
   const [rawMaterials, setRawMaterials] = useFirestoreArray<RawMaterial>('rawMaterials');
   const [rmInwardLogs, setRmInwardLogs] = useFirestoreArray<RMInwardLog>('rmInwardLogs');
   const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
-import { AppUser, UserRole } from '../types';
+import { AppUser, UserRole, PendingDevice } from '../types';
 
 const ROLES: UserRole[] = ['admin', 'store', 'accounts', 'ppc'];
 
@@ -71,6 +71,47 @@ const UserMaster: React.FC = () => {
     }
   };
 
+  // Device approval — Admin already has full write access to `users` per
+  // Firestore rules, so this goes straight to Firestore, no API route needed.
+  const approveDevice = async (u: AppUser, device: PendingDevice) => {
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'users', u.uid), {
+        pendingDevices: arrayRemove(device),
+        authorizedDevices: arrayUnion(device.token),
+      });
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rejectDevice = async (u: AppUser, device: PendingDevice) => {
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'users', u.uid), { pendingDevices: arrayRemove(device) });
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeDevice = async (u: AppUser, token: string) => {
+    if (!confirm('Revoke this device? That device will need Admin approval again to log back in.')) return;
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'users', u.uid), { authorizedDevices: arrayRemove(token) });
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const totalPending = users.reduce((sum, u) => sum + (u.pendingDevices?.length || 0), 0);
+
   return (
     <div className="p-8 max-w-4xl">
       <div className="flex items-center justify-between mb-6">
@@ -89,6 +130,12 @@ const UserMaster: React.FC = () => {
       {message && (
         <div className={`mb-4 px-4 py-2 rounded-xl text-sm font-semibold ${message.type === 'error' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
           {message.text}
+        </div>
+      )}
+
+      {totalPending > 0 && (
+        <div className="mb-6 px-4 py-3 rounded-xl bg-amber-50 text-amber-700 text-sm font-bold">
+          {totalPending} device{totalPending > 1 ? 's are' : ' is'} waiting for approval below.
         </div>
       )}
 
@@ -128,7 +175,8 @@ const UserMaster: React.FC = () => {
           </thead>
           <tbody>
             {users.map((u) => (
-              <tr key={u.uid} className="border-t border-slate-50">
+              <React.Fragment key={u.uid}>
+              <tr className="border-t border-slate-50">
                 <td className="px-4 py-3 font-semibold">{u.displayName}</td>
                 <td className="px-4 py-3 text-slate-500">{u.email}</td>
                 <td className="px-4 py-3">
@@ -148,6 +196,31 @@ const UserMaster: React.FC = () => {
                   </button>
                 </td>
               </tr>
+              {u.role !== 'admin' && ((u.pendingDevices?.length || 0) > 0 || (u.authorizedDevices?.length || 0) > 0) && (
+                <tr className="bg-slate-50/50">
+                  <td colSpan={5} className="px-4 py-3">
+                    {(u.pendingDevices || []).map((d) => (
+                      <div key={d.token} className="flex items-center justify-between text-xs bg-amber-50 rounded-lg px-3 py-2 mb-1">
+                        <div className="text-amber-700">
+                          <span className="font-bold">Pending device</span> — requested {new Date(d.requestedAt).toLocaleString()}
+                          <span className="text-amber-500 block truncate max-w-md">{d.userAgent}</span>
+                        </div>
+                        <div className="flex gap-3 shrink-0 ml-4">
+                          <button onClick={() => approveDevice(u, d)} className="font-bold text-emerald-600">Approve</button>
+                          <button onClick={() => rejectDevice(u, d)} className="font-bold text-rose-600">Reject</button>
+                        </div>
+                      </div>
+                    ))}
+                    {(u.authorizedDevices || []).map((token) => (
+                      <div key={token} className="flex items-center justify-between text-xs bg-emerald-50 rounded-lg px-3 py-2 mb-1">
+                        <span className="text-emerald-700 font-bold">Authorized device — {token.slice(0, 8)}…</span>
+                        <button onClick={() => revokeDevice(u, token)} className="font-bold text-rose-600 shrink-0 ml-4">Revoke</button>
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
