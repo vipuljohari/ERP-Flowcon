@@ -35,7 +35,7 @@ export interface Company {
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   admin: ['*'],
   store: ['dashboard', 'inventory', 'inward_logs', 'item_master'],
-  accounts: ['dashboard', 'sales', 'data_mgmt', 'customer_master'],
+  accounts: ['dashboard', 'sales', 'data_mgmt', 'customer_master', 'import_issues'],
   ppc: ['dashboard', 'schedule', 'dispatch_daily', 'sales', 'inventory', 'analytics'],
 };
 
@@ -48,6 +48,8 @@ export interface Customer {
   id: string;
   name: string;
   matchKeywords: string; // e.g. "PRITHLA, SKH-P"
+  autoCreated?: boolean; // created automatically by the Tally connector script, not yet reviewed
+  autoCreatedAt?: string;
 }
 
 export interface Part {

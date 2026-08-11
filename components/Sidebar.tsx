@@ -49,6 +49,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   // Only show items this role is permitted to open.
   const navItems = allNavItems.filter((item) => canAccessView(role, item.id));
 
+  if (role === 'accounts' || isAdmin) {
+    navItems.splice(navItems.findIndex((i) => i.id === 'sales') + 1 || navItems.length, 0,
+      { id: 'import_issues', label: 'Import Issues', icon: '⚠️' }
+    );
+  }
+
   // Admin-only management items, always pinned at the end.
   if (isAdmin) {
     navItems.push(

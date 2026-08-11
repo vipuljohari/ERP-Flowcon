@@ -98,6 +98,11 @@ const CustomerMaster: React.FC<CustomerMasterProps> = ({
                   <td className="px-8 py-6">
                     <div className="flex items-center gap-3">
                       <p className="font-black text-slate-900 text-base uppercase">{c.name}</p>
+                      {c.autoCreated && (
+                        <span className="bg-amber-100 text-amber-700 border border-amber-200 px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest" title={`Auto-created from Tally on ${c.autoCreatedAt ? new Date(c.autoCreatedAt).toLocaleDateString() : ''} — review rate/keywords`}>
+                          Needs Review
+                        </span>
+                      )}
                       {isActive && (
                         <span className="bg-indigo-600 text-white px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest animate-pulse shadow-sm">
                           Active
