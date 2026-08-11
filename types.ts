@@ -50,6 +50,7 @@ export interface Customer {
   matchKeywords: string; // e.g. "PRITHLA, SKH-P"
   autoCreated?: boolean; // created automatically by the Tally connector script, not yet reviewed
   autoCreatedAt?: string;
+  sortOrder?: number; // Admin-controlled manual display order
 }
 
 export interface Part {

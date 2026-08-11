@@ -76,7 +76,7 @@ const ImportLegacyData: React.FC = () => {
           const batch = writeBatch(db);
           chunk.forEach((item) => {
             const id = getId(item);
-            if (id) batch.set(doc(db, firestoreName, String(id)), item);
+            if (id) batch.set(doc(db, firestoreName, String(id)), item, { merge: true });
           });
           await batch.commit();
         }
@@ -87,7 +87,7 @@ const ImportLegacyData: React.FC = () => {
       // settings-style map (RM identifier -> balance string). This is what
       // was missing before, causing the negative "phantom consumption" you saw.
       if (backup.localRMOpeningBalances && Object.keys(backup.localRMOpeningBalances).length > 0) {
-        await setDoc(doc(db, 'settings', 'rmOpeningBalances'), backup.localRMOpeningBalances);
+        await setDoc(doc(db, 'settings', 'rmOpeningBalances'), backup.localRMOpeningBalances, { merge: true });
         summary.push({ collection: 'localRMOpeningBalances (settings)', count: Object.keys(backup.localRMOpeningBalances).length });
       }
       setResult(summary);
@@ -103,8 +103,8 @@ const ImportLegacyData: React.FC = () => {
       <h2 className="text-xl font-black text-slate-900 mb-1">Import Legacy Data</h2>
       <p className="text-xs text-slate-500 font-medium mb-6">
         One-time migration from your old app's backup file into this app's live Firestore data.
-        This <strong>upserts</strong> by ID — running it again with a newer backup safely overwrites
-        matching records, it does not delete anything not present in the file.
+        This <strong>merges</strong> by ID — it fills in fields from the backup without wiping out fields
+        added since (like manual sort order), so it's safe to run again with a newer backup.
       </p>
 
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 text-xs text-amber-800 font-medium">

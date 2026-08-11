@@ -67,27 +67,15 @@ const MainApp: React.FC = () => {
   const [inwardLogs, setInwardLogs] = useFirestoreArray<InwardLog>('inwardLogs');
   const [archives, setArchives] = useFirestoreArray<MonthlyArchive>('archives', [], (a) => a.monthKey);
   const [customers, setCustomers] = useFirestoreArray<Customer>('customers', INITIAL_CUSTOMERS);
-  const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
-
-  // customers loads asynchronously from Firestore — it's empty for a moment
-  // when the app first opens, so the line above picks "no customer" before
-  // real data arrives. This catches up once the list is actually populated,
-  // and also recovers if the previously active customer gets deleted.
-  useEffect(() => {
-    if (customers.length === 0) return;
-    const stillValid = customers.some(c => c.name === activeCustomer);
-    if (!activeCustomer || !stillValid) {
-      setActiveCustomer(customers[0].name);
-    }
-  }, [customers, activeCustomer]);
   const [rawMaterials, setRawMaterials] = useFirestoreArray<RawMaterial>('rawMaterials');
   const [rmInwardLogs, setRmInwardLogs] = useFirestoreArray<RMInwardLog>('rmInwardLogs');
   const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
 
   // Single source of truth for display order across the WHOLE app — the
   // Admin's sortOrder (set via the reorder pencil icon) applies everywhere
-  // parts/RM are listed, for every role, on every device. Anything that
-  // doesn't have a sortOrder yet sorts to the end, keeping its relative order.
+  // parts/RM/customers are listed, for every role, on every device,
+  // INCLUDING every customer-selection dropdown. Anything that doesn't have
+  // a sortOrder yet sorts to the end, keeping its relative order.
   const sortedParts = useMemo(
     () => [...parts].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999)),
     [parts]
@@ -96,6 +84,24 @@ const MainApp: React.FC = () => {
     () => [...rawMaterials].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999)),
     [rawMaterials]
   );
+  const sortedCustomers = useMemo(
+    () => [...customers].sort((a, b) => (a.sortOrder ?? 999999) - (b.sortOrder ?? 999999)),
+    [customers]
+  );
+
+  const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
+
+  // customers loads asynchronously from Firestore — it's empty for a moment
+  // when the app first opens, so the line above picks "no customer" before
+  // real data arrives. This catches up once the list is actually populated,
+  // and also recovers if the previously active customer gets deleted.
+  useEffect(() => {
+    if (sortedCustomers.length === 0) return;
+    const stillValid = sortedCustomers.some(c => c.name === activeCustomer);
+    if (!activeCustomer || !stillValid) {
+      setActiveCustomer(sortedCustomers[0].name);
+    }
+  }, [sortedCustomers, activeCustomer]);
 
   const partsRef = useRef(parts);
   const salesRef = useRef(sales);
@@ -956,7 +962,7 @@ const MainApp: React.FC = () => {
               allSales={sales} 
               activeCustomer={activeCustomer} 
               onCustomerChange={setActiveCustomer} 
-              customers={customers} 
+              customers={sortedCustomers} 
               forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} 
               selectedDate={sD} 
               rawMaterials={sortedRawMaterials} 
@@ -975,7 +981,7 @@ const MainApp: React.FC = () => {
               selectedDateDisplay={sD.toLocaleDateString('en-GB')}
               rawMaterials={sortedRawMaterials}
               rmInwardLogs={contextRmInwardLogs}
-              customers={customers}
+              customers={sortedCustomers}
               onAddRMInward={handleAddRMInward}
               localRMOpeningBalances={resolvedRMOpeningBalances}
               setLocalRMOpeningBalances={setLocalRMOpeningBalances}
@@ -1009,8 +1015,8 @@ const MainApp: React.FC = () => {
                }
                return p;
              }));
-          }} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customers} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
-          {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customers} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
+          }} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
+          {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
              const sale = sales.find(s => s.id === id);
              if (sale) {
                setSales(prev => prev.filter(s => s.id !== id));
@@ -1022,7 +1028,7 @@ const MainApp: React.FC = () => {
           {canAccessView(role, currentView) && currentView === 'item_master' && isAdmin && (
             <ItemMaster 
               parts={sortedParts} 
-              customers={customers} 
+              customers={sortedCustomers} 
               rawMaterials={sortedRawMaterials}
               setParts={setParts}
               onAdd={(p) => {
@@ -1076,7 +1082,7 @@ const MainApp: React.FC = () => {
             <RMMaster 
               rawMaterials={sortedRawMaterials} 
               parts={sortedParts} 
-              customers={customers} 
+              customers={sortedCustomers} 
               onAdd={(rm) => {
                 const newRMId = Math.random().toString(36).substr(2, 9);
                 const newRM = { ...rm, id: newRMId, stock: 0 } as RawMaterial;
@@ -1139,9 +1145,10 @@ const MainApp: React.FC = () => {
           )}
           {canAccessView(role, currentView) && currentView === 'customer_master' && isAdmin && (
             <CustomerMaster 
-              customers={customers} 
+              customers={sortedCustomers} 
               sales={sales} 
               activeCustomerInSession={activeCustomer} 
+              setCustomers={setCustomers}
               onAdd={(n, k) => {
                 const newCust: Customer = { id: Math.random().toString(36).substr(2, 9), name: n, matchKeywords: k };
                 setCustomers(prev => [...prev, newCust]);
@@ -1183,7 +1190,7 @@ const MainApp: React.FC = () => {
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}
           {canAccessView(role, currentView) && currentView === 'import_issues' && <ImportIssues />}
-          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}
+          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}
         </div>
       </main>
     </div>
