@@ -685,7 +685,14 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                         <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest leading-none mb-1">
                           {displayCustomer} • {new Date(firstSale.timestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                         </p>
-                        <h4 className="text-xs font-black text-slate-100 uppercase tracking-tight">Invoice: {displayInvoice}</h4>
+                        <h4 className="text-xs font-black text-slate-100 uppercase tracking-tight flex items-center gap-2">
+                          Invoice: {displayInvoice}
+                          {String(displayInvoice).includes('/BT/') && (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[8px] font-black tracking-widest" title="Branch Transfer — not a GST tax invoice">
+                              BT
+                            </span>
+                          )}
+                        </h4>
                       </div>
                     </div>
                     

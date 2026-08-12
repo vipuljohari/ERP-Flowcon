@@ -77,6 +77,7 @@ export interface Part {
   hasCustomScrap?: boolean; // toggle for custom end-piece scrap override
   customScrapMm?: number; // custom scrap value in mm
   sortOrder?: number; // Admin-controlled manual display order
+  excludeFromBTDispatch?: boolean; // job-work exception: BT challans for this part are NOT dispatch — the real Sales Invoice after it returns from Unit 1 is what counts
 }
 
 export interface RawMaterial {

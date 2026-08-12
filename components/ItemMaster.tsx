@@ -60,7 +60,8 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     itemLength: 0,
     customerRMMappings: {} as Record<string, string>,
     hasCustomScrap: false,
-    customScrapMm: 0
+    customScrapMm: 0,
+    excludeFromBTDispatch: false
   });
 
   const handleOpenAdd = () => {
@@ -69,7 +70,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       name: '', sapCode: '', sku: '', category: CATEGORIES[0],
       rate: 0, customerRates: {}, size: '', minThreshold: 100, mappedCustomers: [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
-      hasCustomScrap: false, customScrapMm: 0
+      hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false
     });
     setShowModal(true);
   };
@@ -83,7 +84,8 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       itemWeight: p.itemWeight || 0, itemLength: p.itemLength || 0,
       customerRMMappings: p.customerRMMappings || {},
       hasCustomScrap: p.hasCustomScrap || false,
-      customScrapMm: p.customScrapMm || 0
+      customScrapMm: p.customScrapMm || 0,
+      excludeFromBTDispatch: p.excludeFromBTDispatch || false
     });
     setShowModal(true);
   };
@@ -387,6 +389,20 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                       />
                     </div>
                   )}
+                </div>
+                <div className="col-span-2 flex items-start gap-3 bg-indigo-50/40 border border-indigo-200/50 p-5 rounded-[1.5rem] mt-1">
+                  <label className="flex items-center gap-3 cursor-pointer flex-1">
+                    <input 
+                      type="checkbox" 
+                      className="w-5 h-5 rounded text-indigo-600 focus:ring-indigo-500 border-indigo-300 cursor-pointer" 
+                      checked={formData.excludeFromBTDispatch || false} 
+                      onChange={(e) => setFormData({...formData, excludeFromBTDispatch: e.target.checked})} 
+                    />
+                    <div className="text-left">
+                      <span className="block text-xs font-black text-slate-800">Exclude from Branch Transfer dispatch counting</span>
+                      <span className="block text-[10px] text-slate-500 font-medium">For job-work exceptions: this part goes to Unit 1 for an operation and returns — its BT challan should NOT count as dispatch, only the eventual real Sales Invoice from Unit 2 should.</span>
+                    </div>
+                  </label>
                 </div>
               </div>
 
