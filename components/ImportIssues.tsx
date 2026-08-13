@@ -15,12 +15,20 @@ interface Issue {
 
 const ImportIssues: React.FC = () => {
   const [issues, setIssues] = useState<Issue[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(collection(db, 'importIssues'), orderBy('createdAt', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      setIssues(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Issue)));
-    });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setError(null);
+        setIssues(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Issue)));
+      },
+      (err) => {
+        setError(err.message || 'Could not load Import Issues — likely a Firestore Rules permission problem.');
+      }
+    );
     return () => unsub();
   }, []);
 
@@ -35,6 +43,12 @@ const ImportIssues: React.FC = () => {
         Invoice line items from the Tally connector that couldn't be matched to a part in Item Master.
         Add the item to Item Master (or fix its SAP code) then dismiss — this doesn't retry automatically.
       </p>
+
+      {error && (
+        <div className="bg-rose-50 text-rose-600 text-sm font-bold rounded-2xl px-6 py-4 mb-6">
+          {error}
+        </div>
+      )}
 
       {issues.length === 0 && (
         <div className="bg-emerald-50 text-emerald-700 text-sm font-bold rounded-2xl px-6 py-8 text-center">
