@@ -22,6 +22,9 @@ interface ItemMasterProps {
 }
 
 const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts, prefillDraft, onDraftConsumed }) => {
+  const allModels = Array.from(new Set(
+    parts.flatMap(p => Object.values(p.customerModels || {})).filter(Boolean)
+  )).sort();
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -62,6 +65,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     category: CATEGORIES[0],
     rate: 0,
     customerRates: {} as Record<string, number>,
+    customerModels: {} as Record<string, string>,
     size: '',
     minThreshold: 100,
     mappedCustomers: [] as string[],
@@ -77,7 +81,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     setEditingId(null);
     setFormData({
       name: '', sapCode: '', sku: '', category: CATEGORIES[0],
-      rate: 0, customerRates: {}, size: '', minThreshold: 100, mappedCustomers: [],
+      rate: 0, customerRates: {}, customerModels: {}, size: '', minThreshold: 100, mappedCustomers: [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
       hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false
     });
@@ -95,6 +99,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       name: prefillDraft.name, sapCode: prefillDraft.sapCode, sku: '', category: CATEGORIES[0],
       rate: prefillDraft.rate || 0,
       customerRates: prefillDraft.customer ? { [prefillDraft.customer]: prefillDraft.rate || 0 } : {},
+      customerModels: {},
       size: '', minThreshold: 100,
       mappedCustomers: prefillDraft.customer ? [prefillDraft.customer] : [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
@@ -110,7 +115,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     setEditingId(p.id);
     setFormData({
       name: p.name, sapCode: p.sapCode, sku: p.sku, category: p.category,
-      rate: p.rate, customerRates: p.customerRates || {}, size: p.size, minThreshold: p.minThreshold, mappedCustomers: p.mappedCustomers || [],
+      rate: p.rate, customerRates: p.customerRates || {}, customerModels: p.customerModels || {}, size: p.size, minThreshold: p.minThreshold, mappedCustomers: p.mappedCustomers || [],
       itemWeight: p.itemWeight || 0, itemLength: p.itemLength || 0,
       customerRMMappings: p.customerRMMappings || {},
       hasCustomScrap: p.hasCustomScrap || false,
@@ -457,6 +462,18 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                           </label>
                           {isSelected && (
                             <div className="flex items-center gap-2">
+                               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Model</span>
+                               <input 
+                                 type="text" 
+                                 list="model-suggestions"
+                                 placeholder="e.g. 2DX"
+                                 className="w-24 px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 text-xs focus:border-indigo-600 outline-none"
+                                 value={formData.customerModels?.[c.name] || ''}
+                                 onChange={(e) => setFormData({
+                                   ...formData,
+                                   customerModels: { ...(formData.customerModels || {}), [c.name]: e.target.value }
+                                 })}
+                               />
                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Rate (₹)</span>
                                <input 
                                  type="number" 
@@ -501,6 +518,9 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
           </div>
         </div>
       )}
+      <datalist id="model-suggestions">
+        {allModels.map(m => <option key={m} value={m} />)}
+      </datalist>
     </div>
   );
 };

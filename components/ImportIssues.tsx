@@ -17,11 +17,13 @@ interface Issue {
 interface ImportIssuesProps {
   onAddToItemMaster?: (draft: { sapCode: string; name: string; customer?: string; rate?: number }) => void;
   isAdmin?: boolean;
+  customers?: { id: string; name: string }[];
 }
 
-const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin }) => {
+const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin, customers = [] }) => {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [customerFilter, setCustomerFilter] = useState<string>('All');
 
   useEffect(() => {
     const q = query(collection(db, 'importIssues'), orderBy('createdAt', 'desc'));
@@ -37,6 +39,12 @@ const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin 
     );
     return () => unsub();
   }, []);
+
+  const filteredIssues = issues.filter((issue) => {
+    if (customerFilter === 'All') return true;
+    if (customerFilter === '__unknown__') return !issue.customer;
+    return issue.customer === customerFilter;
+  });
 
   const dismiss = async (id: string) => {
     await deleteDoc(doc(db, 'importIssues', id));
@@ -59,7 +67,23 @@ const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin 
 
   return (
     <div className="p-8 max-w-4xl">
-      <h2 className="text-xl font-black text-slate-900 mb-1">Import Issues</h2>
+      <div className="flex justify-between items-start mb-1">
+        <h2 className="text-xl font-black text-slate-900">Import Issues</h2>
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Customer</label>
+          <select
+            value={customerFilter}
+            onChange={(e) => setCustomerFilter(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700"
+          >
+            <option value="All">All customers</option>
+            <option value="__unknown__">Unassigned (no matched customer)</option>
+            {customers.map((c) => (
+              <option key={c.id} value={c.name}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
       <p className="text-xs text-slate-500 font-medium mb-6">
         Invoice line items from the Tally connector that couldn't be matched to a part in Item Master.
         Click "Add to Item Master" to open a pre-filled creation form — review before saving — or fix the
@@ -72,19 +96,19 @@ const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin 
         </div>
       )}
 
-      {issues.length === 0 && (
+      {filteredIssues.length === 0 && (
         <div className="bg-emerald-50 text-emerald-700 text-sm font-bold rounded-2xl px-6 py-8 text-center">
-          Nothing waiting for review 🎉
+          {issues.length === 0 ? 'Nothing waiting for review 🎉' : 'Nothing for this customer right now.'}
         </div>
       )}
 
       <div className="space-y-3">
-        {issues.map((issue) => (
+        {filteredIssues.map((issue) => (
           <div key={issue.id} className="bg-white border border-slate-100 rounded-2xl p-4 flex justify-between items-start">
             <div>
               <p className="font-bold text-slate-900 text-sm">{issue.rawText}</p>
               <p className="text-xs text-slate-500 mt-1">
-                Invoice {issue.invoiceNumber} • {issue.customer} • Qty {issue.quantity} • {new Date(issue.date).toLocaleDateString()}
+                Invoice {issue.invoiceNumber} • {issue.customer || 'Unassigned'} • Qty {issue.quantity} • {new Date(issue.date).toLocaleDateString()}
               </p>
             </div>
             <div className="flex gap-4 shrink-0 ml-4">

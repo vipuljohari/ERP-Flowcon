@@ -61,6 +61,7 @@ export interface Part {
   category: string;
   rate: number; // Base rate for valuation
   customerRates: Record<string, number>; // Mapping: { 'Customer Name': 1200.50 }
+  customerModels?: Record<string, string>; // Mapping: { 'Customer Name': '2DX' } — which vehicle model/platform this part belongs to, for that customer
   size: string; 
   stock: number; 
   inward: number; 
@@ -86,6 +87,7 @@ export interface RawMaterial {
   length: number; // in mm
   weightPer1000: number; // Kg per 1000 mm
   customerName: string; // Mapped customer
+  model?: string; // vehicle model/platform this RM belongs to, for that customer
   partId: string; // Mapped Item/part ID from item master
   partName: string; // Mapped Item/part Name
   stock: number; // Current stock (can be in Kg or number of bars. We will represent as total weight in Kg, or tracked as starting/current bars)

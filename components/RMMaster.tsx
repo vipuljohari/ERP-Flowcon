@@ -11,6 +11,7 @@ interface RMMasterProps {
 }
 
 const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onAdd, onEdit, onDelete }) => {
+  const allRMModels = Array.from(new Set(rawMaterials.map(rm => rm.model).filter(Boolean))).sort() as string[];
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -21,6 +22,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
     length: 6000,
     weightPer1000: 0,
     customerName: '',
+    model: '',
     partId: '',
     partIds: [] as string[],
   });
@@ -34,6 +36,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       length: 6000,
       weightPer1000: 0,
       customerName: initialCustomer,
+      model: '',
       partId: initialPartId,
       partIds: initialPartId ? [initialPartId] : [],
     });
@@ -48,6 +51,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       length: rm.length,
       weightPer1000: rm.weightPer1000,
       customerName: rm.customerName,
+      model: rm.model || '',
       partId: rm.partId || '',
       partIds: rm.partIds || (rm.partId ? [rm.partId] : []),
     });
@@ -253,6 +257,18 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                       {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                     </select>
                   </div>
+
+                  <div className="text-left col-span-2 sm:col-span-1">
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Model (optional)</label>
+                    <input
+                      type="text"
+                      list="rm-model-suggestions"
+                      placeholder="e.g. 2DX"
+                      className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900"
+                      value={formData.model}
+                      onChange={(e) => setFormData({...formData, model: e.target.value})}
+                    />
+                  </div>
                   
                   <div className="col-span-2 text-left pt-2">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
@@ -305,6 +321,9 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
           </div>
         </div>
       )}
+      <datalist id="rm-model-suggestions">
+        {allRMModels.map(m => <option key={m} value={m} />)}
+      </datalist>
     </div>
   );
 };

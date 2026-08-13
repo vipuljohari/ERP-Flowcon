@@ -91,6 +91,39 @@ const MainApp: React.FC = () => {
   );
 
   const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
+  const [activeModel, setActiveModel] = useState<string>('All');
+
+  // Which Model tags exist for the currently active customer's parts —
+  // drives the Model dropdown and resets it if it becomes invalid (e.g.
+  // switching to a customer that doesn't use this Model tag at all).
+  const availableModels = useMemo(() => {
+    const set = new Set<string>();
+    parts.forEach(p => {
+      const m = p.customerModels?.[activeCustomer];
+      if (m) set.add(m);
+    });
+    return Array.from(set).sort();
+  }, [parts, activeCustomer]);
+
+  useEffect(() => {
+    if (activeModel !== 'All' && !availableModels.includes(activeModel)) {
+      setActiveModel('All');
+    }
+  }, [availableModels, activeModel]);
+
+  // Applied everywhere parts/RM are shown operationally (Dashboard,
+  // Inventory, Sales, Dispatch, Schedules, Inward Logs) — NOT in Item
+  // Master / RM Master / Data Management, where Admin needs to see and
+  // manage everything regardless of the current Model filter.
+  const modelFilteredParts = useMemo(() => {
+    if (activeModel === 'All') return sortedParts;
+    return sortedParts.filter(p => p.customerModels?.[activeCustomer] === activeModel);
+  }, [sortedParts, activeCustomer, activeModel]);
+
+  const modelFilteredRawMaterials = useMemo(() => {
+    if (activeModel === 'All') return sortedRawMaterials;
+    return sortedRawMaterials.filter(rm => rm.customerName === activeCustomer && rm.model === activeModel);
+  }, [sortedRawMaterials, activeCustomer, activeModel]);
 
   // customers loads asynchronously from Firestore — it's empty for a moment
   // when the app first opens, so the line above picks "no customer" before
@@ -806,7 +839,7 @@ const MainApp: React.FC = () => {
     const sMonth = sD.getMonth();
     const sDay = sD.getDate();
 
-    return sortedParts.map(p => {
+    return modelFilteredParts.map(p => {
       const aP = arc?.parts.find(ap => ap.id === p.id);
       
       const mappedRMs = rawMaterials.filter(rm => {
@@ -932,7 +965,7 @@ const MainApp: React.FC = () => {
         status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus 
       };
     });
-  }, [sD, sortedParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
+  }, [sD, modelFilteredParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
 
   return (
     <div className={`min-h-screen flex ${isH ? 'bg-slate-100' : 'bg-slate-50'}`}>
@@ -950,7 +983,22 @@ const MainApp: React.FC = () => {
       <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} />
       <main className="flex-1 md:ml-64 p-6 md:p-10 relative text-left">
         <div className="max-w-7xl mx-auto">
-          <div className="flex justify-between items-start mb-8 text-left"><TimeMachine selectedDate={sD} onDateChange={setSelectedDate} sales={sales} inwardLogs={inwardLogs} /></div>
+          <div className="flex justify-between items-start mb-8 text-left">
+            <TimeMachine selectedDate={sD} onDateChange={setSelectedDate} sales={sales} inwardLogs={inwardLogs} />
+            {availableModels.length > 0 && (
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm px-5 py-3 flex items-center gap-3">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Model</span>
+                <select
+                  value={activeModel}
+                  onChange={(e) => setActiveModel(e.target.value)}
+                  className="text-sm font-bold text-slate-900 outline-none bg-transparent cursor-pointer"
+                >
+                  <option value="All">All models</option>
+                  {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
           {!canAccessView(role, currentView) ? (
             <div className="p-10 bg-rose-50 rounded-2xl text-rose-600 font-bold text-sm">
               Your role ({role}) doesn't have access to this section.
@@ -966,7 +1014,7 @@ const MainApp: React.FC = () => {
               customers={sortedCustomers} 
               forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} 
               selectedDate={sD} 
-              rawMaterials={sortedRawMaterials} 
+              rawMaterials={modelFilteredRawMaterials} 
               localRMOpeningBalances={resolvedRMOpeningBalances}
               rmInwardLogs={contextRmInwardLogs}
             />
@@ -980,7 +1028,7 @@ const MainApp: React.FC = () => {
               isAdmin={isAdmin} 
               selectedDate={sD} 
               selectedDateDisplay={sD.toLocaleDateString('en-GB')}
-              rawMaterials={sortedRawMaterials}
+              rawMaterials={modelFilteredRawMaterials}
               rmInwardLogs={contextRmInwardLogs}
               customers={sortedCustomers}
               onAddRMInward={handleAddRMInward}
@@ -989,7 +1037,7 @@ const MainApp: React.FC = () => {
               setRawMaterials={setRawMaterials}
             />
           )}
-          {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={sortedRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
+          {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
              const log = inwardLogs.find(l => l.id === id);
              if (log) {
                setInwardLogs(prev => prev.filter(l => l.id !== id));
@@ -1195,6 +1243,7 @@ const MainApp: React.FC = () => {
           {canAccessView(role, currentView) && currentView === 'import_issues' && (
             <ImportIssues
               isAdmin={isAdmin}
+              customers={sortedCustomers}
               onAddToItemMaster={(draft) => {
                 setPendingItemDraft(draft);
                 setCurrentView('item_master');
