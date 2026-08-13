@@ -39,13 +39,21 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [customerFilter, setCustomerFilter] = useState('All');
+  const [modelFilter, setModelFilter] = useState('All');
+
+  // Reset the Model filter whenever the Customer filter changes — a model
+  // selected for one customer is meaningless once you switch to another.
+  useEffect(() => {
+    setModelFilter('All');
+  }, [customerFilter]);
 
   // --- Admin reorder mode ---
   const [reorderMode, setReorderMode] = useState(false);
   const [draftOrder, setDraftOrder] = useState<Part[]>([]);
 
   const enterReorderMode = () => {
-    setDraftOrder([...parts]); // `parts` prop already arrives pre-sorted from App.tsx
+    setDraftOrder([...filteredParts]); // whatever's currently visible — respects search + customer + model filters
     setReorderMode(true);
   };
 
@@ -196,10 +204,13 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     }
   };
 
-  const filteredParts = parts.filter(p => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    p.sapCode.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredParts = parts.filter(p => {
+    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      p.sapCode.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesCustomer = customerFilter === 'All' || (p.mappedCustomers || []).includes(customerFilter);
+    const matchesModel = modelFilter === 'All' || p.customerModels?.[customerFilter] === modelFilter;
+    return matchesSearch && matchesCustomer && matchesModel;
+  });
 
   return (
     <div className="space-y-8 text-left">
@@ -230,6 +241,24 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
           <p className="text-slate-500 font-medium text-left">Define technical specifications and customer-specific commercial rates</p>
         </div>
         <div className="flex gap-4">
+          <select
+            value={customerFilter}
+            onChange={(e) => setCustomerFilter(e.target.value)}
+            className="px-4 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none font-bold text-slate-700 bg-white shadow-sm"
+          >
+            <option value="All">All customers</option>
+            {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+          </select>
+          {customerFilter !== 'All' && (modelsByCustomer[customerFilter]?.length || 0) > 0 && (
+            <select
+              value={modelFilter}
+              onChange={(e) => setModelFilter(e.target.value)}
+              className="px-4 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none font-bold text-slate-700 bg-white shadow-sm"
+            >
+              <option value="All">All models</option>
+              {modelsByCustomer[customerFilter].map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          )}
           <input 
             type="text" placeholder="Search items..." 
             className="px-6 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none font-bold text-slate-700 bg-white w-64 shadow-sm"
@@ -247,7 +276,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       {reorderMode && (
         <div className="bg-white rounded-[2rem] shadow-sm border border-indigo-200 p-6">
           <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-4">
-            Reorder items — use the arrows, then click Save Order above
+            Reorder items — use the arrows, then click Save Order above. This reorders exactly the list currently shown (respecting your Customer/Model/Search filters above) — every screen that filters by the same customer will reflect this new order.
           </p>
           <div className="space-y-2">
             {draftOrder.map((p, i) => (
