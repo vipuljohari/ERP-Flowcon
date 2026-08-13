@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Part, Customer, RawMaterial } from '../types';
 import { CATEGORIES } from '../constants';
 
@@ -22,9 +22,20 @@ interface ItemMasterProps {
 }
 
 const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts, prefillDraft, onDraftConsumed }) => {
-  const allModels = Array.from(new Set(
-    parts.flatMap(p => Object.values(p.customerModels || {})).filter(Boolean)
-  )).sort();
+  // Models scoped per customer — so the dropdown for SKH Palwal only shows
+  // models actually used by SKH Palwal's own parts, not every customer's.
+  const modelsByCustomer = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    parts.forEach(p => {
+      Object.entries(p.customerModels || {}).forEach(([cust, model]) => {
+        if (!model) return;
+        if (!map[cust]) map[cust] = [];
+        if (!map[cust].includes(model)) map[cust].push(model);
+      });
+    });
+    Object.keys(map).forEach(k => map[k].sort());
+    return map;
+  }, [parts]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -463,17 +474,32 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                           {isSelected && (
                             <div className="flex items-center gap-2">
                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Model</span>
-                               <input 
-                                 type="text" 
-                                 list="model-suggestions"
-                                 placeholder="e.g. 2DX"
-                                 className="w-24 px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 text-xs focus:border-indigo-600 outline-none"
+                               <select
+                                 className="w-32 px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 text-xs focus:border-indigo-600 outline-none"
                                  value={formData.customerModels?.[c.name] || ''}
-                                 onChange={(e) => setFormData({
-                                   ...formData,
-                                   customerModels: { ...(formData.customerModels || {}), [c.name]: e.target.value }
-                                 })}
-                               />
+                                 onChange={(e) => {
+                                   if (e.target.value === '__new__') {
+                                     const entered = window.prompt(`New model for ${c.name}:`)?.trim();
+                                     if (entered) {
+                                       setFormData({
+                                         ...formData,
+                                         customerModels: { ...(formData.customerModels || {}), [c.name]: entered }
+                                       });
+                                     }
+                                     return;
+                                   }
+                                   setFormData({
+                                     ...formData,
+                                     customerModels: { ...(formData.customerModels || {}), [c.name]: e.target.value }
+                                   });
+                                 }}
+                               >
+                                 <option value="">Not Applicable</option>
+                                 {modelsByCustomer[c.name]?.map(m => (
+                                   <option key={m} value={m}>{m}</option>
+                                 ))}
+                                 <option value="__new__">+ Add new model...</option>
+                               </select>
                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Rate (₹)</span>
                                <input 
                                  type="number" 
@@ -518,9 +544,6 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
           </div>
         </div>
       )}
-      <datalist id="model-suggestions">
-        {allModels.map(m => <option key={m} value={m} />)}
-      </datalist>
     </div>
   );
 };

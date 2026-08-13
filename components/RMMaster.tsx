@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { RawMaterial, Customer, Part } from '../types';
 
 interface RMMasterProps {
@@ -11,7 +11,18 @@ interface RMMasterProps {
 }
 
 const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onAdd, onEdit, onDelete }) => {
-  const allRMModels = Array.from(new Set(rawMaterials.map(rm => rm.model).filter(Boolean))).sort() as string[];
+  // Models scoped per customer — mirrors Item Master's approach, so the
+  // dropdown only shows models actually used by RM for that customer.
+  const modelsByCustomer = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    rawMaterials.forEach(rm => {
+      if (!rm.model) return;
+      if (!map[rm.customerName]) map[rm.customerName] = [];
+      if (!map[rm.customerName].includes(rm.model)) map[rm.customerName].push(rm.model);
+    });
+    Object.keys(map).forEach(k => map[k].sort());
+    return map;
+  }, [rawMaterials]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -259,15 +270,25 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                   </div>
 
                   <div className="text-left col-span-2 sm:col-span-1">
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Model (optional)</label>
-                    <input
-                      type="text"
-                      list="rm-model-suggestions"
-                      placeholder="e.g. 2DX"
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Model</label>
+                    <select
                       className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900"
                       value={formData.model}
-                      onChange={(e) => setFormData({...formData, model: e.target.value})}
-                    />
+                      onChange={(e) => {
+                        if (e.target.value === '__new__') {
+                          const entered = window.prompt(`New model for ${formData.customerName}:`)?.trim();
+                          if (entered) setFormData({...formData, model: entered});
+                          return;
+                        }
+                        setFormData({...formData, model: e.target.value});
+                      }}
+                    >
+                      <option value="">Not Applicable</option>
+                      {modelsByCustomer[formData.customerName]?.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                      <option value="__new__">+ Add new model...</option>
+                    </select>
                   </div>
                   
                   <div className="col-span-2 text-left pt-2">
@@ -321,9 +342,6 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
           </div>
         </div>
       )}
-      <datalist id="rm-model-suggestions">
-        {allRMModels.map(m => <option key={m} value={m} />)}
-      </datalist>
     </div>
   );
 };
