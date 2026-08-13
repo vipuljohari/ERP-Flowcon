@@ -45,6 +45,7 @@ const MainApp: React.FC = () => {
   const role = appUser?.role || 'store';
   const isAdmin = role === 'admin';
   const [currentView, setCurrentView] = useState('dashboard');
+  const [pendingItemDraft, setPendingItemDraft] = useState<{ sapCode: string; name: string; customer?: string } | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [userName, setUserName] = useState(() => appUser?.displayName || localStorage.getItem('autopart_username') || 'Vipul PC');
   const [syncNotifications, setSyncNotifications] = useState<{id: string, message: string, type: 'success' | 'warning', action?: () => void}[]>([]);
@@ -1031,6 +1032,8 @@ const MainApp: React.FC = () => {
               customers={sortedCustomers} 
               rawMaterials={sortedRawMaterials}
               setParts={setParts}
+              prefillDraft={pendingItemDraft}
+              onDraftConsumed={() => setPendingItemDraft(null)}
               onAdd={(p) => {
                 const newPartId = Math.random().toString(36).substr(2, 9);
                 const newPart = { ...p, id: newPartId, stock: 0, inward: 0, revisionCount: 0, lastUpdated: new Date().toISOString(), status: 'Out of Stock', schedules: {} } as Part;
@@ -1189,7 +1192,15 @@ const MainApp: React.FC = () => {
           {isAdmin && currentView === 'user_master' && <UserMaster />}
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}
-          {canAccessView(role, currentView) && currentView === 'import_issues' && <ImportIssues />}
+          {canAccessView(role, currentView) && currentView === 'import_issues' && (
+            <ImportIssues
+              isAdmin={isAdmin}
+              onAddToItemMaster={(draft) => {
+                setPendingItemDraft(draft);
+                setCurrentView('item_master');
+              }}
+            />
+          )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}
         </div>
       </main>

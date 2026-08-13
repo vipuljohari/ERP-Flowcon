@@ -1,6 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Part, Customer, RawMaterial } from '../types';
 import { CATEGORIES } from '../constants';
+
+interface ItemMasterDraft {
+  sapCode: string;
+  name: string;
+  customer?: string;
+  rate?: number;
+}
 
 interface ItemMasterProps {
   parts: Part[];
@@ -10,9 +17,11 @@ interface ItemMasterProps {
   customers: Customer[];
   rawMaterials: RawMaterial[];
   setParts?: (update: Part[] | ((prev: Part[]) => Part[])) => void;
+  prefillDraft?: ItemMasterDraft | null;
+  onDraftConsumed?: () => void;
 }
 
-const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts }) => {
+const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts, prefillDraft, onDraftConsumed }) => {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -75,6 +84,27 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     setShowModal(true);
   };
 
+  // Opens straight to a pre-filled Create form when arriving from an Import
+  // Issue's "Add to Item Master" button — SAP code and name parsed from the
+  // Tally line item, customer pre-checked if we knew it. Nothing is saved
+  // until the user reviews and submits the form themselves.
+  useEffect(() => {
+    if (!prefillDraft) return;
+    setEditingId(null);
+    setFormData({
+      name: prefillDraft.name, sapCode: prefillDraft.sapCode, sku: '', category: CATEGORIES[0],
+      rate: prefillDraft.rate || 0,
+      customerRates: prefillDraft.customer ? { [prefillDraft.customer]: prefillDraft.rate || 0 } : {},
+      size: '', minThreshold: 100,
+      mappedCustomers: prefillDraft.customer ? [prefillDraft.customer] : [],
+      itemWeight: 0, itemLength: 0, customerRMMappings: {},
+      hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false
+    });
+    setShowModal(true);
+    onDraftConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillDraft]);
+
   const handleOpenEdit = (e: React.MouseEvent, p: Part) => {
     e.stopPropagation();
     setEditingId(p.id);
@@ -97,8 +127,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
         ? prev.mappedCustomers.filter(c => c !== customerName) 
         : [...prev.mappedCustomers, customerName];
       
-      const nextRates = { ...prev.customerRates };
-      const nextMappings = { ...(prev.customerRMMappings || {}) };
+      const nextRates = { ...prev.customerRates };      const nextMappings = { ...(prev.customerRMMappings || {}) };
       
       if (!isMapped && nextRates[customerName] === undefined) {
         nextRates[customerName] = prev.rate || 0;

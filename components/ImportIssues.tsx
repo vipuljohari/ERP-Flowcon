@@ -7,13 +7,19 @@ interface Issue {
   type: string;
   invoiceNumber: string;
   date: string;
-  customer: string;
+  customer: string | null;
   rawText: string;
   quantity: number;
+  rate?: number;
   createdAt: string;
 }
 
-const ImportIssues: React.FC = () => {
+interface ImportIssuesProps {
+  onAddToItemMaster?: (draft: { sapCode: string; name: string; customer?: string; rate?: number }) => void;
+  isAdmin?: boolean;
+}
+
+const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin }) => {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,12 +42,28 @@ const ImportIssues: React.FC = () => {
     await deleteDoc(doc(db, 'importIssues', id));
   };
 
+  // rawText looks like "007651155V91 Foot Step Pipe - 38x38" — same
+  // convention used everywhere else in the app: first token is the SAP
+  // code, the rest is the part name. This just gives Item Master's own
+  // Create form a starting point — nothing is saved until the user reviews
+  // and submits that form themselves.
+  const addToItemMaster = (issue: Issue) => {
+    const [sapCode, ...rest] = issue.rawText.trim().split(/\s+/);
+    onAddToItemMaster?.({
+      sapCode: sapCode || '',
+      name: rest.join(' ') || issue.rawText,
+      customer: issue.customer || undefined,
+      rate: issue.rate || undefined,
+    });
+  };
+
   return (
     <div className="p-8 max-w-4xl">
       <h2 className="text-xl font-black text-slate-900 mb-1">Import Issues</h2>
       <p className="text-xs text-slate-500 font-medium mb-6">
         Invoice line items from the Tally connector that couldn't be matched to a part in Item Master.
-        Add the item to Item Master (or fix its SAP code) then dismiss — this doesn't retry automatically.
+        Click "Add to Item Master" to open a pre-filled creation form — review before saving — or fix the
+        SAP code directly in Tally/Item Master and dismiss. This doesn't retry automatically.
       </p>
 
       {error && (
@@ -65,9 +87,16 @@ const ImportIssues: React.FC = () => {
                 Invoice {issue.invoiceNumber} • {issue.customer} • Qty {issue.quantity} • {new Date(issue.date).toLocaleDateString()}
               </p>
             </div>
-            <button onClick={() => dismiss(issue.id)} className="text-xs font-bold text-rose-600 shrink-0 ml-4">
-              Dismiss
-            </button>
+            <div className="flex gap-4 shrink-0 ml-4">
+              {isAdmin && (
+                <button onClick={() => addToItemMaster(issue)} className="text-xs font-bold text-indigo-600">
+                  Add to Item Master
+                </button>
+              )}
+              <button onClick={() => dismiss(issue.id)} className="text-xs font-bold text-rose-600">
+                Dismiss
+              </button>
+            </div>
           </div>
         ))}
       </div>
