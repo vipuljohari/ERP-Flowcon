@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, doc, deleteDoc, orderBy, query, writeBatch } from 'firebase/firestore';
+import * as XLSX from 'xlsx';
 import { db } from '../services/firebase';
 
 interface Issue {
@@ -45,6 +46,69 @@ const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin,
     if (customerFilter === '__unknown__') return !issue.customer;
     return issue.customer === customerFilter;
   });
+
+  // Best-effort split of the leading code cluster in Tally's raw item text
+  // into SAP code + Item code. Tally's own formatting is inconsistent
+  // ("CODE1_CODE2 Name", "CODE1 / CODE2 Name", or just "CODE1 Name") — this
+  // is intentionally liberal since it feeds a spreadsheet for manual review,
+  // not automated matching, so an occasional imperfect split is fine as
+  // long as it's rarely wrong on genuinely single-code items.
+  const splitSapAndItemCode = (rawText: string): { sapCode: string; itemCode: string; partName: string } => {
+    const tokens = rawText.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return { sapCode: '', itemCode: '', partName: '' };
+
+    const first = tokens[0];
+    // Case 1: "CODE1_CODE2 Name..." or "CODE1/CODE2 Name..." — delimiter inside the first token
+    if (first.includes('_') || first.includes('/')) {
+      const sep = first.includes('_') ? '_' : '/';
+      const [sapCode = '', itemCode = ''] = first.split(sep);
+      return { sapCode, itemCode, partName: tokens.slice(1).join(' ') };
+    }
+    // Case 2: "CODE1 / CODE2 Name..." — delimiter as its own token.
+    // Only "/" counts here, not "-": your data uses "-" as plain punctuation
+    // before a name too (e.g. "12001101 - Battery Stopper"), which isn't a
+    // second code — treating "-" the same way misparses that as one.
+    if (tokens[1] === '/' && tokens[2]) {
+      return { sapCode: first, itemCode: tokens[2], partName: tokens.slice(3).join(' ') };
+    }
+    // Case 3: "CODE1 CODE2 Name..." — second token looks code-like (alphanumeric with a digit, 4+ chars) rather than a plain word
+    if (tokens[1] && /^[A-Za-z0-9]{4,}$/.test(tokens[1]) && /\d/.test(tokens[1])) {
+      return { sapCode: first, itemCode: tokens[1], partName: tokens.slice(2).join(' ') };
+    }
+    // Fallback: only one code present — goes to SAP code, per your instruction
+    return { sapCode: first, itemCode: '', partName: tokens.slice(1).join(' ').replace(/^-\s*/, '') };
+  };
+
+  const deriveVoucherType = (invoiceNumber: string): string => {
+    if (invoiceNumber.includes('/BT/')) return 'Branch Transfer';
+    if (invoiceNumber.includes('/DC/')) return 'Challan';
+    return 'Sales';
+  };
+
+  const exportToExcel = () => {
+    const rows = filteredIssues.map((issue) => {
+      const { sapCode, itemCode, partName } = splitSapAndItemCode(issue.rawText);
+      const dateObj = new Date(issue.date);
+      return {
+        'Date': isNaN(dateObj.getTime()) ? issue.date : dateObj.toLocaleDateString('en-GB'),
+        'Time (24hr)': 'N/A — Tally date field has no time-of-day', // see note in chat
+        'Document Number': issue.invoiceNumber,
+        'Voucher Type': deriveVoucherType(issue.invoiceNumber),
+        'Customer Name': issue.customer || 'Unassigned',
+        'SAP Code': sapCode,
+        'Item Code': itemCode,
+        'Part Name': partName,
+        'Qty': issue.quantity,
+        'Rate': issue.rate || 0,
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Import Issues');
+    const dateStamp = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(workbook, `Import_Issues_${customerFilter === 'All' ? 'AllCustomers' : customerFilter}_${dateStamp}.xlsx`);
+  };
 
   const dismiss = async (id: string) => {
     await deleteDoc(doc(db, 'importIssues', id));
@@ -114,6 +178,13 @@ const ImportIssues: React.FC<ImportIssuesProps> = ({ onAddToItemMaster, isAdmin,
       <div className="flex justify-between items-start mb-1">
         <h2 className="text-xl font-black text-slate-900">Import Issues</h2>
         <div className="flex items-center gap-3">
+          <button
+            onClick={exportToExcel}
+            disabled={filteredIssues.length === 0}
+            className="px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 text-slate-600 hover:border-emerald-500 hover:text-emerald-600 disabled:opacity-50"
+          >
+            Export to Excel
+          </button>
           {isAdmin && (
             <button
               onClick={runDeduplication}
