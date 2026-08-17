@@ -60,8 +60,12 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
   const isHistorical = forcedMonthDisplay && forcedMonthDisplay !== currentMonthYearLive;
 
   const filteredSales = useMemo(() => {
-    return sales.filter(s => s.customer && s.customer.toUpperCase().trim() === activeCustomer.toUpperCase().trim());
-  }, [sales, activeCustomer]);
+    const validPartIds = new Set(parts.map(p => p.id));
+    return sales.filter(s =>
+      s.customer && s.customer.toUpperCase().trim() === activeCustomer.toUpperCase().trim() &&
+      validPartIds.has(s.partId) // respects whatever Model filter is currently active — parts already comes in pre-filtered
+    );
+  }, [sales, activeCustomer, parts]);
   
   // Grouping Sales by Invoice for the Global Feed
   const recentInvoices = useMemo(() => {
