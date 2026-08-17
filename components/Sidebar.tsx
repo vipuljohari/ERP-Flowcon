@@ -51,7 +51,8 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   if (role === 'accounts' || isAdmin) {
     navItems.splice(navItems.findIndex((i) => i.id === 'sales') + 1 || navItems.length, 0,
-      { id: 'import_issues', label: 'Import Issues', icon: '⚠️' }
+      { id: 'import_issues', label: 'Import Issues', icon: '⚠️' },
+      { id: 'rm_crossbill', label: 'RM Cross-Bill Check', icon: '🧾' }
     );
   }
 

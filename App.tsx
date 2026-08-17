@@ -18,11 +18,12 @@ import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
 import ImportLegacyData from './components/ImportLegacyData';
 import ImportIssues from './components/ImportIssues';
+import RMCrossBillCheck from './components/RMCrossBillCheck';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, canAccessView } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
@@ -70,6 +71,9 @@ const MainApp: React.FC = () => {
   const [customers, setCustomers] = useFirestoreArray<Customer>('customers', INITIAL_CUSTOMERS);
   const [rawMaterials, setRawMaterials] = useFirestoreArray<RawMaterial>('rawMaterials');
   const [rmInwardLogs, setRmInwardLogs] = useFirestoreArray<RMInwardLog>('rmInwardLogs');
+  const [rmManufacturerInvoices, setRmManufacturerInvoices] = useFirestoreArray<RMManufacturerInvoice>('rmManufacturerInvoices');
+  const [rmCrossInvoices, setRmCrossInvoices] = useFirestoreArray<RMCustomerCrossInvoice>('rmCustomerCrossInvoices');
+  const [rmMaterialLengths, setRmMaterialLengths] = useFirestoreArray<RMMaterialLength>('rmMaterialLengths', [], (m) => m.materialCode);
   const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
 
   // Single source of truth for display order across the WHOLE app — the
@@ -1248,6 +1252,18 @@ const MainApp: React.FC = () => {
                 setPendingItemDraft(draft);
                 setCurrentView('item_master');
               }}
+            />
+          )}
+          {canAccessView(role, currentView) && currentView === 'rm_crossbill' && (
+            <RMCrossBillCheck
+              manufacturerInvoices={rmManufacturerInvoices}
+              crossInvoices={rmCrossInvoices}
+              materialLengths={rmMaterialLengths}
+              customers={sortedCustomers}
+              setManufacturerInvoices={setRmManufacturerInvoices}
+              setCrossInvoices={setRmCrossInvoices}
+              setMaterialLengths={setRmMaterialLengths}
+              isAdmin={isAdmin}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}

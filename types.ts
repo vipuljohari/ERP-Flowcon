@@ -35,7 +35,7 @@ export interface Company {
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   admin: ['*'],
   store: ['dashboard', 'inventory', 'inward_logs', 'item_master'],
-  accounts: ['dashboard', 'sales', 'data_mgmt', 'customer_master', 'import_issues'],
+  accounts: ['dashboard', 'sales', 'data_mgmt', 'customer_master', 'import_issues', 'rm_crossbill'],
   ppc: ['dashboard', 'schedule', 'dispatch_daily', 'sales', 'inventory', 'analytics'],
 };
 
@@ -79,6 +79,45 @@ export interface Part {
   customScrapMm?: number; // custom scrap value in mm
   sortOrder?: number; // Admin-controlled manual display order
   excludeFromBTDispatch?: boolean; // job-work exception: BT challans for this part are NOT dispatch — the real Sales Invoice after it returns from Unit 1 is what counts
+}
+
+export interface RMManufacturerInvoice {
+  id: string;
+  manufacturerName: string; // e.g. "Tube Investments of India Ltd"
+  customerName: string; // the reselling customer expected to cross-invoice you, e.g. "SIAC-SKH..."
+  invoiceNo: string;
+  date: string; // ISO
+  materialName: string;
+  materialCode: string;
+  quantityPcs: number;
+  ratePerPc: number;
+  itemValue: number;
+  matchedCrossInvoiceId?: string; // set once a corresponding customer invoice is entered
+  createdAt: string;
+}
+
+export interface RMCustomerCrossInvoice {
+  id: string;
+  customerName: string;
+  invoiceNo: string;
+  date: string;
+  refManufacturerInvoiceId: string; // links back to RMManufacturerInvoice.id
+  materialName: string;
+  materialCode: string;
+  quantityMtr: number;
+  rate: number;
+  itemValue: number;
+  createdAt: string;
+}
+
+// One doc per material code (doc id = materialCode) — the piece length (mm)
+// entered once, reused automatically on every future invoice for that code,
+// so the Pcs -> Meter conversion can be checked without re-asking each time.
+export interface RMMaterialLength {
+  materialCode: string;
+  materialName: string;
+  lengthMm: number;
+  updatedAt: string;
 }
 
 export interface RawMaterial {
