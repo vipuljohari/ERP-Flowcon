@@ -161,7 +161,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <div key={inv.id} className={`border rounded-2xl px-5 py-4 flex justify-between items-center ${band.color}`}>
                 <div>
                   <p className="font-bold text-slate-900 text-sm">{inv.materialName} <span className="text-xs text-slate-400 font-mono ml-1">{inv.materialCode}</span></p>
-                  <p className="text-xs mt-1">{inv.manufacturerName} → {inv.customerName} • Invoice {inv.invoiceNo} • {new Date(inv.date).toLocaleDateString('en-GB')} • {inv.quantityPcs} Pcs • ₹{inv.itemValue.toLocaleString('en-IN')}</p>
+                  <p className="text-xs mt-1">{inv.manufacturerName} → {inv.customerName} • Invoice {inv.invoiceNo} • {new Date(inv.date).toLocaleDateString('en-GB')} • {inv.quantityPcs} Pcs • ₹{(inv.itemValue ?? 0).toLocaleString('en-IN')}</p>
                 </div>
                 <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border">{band.label} · {days}d</span>
               </div>
@@ -185,7 +185,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
           {matched.map(inv => {
             const cross = crossInvoices.find(c => c.id === inv.matchedCrossInvoiceId);
             if (!cross) return null;
-            const markupPct = ((cross.itemValue - inv.itemValue) / inv.itemValue) * 100;
+            const safeInvValue = inv.itemValue ?? 0;
+            const safeCrossValue = cross.itemValue ?? 0;
+            const markupPct = safeInvValue === 0 ? 0 : ((safeCrossValue - safeInvValue) / safeInvValue) * 100;
             const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === inv.materialCode.toUpperCase());
             const expectedMtr = lengthEntry ? (inv.quantityPcs * lengthEntry.lengthMm) / 1000 : null;
             const qtyMismatch = expectedMtr !== null && Math.abs(expectedMtr - cross.quantityMtr) / expectedMtr > 0.01;
@@ -202,12 +204,12 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                   <div className="bg-slate-50 rounded-xl px-3 py-2">
                     <p className="font-black text-slate-400 uppercase tracking-widest text-[9px] mb-1">{inv.manufacturerName}</p>
                     <p className="text-slate-600">Invoice {inv.invoiceNo} • {new Date(inv.date).toLocaleDateString('en-GB')}</p>
-                    <p className="text-slate-900 font-bold mt-1">{inv.quantityPcs} Pcs @ ₹{inv.ratePerPc} = ₹{inv.itemValue.toLocaleString('en-IN')}</p>
+                    <p className="text-slate-900 font-bold mt-1">{inv.quantityPcs} Pcs @ ₹{inv.ratePerPc} = ₹{safeInvValue.toLocaleString('en-IN')}</p>
                   </div>
                   <div className="bg-indigo-50/50 rounded-xl px-3 py-2">
                     <p className="font-black text-indigo-400 uppercase tracking-widest text-[9px] mb-1">{cross.customerName}</p>
                     <p className="text-slate-600">Invoice {cross.invoiceNo} • {new Date(cross.date).toLocaleDateString('en-GB')}</p>
-                    <p className="text-slate-900 font-bold mt-1">{cross.quantityMtr} Mtr @ ₹{cross.rate} = ₹{cross.itemValue.toLocaleString('en-IN')}</p>
+                    <p className="text-slate-900 font-bold mt-1">{cross.quantityMtr} Mtr @ ₹{cross.rate} = ₹{safeCrossValue.toLocaleString('en-IN')}</p>
                   </div>
                 </div>
                 {qtyMismatch && (
