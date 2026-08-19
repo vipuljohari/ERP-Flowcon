@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer } from '../types';
-import Combobox from './Combobox';
+
+const NEW_OPTION = '__new__';
 
 interface RMCrossBillCheckProps {
   manufacturerInvoices: RMManufacturerInvoice[];
@@ -104,6 +105,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0,
   });
   const [mfgLengthInput, setMfgLengthInput] = useState('');
+  const [addingNewManufacturer, setAddingNewManufacturer] = useState(false);
+  const [addingNewMaterial, setAddingNewMaterial] = useState(false);
   const knownLength = materialLengths.find(m => m.materialCode.toUpperCase() === mfgForm.materialCode.toUpperCase().trim());
 
   // Manufacturer names seen before, for the dropdown suggestions on the Add
@@ -143,21 +146,19 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     () => Array.from(new Set(mfgMaterialsForSelectedManufacturer.map(m => m.materialName))),
     [mfgMaterialsForSelectedManufacturer]
   );
-  const mfgMaterialCodeOptions = useMemo(
-    () => Array.from(new Set(mfgMaterialsForSelectedManufacturer.map(m => m.materialCode))),
-    [mfgMaterialsForSelectedManufacturer]
-  );
 
-  // Pre-fill the piece length from the material name whenever we land on a
-  // code we don't already have a known length for. Only fires when the
-  // field is currently empty, so it never overwrites a value you've typed
-  // or corrected yourself.
+  // When adding a brand-new material, pre-fill the piece length from the
+  // material name as you type it (see parsePieceLengthFromMaterialName)
+  // so it's a starting point, not a blank box — still fully editable.
+  // Existing materials skip this entirely: their length comes straight
+  // from the recorded value and is locked (see the Material Name select
+  // below), never re-guessed from the name.
   useEffect(() => {
-    if (!mfgForm.materialCode.trim() || knownLength) return;
+    if (!addingNewMaterial) return;
     if (mfgLengthInput) return;
     const parsed = parsePieceLengthFromMaterialName(mfgForm.materialName);
     if (parsed !== null) setMfgLengthInput(String(parsed));
-  }, [mfgForm.materialCode, mfgForm.materialName, knownLength, mfgLengthInput]);
+  }, [addingNewMaterial, mfgForm.materialName, mfgLengthInput]);
 
   const submitMfgInvoice = (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,6 +172,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     }
     setMfgForm({ manufacturerName: mfgForm.manufacturerName, customerName: mfgForm.customerName, invoiceNo: '', date: '', materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0 });
     setMfgLengthInput('');
+    setAddingNewMaterial(false);
     setShowMfgForm(false);
   };
 
@@ -311,14 +313,41 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             <h3 className="text-lg font-black text-slate-900 mb-4">Add Manufacturer Invoice</h3>
             <form onSubmit={submitMfgInvoice} className="space-y-3">
               <FormField label="Manufacturer Name">
-                <Combobox
-                  required
-                  value={mfgForm.manufacturerName}
-                  onChange={(v) => setMfgForm({ ...mfgForm, manufacturerName: v })}
-                  options={knownManufacturerNames}
-                  placeholder="e.g. Tube Investments of India Ltd"
-                  newItemLabel="manufacturer"
-                />
+                <select
+                  required={!addingNewManufacturer}
+                  value={addingNewManufacturer ? NEW_OPTION : mfgForm.manufacturerName}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    // Manufacturer changed — the material list below is
+                    // scoped to whichever manufacturer is selected, so
+                    // whatever material was picked no longer applies.
+                    setAddingNewMaterial(false);
+                    setMfgLengthInput('');
+                    if (v === NEW_OPTION) {
+                      setAddingNewManufacturer(true);
+                      setMfgForm({ ...mfgForm, manufacturerName: '', materialName: '', materialCode: '' });
+                    } else {
+                      setAddingNewManufacturer(false);
+                      setMfgForm({ ...mfgForm, manufacturerName: v, materialName: '', materialCode: '' });
+                    }
+                  }}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+                >
+                  <option value="">Select manufacturer</option>
+                  {knownManufacturerNames.map(name => <option key={name} value={name}>{name}</option>)}
+                  <option value={NEW_OPTION}>+ Add New Manufacturer</option>
+                </select>
+                {addingNewManufacturer && (
+                  <div className="mt-2">
+                    <input required autoFocus placeholder="e.g. Tube Investments of India Ltd" value={mfgForm.manufacturerName}
+                      onChange={(e) => setMfgForm({ ...mfgForm, manufacturerName: e.target.value })}
+                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                    <button type="button" onClick={() => { setAddingNewManufacturer(false); setMfgForm({ ...mfgForm, manufacturerName: '' }); }}
+                      className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 mt-1 px-1">
+                      ‹ Back to list
+                    </button>
+                  </div>
+                )}
               </FormField>
               <FormField label="Cross-Invoicing Customer">
                 <select required value={mfgForm.customerName} onChange={(e) => setMfgForm({ ...mfgForm, customerName: e.target.value })}
@@ -340,48 +369,60 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 </FormField>
               </div>
               <FormField label="Material Name">
-                <Combobox
-                  required
-                  value={mfgForm.materialName}
-                  onChange={(v) => {
-                    const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName.toLowerCase() === v.trim().toLowerCase());
-                    setMfgForm({ ...mfgForm, materialName: v, materialCode: match ? match.materialCode : mfgForm.materialCode });
+                <select
+                  required={!addingNewMaterial}
+                  value={addingNewMaterial ? NEW_OPTION : mfgForm.materialName}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === NEW_OPTION) {
+                      setAddingNewMaterial(true);
+                      setMfgForm({ ...mfgForm, materialName: '', materialCode: '' });
+                      setMfgLengthInput('');
+                    } else {
+                      setAddingNewMaterial(false);
+                      const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName === v);
+                      const code = match ? match.materialCode : '';
+                      const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === code.toUpperCase());
+                      setMfgForm({ ...mfgForm, materialName: v, materialCode: code });
+                      setMfgLengthInput(lengthEntry ? String(lengthEntry.lengthMm) : '');
+                    }
                   }}
-                  options={mfgMaterialNameOptions}
-                  placeholder="Material name"
-                  newItemLabel="material name"
-                />
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+                >
+                  <option value="">Select material</option>
+                  {mfgMaterialNameOptions.map(name => <option key={name} value={name}>{name}</option>)}
+                  <option value={NEW_OPTION}>+ Add New Material</option>
+                </select>
               </FormField>
-              <FormField label="Material Code">
-                <Combobox
-                  required
-                  value={mfgForm.materialCode}
-                  onChange={(v) => {
-                    const matchInMfgHistory = mfgMaterialsForSelectedManufacturer.find(m => m.materialCode.toLowerCase() === v.trim().toLowerCase());
-                    const matchInGlobalLengths = materialLengths.find(m => m.materialCode.toLowerCase() === v.trim().toLowerCase());
-                    const matchedName = matchInMfgHistory?.materialName || matchInGlobalLengths?.materialName;
-                    setMfgForm({ ...mfgForm, materialCode: v, materialName: matchedName || mfgForm.materialName });
-                  }}
-                  options={mfgMaterialCodeOptions}
-                  placeholder="Material code"
-                  newItemLabel="material code"
-                />
-              </FormField>
-              {mfgForm.materialCode.trim() && (
-                knownLength
-                  ? <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">Known piece length: {knownLength.lengthMm}mm — reused automatically.</p>
-                  : (
-                    <FormField label="Piece Length (mm)">
-                      <input type="number" placeholder="Piece length in mm (for the Pcs→Meter check)" value={mfgLengthInput}
-                        onChange={(e) => setMfgLengthInput(e.target.value)}
-                        className="w-full border-2 border-amber-200 bg-amber-50/50 rounded-xl px-3 py-2 text-sm" />
-                      <p className="text-[10px] text-slate-400 mt-1 px-1">
-                        {parsePieceLengthFromMaterialName(mfgForm.materialName) !== null
-                          ? 'Auto-detected from the material name — check it\'s right, then it\'s reused on every future invoice for this code.'
-                          : 'First time seeing this code — enter once, reused on every future invoice.'}
-                      </p>
-                    </FormField>
-                  )
+              {addingNewMaterial ? (
+                <>
+                  <FormField label="Material Code">
+                    <input required placeholder="Material code" value={mfgForm.materialCode}
+                      onChange={(e) => setMfgForm({ ...mfgForm, materialCode: e.target.value })}
+                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                  </FormField>
+                  <FormField label="Piece Length (mm)">
+                    <input type="number" placeholder="Piece length in mm (for the Pcs→Meter check)" value={mfgLengthInput}
+                      onChange={(e) => setMfgLengthInput(e.target.value)}
+                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                    <p className="text-[10px] text-slate-400 mt-1 px-1">
+                      {parsePieceLengthFromMaterialName(mfgForm.materialName) !== null
+                        ? 'Auto-detected from the material name — check it\'s right, then it\'s reused (locked) on every future invoice for this material.'
+                        : 'New material — enter once, then it\'s reused (locked) on every future invoice for this material.'}
+                    </p>
+                  </FormField>
+                </>
+              ) : mfgForm.materialName && (
+                <div className="grid grid-cols-2 gap-3">
+                  <FormField label="Material Code">
+                    <input disabled value={mfgForm.materialCode} placeholder="—"
+                      className="w-full border-2 border-slate-100 bg-slate-50 text-slate-500 rounded-xl px-3 py-2 text-sm cursor-not-allowed" />
+                  </FormField>
+                  <FormField label="Piece Length (mm)">
+                    <input disabled value={mfgLengthInput} placeholder="Not recorded"
+                      className="w-full border-2 border-slate-100 bg-slate-50 text-slate-500 rounded-xl px-3 py-2 text-sm cursor-not-allowed" />
+                  </FormField>
+                </div>
               )}
               <div className="grid grid-cols-3 gap-3">
                 <FormField label="Qty (Pcs)">
