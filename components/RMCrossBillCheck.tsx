@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer } from '../types';
+import Combobox from './Combobox';
 
 interface RMCrossBillCheckProps {
   manufacturerInvoices: RMManufacturerInvoice[];
@@ -20,6 +21,23 @@ const ageBand = (days: number) => {
   if (days <= 21) return { label: 'Normal wait', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
   if (days <= 42) return { label: 'Getting old', color: 'bg-amber-50 text-amber-700 border-amber-200' };
   return { label: 'Overdue — chase this', color: 'bg-rose-50 text-rose-700 border-rose-200' };
+};
+
+// Many material names encode the piece length as the LAST number in a
+// dimension chain like "60x30x3x4250" (width x height x thickness x length,
+// all mm) right before the trailing "-<finish>" text — e.g.
+// "ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" is a 60x30x3mm rectangular
+// tube cut to 4250mm. This pulls that trailing number out so the piece
+// length field can be pre-filled instead of re-typed — always editable,
+// since this is a best-effort guess at your naming convention, not a
+// guarantee.
+const parsePieceLengthFromMaterialName = (name: string): number | null => {
+  const chains = name.match(/\d+(?:\.\d+)?(?:\s*x\s*\d+(?:\.\d+)?){1,}/gi);
+  if (!chains || chains.length === 0) return null;
+  const lastChain = chains[chains.length - 1];
+  const numbers = lastChain.split(/x/i).map(s => parseFloat(s.trim()));
+  const lastNumber = numbers[numbers.length - 1];
+  return Number.isFinite(lastNumber) ? lastNumber : null;
 };
 
 // Permanent field header above an input/select — unlike a placeholder, this
@@ -120,6 +138,26 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     });
     return result.sort((a, b) => a.materialName.localeCompare(b.materialName));
   }, [manufacturerInvoices, mfgForm.manufacturerName]);
+
+  const mfgMaterialNameOptions = useMemo(
+    () => Array.from(new Set(mfgMaterialsForSelectedManufacturer.map(m => m.materialName))),
+    [mfgMaterialsForSelectedManufacturer]
+  );
+  const mfgMaterialCodeOptions = useMemo(
+    () => Array.from(new Set(mfgMaterialsForSelectedManufacturer.map(m => m.materialCode))),
+    [mfgMaterialsForSelectedManufacturer]
+  );
+
+  // Pre-fill the piece length from the material name whenever we land on a
+  // code we don't already have a known length for. Only fires when the
+  // field is currently empty, so it never overwrites a value you've typed
+  // or corrected yourself.
+  useEffect(() => {
+    if (!mfgForm.materialCode.trim() || knownLength) return;
+    if (mfgLengthInput) return;
+    const parsed = parsePieceLengthFromMaterialName(mfgForm.materialName);
+    if (parsed !== null) setMfgLengthInput(String(parsed));
+  }, [mfgForm.materialCode, mfgForm.materialName, knownLength, mfgLengthInput]);
 
   const submitMfgInvoice = (e: React.FormEvent) => {
     e.preventDefault();
@@ -273,12 +311,14 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             <h3 className="text-lg font-black text-slate-900 mb-4">Add Manufacturer Invoice</h3>
             <form onSubmit={submitMfgInvoice} className="space-y-3">
               <FormField label="Manufacturer Name">
-                <input required list="mfgManufacturerNameList" placeholder="e.g. Tube Investments of India Ltd" value={mfgForm.manufacturerName}
-                  onChange={(e) => setMfgForm({ ...mfgForm, manufacturerName: e.target.value })}
-                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <datalist id="mfgManufacturerNameList">
-                  {knownManufacturerNames.map(name => <option key={name} value={name} />)}
-                </datalist>
+                <Combobox
+                  required
+                  value={mfgForm.manufacturerName}
+                  onChange={(v) => setMfgForm({ ...mfgForm, manufacturerName: v })}
+                  options={knownManufacturerNames}
+                  placeholder="e.g. Tube Investments of India Ltd"
+                  newItemLabel="manufacturer"
+                />
               </FormField>
               <FormField label="Cross-Invoicing Customer">
                 <select required value={mfgForm.customerName} onChange={(e) => setMfgForm({ ...mfgForm, customerName: e.target.value })}
@@ -300,49 +340,46 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 </FormField>
               </div>
               <FormField label="Material Name">
-                <input required list="mfgMaterialNameList" placeholder="Material name" value={mfgForm.materialName}
-                  onChange={(e) => {
-                    const typedName = e.target.value;
-                    const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName.toLowerCase() === typedName.trim().toLowerCase());
-                    setMfgForm({ ...mfgForm, materialName: typedName, materialCode: match ? match.materialCode : mfgForm.materialCode });
+                <Combobox
+                  required
+                  value={mfgForm.materialName}
+                  onChange={(v) => {
+                    const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName.toLowerCase() === v.trim().toLowerCase());
+                    setMfgForm({ ...mfgForm, materialName: v, materialCode: match ? match.materialCode : mfgForm.materialCode });
                   }}
-                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <datalist id="mfgMaterialNameList">
-                  {mfgMaterialsForSelectedManufacturer.map(m => <option key={`${m.materialName}::${m.materialCode}`} value={m.materialName} />)}
-                </datalist>
+                  options={mfgMaterialNameOptions}
+                  placeholder="Material name"
+                  newItemLabel="material name"
+                />
               </FormField>
               <FormField label="Material Code">
-                <input
+                <Combobox
                   required
-                  list="mfgMaterialCodeList"
-                  placeholder="Material code"
                   value={mfgForm.materialCode}
-                  onChange={(e) => {
-                    const typedCode = e.target.value;
-                    const matchInMfgHistory = mfgMaterialsForSelectedManufacturer.find(m => m.materialCode.toLowerCase() === typedCode.trim().toLowerCase());
-                    const matchInGlobalLengths = materialLengths.find(m => m.materialCode.toLowerCase() === typedCode.trim().toLowerCase());
+                  onChange={(v) => {
+                    const matchInMfgHistory = mfgMaterialsForSelectedManufacturer.find(m => m.materialCode.toLowerCase() === v.trim().toLowerCase());
+                    const matchInGlobalLengths = materialLengths.find(m => m.materialCode.toLowerCase() === v.trim().toLowerCase());
                     const matchedName = matchInMfgHistory?.materialName || matchInGlobalLengths?.materialName;
-                    setMfgForm({
-                      ...mfgForm,
-                      materialCode: typedCode,
-                      materialName: matchedName || mfgForm.materialName,
-                    });
+                    setMfgForm({ ...mfgForm, materialCode: v, materialName: matchedName || mfgForm.materialName });
                   }}
-                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+                  options={mfgMaterialCodeOptions}
+                  placeholder="Material code"
+                  newItemLabel="material code"
                 />
-                <datalist id="mfgMaterialCodeList">
-                  {mfgMaterialsForSelectedManufacturer.map(m => <option key={`${m.materialCode}::${m.materialName}`} value={m.materialCode} />)}
-                </datalist>
               </FormField>
               {mfgForm.materialCode.trim() && (
                 knownLength
                   ? <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">Known piece length: {knownLength.lengthMm}mm — reused automatically.</p>
                   : (
                     <FormField label="Piece Length (mm)">
-                      <input type="number" placeholder="New material — piece length in mm (for the Pcs→Meter check)" value={mfgLengthInput}
+                      <input type="number" placeholder="Piece length in mm (for the Pcs→Meter check)" value={mfgLengthInput}
                         onChange={(e) => setMfgLengthInput(e.target.value)}
                         className="w-full border-2 border-amber-200 bg-amber-50/50 rounded-xl px-3 py-2 text-sm" />
-                      <p className="text-[10px] text-slate-400 mt-1 px-1">First time seeing this code — enter once, reused on every future invoice.</p>
+                      <p className="text-[10px] text-slate-400 mt-1 px-1">
+                        {parsePieceLengthFromMaterialName(mfgForm.materialName) !== null
+                          ? 'Auto-detected from the material name — check it\'s right, then it\'s reused on every future invoice for this code.'
+                          : 'First time seeing this code — enter once, reused on every future invoice.'}
+                      </p>
                     </FormField>
                   )
               )}
