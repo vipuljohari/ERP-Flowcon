@@ -19,6 +19,7 @@ import CompanyMaster from './components/CompanyMaster';
 import ImportLegacyData from './components/ImportLegacyData';
 import ImportIssues from './components/ImportIssues';
 import RMCrossBillCheck from './components/RMCrossBillCheck';
+import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
@@ -1003,6 +1004,7 @@ const MainApp: React.FC = () => {
               </div>
             )}
           </div>
+          <ErrorBoundary key={currentView} label={currentView}>
           {!canAccessView(role, currentView) ? (
             <div className="p-10 bg-rose-50 rounded-2xl text-rose-600 font-bold text-sm">
               Your role ({role}) doesn't have access to this section.
@@ -1267,6 +1269,7 @@ const MainApp: React.FC = () => {
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}
+          </ErrorBoundary>
         </div>
       </main>
     </div>
