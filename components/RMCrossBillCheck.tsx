@@ -22,6 +22,16 @@ const ageBand = (days: number) => {
   return { label: 'Overdue — chase this', color: 'bg-rose-50 text-rose-700 border-rose-200' };
 };
 
+// Permanent field header above an input/select — unlike a placeholder, this
+// stays visible once the field has a value, so it's always clear what the
+// box is for even after it's filled in.
+const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div>
+    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1 px-1">{label}</label>
+    {children}
+  </div>
+);
+
 const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   manufacturerInvoices, crossInvoices, materialLengths, customers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
@@ -77,6 +87,39 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   });
   const [mfgLengthInput, setMfgLengthInput] = useState('');
   const knownLength = materialLengths.find(m => m.materialCode.toUpperCase() === mfgForm.materialCode.toUpperCase().trim());
+
+  // Manufacturer names seen before, for the dropdown suggestions on the Add
+  // Manufacturer Invoice form. Typing a name not in this list is still fine —
+  // it just means a new manufacturer.
+  const knownManufacturerNames = useMemo(
+    () => Array.from(new Set(manufacturerInvoices.map(m => m.manufacturerName.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [manufacturerInvoices]
+  );
+
+  // Material name/code pairs to suggest for the Material fields. Once the
+  // manufacturer name matches one we've seen before, this narrows to just
+  // that manufacturer's materials (per user request: "once I select
+  // manufacturer name, its material name/code should come in the dropdown").
+  // With no manufacturer typed yet, it shows everything as a starting point.
+  // A manufacturer name that doesn't match anything known yields no
+  // suggestions (correct — no history exists for it) but the fields stay
+  // free text either way, so a brand-new material/code is always fine.
+  const mfgMaterialsForSelectedManufacturer = useMemo(() => {
+    const typed = mfgForm.manufacturerName.trim().toLowerCase();
+    const source = typed
+      ? manufacturerInvoices.filter(m => m.manufacturerName.trim().toLowerCase() === typed)
+      : manufacturerInvoices;
+    const seen = new Set<string>();
+    const result: { materialName: string; materialCode: string }[] = [];
+    source.forEach(m => {
+      const key = `${m.materialName}::${m.materialCode}`;
+      if (m.materialCode && !seen.has(key)) {
+        seen.add(key);
+        result.push({ materialName: m.materialName, materialCode: m.materialCode });
+      }
+    });
+    return result.sort((a, b) => a.materialName.localeCompare(b.materialName));
+  }, [manufacturerInvoices, mfgForm.manufacturerName]);
 
   const submitMfgInvoice = (e: React.FormEvent) => {
     e.preventDefault();
@@ -229,69 +272,96 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
           <div className="bg-white rounded-[2rem] shadow-2xl max-w-lg w-full p-8 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-black text-slate-900 mb-4">Add Manufacturer Invoice</h3>
             <form onSubmit={submitMfgInvoice} className="space-y-3">
-              <input required placeholder="Manufacturer name (e.g. Tube Investments of India Ltd)" value={mfgForm.manufacturerName}
-                onChange={(e) => setMfgForm({ ...mfgForm, manufacturerName: e.target.value })}
-                className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-              <select required value={mfgForm.customerName} onChange={(e) => setMfgForm({ ...mfgForm, customerName: e.target.value })}
-                className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
-                <option value="">Which customer will cross-invoice you?</option>
-                {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
+              <FormField label="Manufacturer Name">
+                <input required list="mfgManufacturerNameList" placeholder="e.g. Tube Investments of India Ltd" value={mfgForm.manufacturerName}
+                  onChange={(e) => setMfgForm({ ...mfgForm, manufacturerName: e.target.value })}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <datalist id="mfgManufacturerNameList">
+                  {knownManufacturerNames.map(name => <option key={name} value={name} />)}
+                </datalist>
+              </FormField>
+              <FormField label="Cross-Invoicing Customer">
+                <select required value={mfgForm.customerName} onChange={(e) => setMfgForm({ ...mfgForm, customerName: e.target.value })}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                  <option value="">Which customer will cross-invoice you?</option>
+                  {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+              </FormField>
               <div className="grid grid-cols-2 gap-3">
-                <input required placeholder="Invoice No" value={mfgForm.invoiceNo}
-                  onChange={(e) => setMfgForm({ ...mfgForm, invoiceNo: e.target.value })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <input required type="date" value={mfgForm.date}
-                  onChange={(e) => setMfgForm({ ...mfgForm, date: e.target.value })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <FormField label="Invoice No">
+                  <input required placeholder="Invoice No" value={mfgForm.invoiceNo}
+                    onChange={(e) => setMfgForm({ ...mfgForm, invoiceNo: e.target.value })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Date">
+                  <input required type="date" value={mfgForm.date}
+                    onChange={(e) => setMfgForm({ ...mfgForm, date: e.target.value })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
               </div>
-              <input required placeholder="Material name" value={mfgForm.materialName}
-                onChange={(e) => setMfgForm({ ...mfgForm, materialName: e.target.value })}
-                className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-              <select
-                required
-                value={mfgForm.materialCode}
-                onChange={(e) => {
-                  if (e.target.value === '__new__') {
-                    const entered = window.prompt('New material code:')?.trim();
-                    if (entered) setMfgForm({ ...mfgForm, materialCode: entered });
-                    return;
-                  }
-                  const existing = materialLengths.find(m => m.materialCode === e.target.value);
-                  setMfgForm({
-                    ...mfgForm,
-                    materialCode: e.target.value,
-                    materialName: existing ? existing.materialName : mfgForm.materialName,
-                  });
-                }}
-                className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
-              >
-                <option value="">Material code</option>
-                {materialLengths.map(m => <option key={m.materialCode} value={m.materialCode}>{m.materialCode} — {m.materialName}</option>)}
-                <option value="__new__">+ Add new material code...</option>
-              </select>
+              <FormField label="Material Name">
+                <input required list="mfgMaterialNameList" placeholder="Material name" value={mfgForm.materialName}
+                  onChange={(e) => {
+                    const typedName = e.target.value;
+                    const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName.toLowerCase() === typedName.trim().toLowerCase());
+                    setMfgForm({ ...mfgForm, materialName: typedName, materialCode: match ? match.materialCode : mfgForm.materialCode });
+                  }}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <datalist id="mfgMaterialNameList">
+                  {mfgMaterialsForSelectedManufacturer.map(m => <option key={`${m.materialName}::${m.materialCode}`} value={m.materialName} />)}
+                </datalist>
+              </FormField>
+              <FormField label="Material Code">
+                <input
+                  required
+                  list="mfgMaterialCodeList"
+                  placeholder="Material code"
+                  value={mfgForm.materialCode}
+                  onChange={(e) => {
+                    const typedCode = e.target.value;
+                    const matchInMfgHistory = mfgMaterialsForSelectedManufacturer.find(m => m.materialCode.toLowerCase() === typedCode.trim().toLowerCase());
+                    const matchInGlobalLengths = materialLengths.find(m => m.materialCode.toLowerCase() === typedCode.trim().toLowerCase());
+                    const matchedName = matchInMfgHistory?.materialName || matchInGlobalLengths?.materialName;
+                    setMfgForm({
+                      ...mfgForm,
+                      materialCode: typedCode,
+                      materialName: matchedName || mfgForm.materialName,
+                    });
+                  }}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+                />
+                <datalist id="mfgMaterialCodeList">
+                  {mfgMaterialsForSelectedManufacturer.map(m => <option key={`${m.materialCode}::${m.materialName}`} value={m.materialCode} />)}
+                </datalist>
+              </FormField>
               {mfgForm.materialCode.trim() && (
                 knownLength
                   ? <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2">Known piece length: {knownLength.lengthMm}mm — reused automatically.</p>
                   : (
-                    <div>
+                    <FormField label="Piece Length (mm)">
                       <input type="number" placeholder="New material — piece length in mm (for the Pcs→Meter check)" value={mfgLengthInput}
                         onChange={(e) => setMfgLengthInput(e.target.value)}
                         className="w-full border-2 border-amber-200 bg-amber-50/50 rounded-xl px-3 py-2 text-sm" />
                       <p className="text-[10px] text-slate-400 mt-1 px-1">First time seeing this code — enter once, reused on every future invoice.</p>
-                    </div>
+                    </FormField>
                   )
               )}
               <div className="grid grid-cols-3 gap-3">
-                <input required type="number" placeholder="Qty (Pcs)" value={mfgForm.quantityPcs || ''}
-                  onChange={(e) => setMfgForm({ ...mfgForm, quantityPcs: parseFloat(e.target.value) || 0 })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <input required type="number" step="0.01" placeholder="Rate/Pc" value={mfgForm.ratePerPc || ''}
-                  onChange={(e) => setMfgForm({ ...mfgForm, ratePerPc: parseFloat(e.target.value) || 0 })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <input required type="number" step="0.01" placeholder="Item Value" value={mfgForm.itemValue || ''}
-                  onChange={(e) => setMfgForm({ ...mfgForm, itemValue: parseFloat(e.target.value) || 0 })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <FormField label="Qty (Pcs)">
+                  <input required type="number" placeholder="Qty (Pcs)" value={mfgForm.quantityPcs || ''}
+                    onChange={(e) => setMfgForm({ ...mfgForm, quantityPcs: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Rate / Pc">
+                  <input required type="number" step="0.01" placeholder="Rate/Pc" value={mfgForm.ratePerPc || ''}
+                    onChange={(e) => setMfgForm({ ...mfgForm, ratePerPc: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Item Value">
+                  <input required type="number" step="0.01" placeholder="Item Value" value={mfgForm.itemValue || ''}
+                    onChange={(e) => setMfgForm({ ...mfgForm, itemValue: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setShowMfgForm(false)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
@@ -308,42 +378,56 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
           <div className="bg-white rounded-[2rem] shadow-2xl max-w-lg w-full p-8 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-black text-slate-900 mb-4">Add Customer Cross-Invoice</h3>
             <form onSubmit={submitCrossInvoice} className="space-y-3">
-              <select required value={crossForm.refManufacturerInvoiceId}
-                onChange={(e) => setCrossForm({ ...crossForm, refManufacturerInvoiceId: e.target.value })}
-                className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
-                <option value="">Which outstanding manufacturer invoice is this for?</option>
-                {outstanding.map(m => (
-                  <option key={m.id} value={m.id}>{m.manufacturerName} — {m.invoiceNo} — {m.materialName} ({m.materialCode}) — {new Date(m.date).toLocaleDateString('en-GB')}</option>
-                ))}
-              </select>
+              <FormField label="Manufacturer Invoice Being Matched">
+                <select required value={crossForm.refManufacturerInvoiceId}
+                  onChange={(e) => setCrossForm({ ...crossForm, refManufacturerInvoiceId: e.target.value })}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                  <option value="">Which outstanding manufacturer invoice is this for?</option>
+                  {outstanding.map(m => (
+                    <option key={m.id} value={m.id}>{m.manufacturerName} — {m.invoiceNo} — {m.materialName} ({m.materialCode}) — {new Date(m.date).toLocaleDateString('en-GB')}</option>
+                  ))}
+                </select>
+              </FormField>
               {selectedMfgInvoice && (
                 <p className="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
                   Material and code auto-linked from the selected invoice: <strong>{selectedMfgInvoice.materialName}</strong> ({selectedMfgInvoice.materialCode})
                 </p>
               )}
-              <select required value={crossForm.customerName} onChange={(e) => setCrossForm({ ...crossForm, customerName: e.target.value })}
-                className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
-                <option value="">Customer</option>
-                {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
+              <FormField label="Customer">
+                <select required value={crossForm.customerName} onChange={(e) => setCrossForm({ ...crossForm, customerName: e.target.value })}
+                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                  <option value="">Customer</option>
+                  {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+              </FormField>
               <div className="grid grid-cols-2 gap-3">
-                <input required placeholder="Invoice No" value={crossForm.invoiceNo}
-                  onChange={(e) => setCrossForm({ ...crossForm, invoiceNo: e.target.value })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <input required type="date" value={crossForm.date}
-                  onChange={(e) => setCrossForm({ ...crossForm, date: e.target.value })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <FormField label="Invoice No">
+                  <input required placeholder="Invoice No" value={crossForm.invoiceNo}
+                    onChange={(e) => setCrossForm({ ...crossForm, invoiceNo: e.target.value })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Date">
+                  <input required type="date" value={crossForm.date}
+                    onChange={(e) => setCrossForm({ ...crossForm, date: e.target.value })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
               </div>
               <div className="grid grid-cols-3 gap-3">
-                <input required type="number" placeholder="Qty (Mtr)" value={crossForm.quantityMtr || ''}
-                  onChange={(e) => setCrossForm({ ...crossForm, quantityMtr: parseFloat(e.target.value) || 0 })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <input required type="number" step="0.01" placeholder="Rate" value={crossForm.rate || ''}
-                  onChange={(e) => setCrossForm({ ...crossForm, rate: parseFloat(e.target.value) || 0 })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                <input required type="number" step="0.01" placeholder="Item Value" value={crossForm.itemValue || ''}
-                  onChange={(e) => setCrossForm({ ...crossForm, itemValue: parseFloat(e.target.value) || 0 })}
-                  className="border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <FormField label="Qty (Mtr)">
+                  <input required type="number" placeholder="Qty (Mtr)" value={crossForm.quantityMtr || ''}
+                    onChange={(e) => setCrossForm({ ...crossForm, quantityMtr: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Rate">
+                  <input required type="number" step="0.01" placeholder="Rate" value={crossForm.rate || ''}
+                    onChange={(e) => setCrossForm({ ...crossForm, rate: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Item Value">
+                  <input required type="number" step="0.01" placeholder="Item Value" value={crossForm.itemValue || ''}
+                    onChange={(e) => setCrossForm({ ...crossForm, itemValue: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setShowCrossForm(false)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
