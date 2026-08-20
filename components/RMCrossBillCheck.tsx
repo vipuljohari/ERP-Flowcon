@@ -100,14 +100,34 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   );
 
   // --- Manufacturer Invoice form ---
-  const [mfgForm, setMfgForm] = useState({
+  const blankMfgForm = () => ({
     manufacturerName: '', customerName: customers[0]?.name || '', invoiceNo: '', date: '',
     materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0,
   });
+  const [mfgForm, setMfgForm] = useState(blankMfgForm);
   const [mfgLengthInput, setMfgLengthInput] = useState('');
   const [addingNewManufacturer, setAddingNewManufacturer] = useState(false);
   const [addingNewMaterial, setAddingNewMaterial] = useState(false);
   const knownLength = materialLengths.find(m => m.materialCode.toUpperCase() === mfgForm.materialCode.toUpperCase().trim());
+
+  // Every open of the modal (via the "+ Manufacturer Invoice" button or
+  // Cancel) should start completely fresh — nothing carried over from a
+  // previous open, whether it was submitted, cancelled, or left mid-"+ Add
+  // New" entry.
+  const openFreshMfgForm = () => {
+    setMfgForm(blankMfgForm());
+    setMfgLengthInput('');
+    setAddingNewManufacturer(false);
+    setAddingNewMaterial(false);
+    setShowMfgForm(true);
+  };
+  const closeMfgForm = () => {
+    setMfgForm(blankMfgForm());
+    setMfgLengthInput('');
+    setAddingNewManufacturer(false);
+    setAddingNewMaterial(false);
+    setShowMfgForm(false);
+  };
 
   // Manufacturer names seen before, for the dropdown suggestions on the Add
   // Manufacturer Invoice form. Typing a name not in this list is still fine —
@@ -216,7 +236,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               Bulk Import from File
             </button>
           )}
-          <button onClick={() => setShowMfgForm(true)} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest">
+          <button onClick={openFreshMfgForm} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest">
             + Manufacturer Invoice
           </button>
           <button onClick={() => setShowCrossForm(true)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest">
@@ -383,8 +403,15 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                       const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName === v);
                       const code = match ? match.materialCode : '';
                       const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === code.toUpperCase());
+                      // No formally recorded length for this code? Fall back
+                      // to parsing it straight out of the material name
+                      // (e.g. "...60x30x3x4250-AS ROLLED" -> 4250) rather
+                      // than showing "Not recorded" when it's plainly right
+                      // there in the name. submitMfgInvoice will persist
+                      // this as the recorded length going forward.
+                      const resolvedLength = lengthEntry ? lengthEntry.lengthMm : parsePieceLengthFromMaterialName(v);
                       setMfgForm({ ...mfgForm, materialName: v, materialCode: code });
-                      setMfgLengthInput(lengthEntry ? String(lengthEntry.lengthMm) : '');
+                      setMfgLengthInput(resolvedLength !== null ? String(resolvedLength) : '');
                     }
                   }}
                   className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
@@ -396,6 +423,11 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               </FormField>
               {addingNewMaterial ? (
                 <>
+                  <FormField label="Material Name">
+                    <input required autoFocus placeholder="e.g. ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" value={mfgForm.materialName}
+                      onChange={(e) => setMfgForm({ ...mfgForm, materialName: e.target.value })}
+                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                  </FormField>
                   <FormField label="Material Code">
                     <input required placeholder="Material code" value={mfgForm.materialCode}
                       onChange={(e) => setMfgForm({ ...mfgForm, materialCode: e.target.value })}
@@ -411,6 +443,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                         : 'New material — enter once, then it\'s reused (locked) on every future invoice for this material.'}
                     </p>
                   </FormField>
+                  <button type="button" onClick={() => { setAddingNewMaterial(false); setMfgForm({ ...mfgForm, materialName: '', materialCode: '' }); setMfgLengthInput(''); }}
+                    className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 px-1 -mt-2">
+                    ‹ Back to list
+                  </button>
                 </>
               ) : mfgForm.materialName && (
                 <div className="grid grid-cols-2 gap-3">
@@ -442,7 +478,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 </FormField>
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowMfgForm(false)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
+                <button type="button" onClick={closeMfgForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
                 <button type="submit" className="flex-[2] py-3 bg-slate-900 text-white rounded-xl font-bold text-sm">Save</button>
               </div>
             </form>
