@@ -24,15 +24,22 @@ const ageBand = (days: number) => {
   return { label: 'Overdue — chase this', color: 'bg-rose-50 text-rose-700 border-rose-200' };
 };
 
-// Many material names encode the piece length as the LAST number in a
-// dimension chain like "60x30x3x4250" (width x height x thickness x length,
-// all mm) right before the trailing "-<finish>" text — e.g.
-// "ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" is a 60x30x3mm rectangular
-// tube cut to 4250mm. This pulls that trailing number out so the piece
-// length field can be pre-filled instead of re-typed — always editable,
-// since this is a best-effort guess at your naming convention, not a
-// guarantee.
+// Material names encode the piece length differently depending on the
+// manufacturer's own convention, so this tries two patterns:
+//   A) a dimension chain followed by "/<length>", e.g.
+//      "80.00X40.00X4.80/5100 YST310" -> 5100 (Avon Tubetech style — the
+//      "/" is an explicit, unambiguous separator, so this is tried first).
+//   B) the LAST number in an all-"x"-separated dimension chain, e.g.
+//      "ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" -> 4250 (Tube
+//      Investments style — length is just the trailing number).
+// Best-effort guess at your naming convention, not a guarantee — always
+// editable/correctable.
 const parsePieceLengthFromMaterialName = (name: string): number | null => {
+  const slashMatch = name.match(/\d+(?:\.\d+)?(?:\s*x\s*\d+(?:\.\d+)?)+\s*\/\s*(\d+(?:\.\d+)?)/i);
+  if (slashMatch) {
+    const length = parseFloat(slashMatch[1]);
+    if (Number.isFinite(length)) return length;
+  }
   const chains = name.match(/\d+(?:\.\d+)?(?:\s*x\s*\d+(?:\.\d+)?){1,}/gi);
   if (!chains || chains.length === 0) return null;
   const lastChain = chains[chains.length - 1];
@@ -61,6 +68,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkFile, setBulkFile] = useState<{ name: string; data: any } | null>(null);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const [showMaterialLengths, setShowMaterialLengths] = useState(false);
+  const [filterManufacturer, setFilterManufacturer] = useState('');
+  const [filterMonth, setFilterMonth] = useState('');
 
   const handleBulkFile = (file: File) => {
     setBulkStatus(null);
@@ -90,6 +100,32 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setBulkFile(null);
   };
 
+  // --- Material Lengths admin editor ---
+  // Piece length is locked on the Manufacturer Invoice form once a material
+  // is selected (by design — see the Material Name field below), which
+  // means a wrong recorded value (e.g. from an early parsing bug, or a
+  // typo) has no other way to get corrected. This gives admins a direct,
+  // explicit place to fix one.
+  const [lengthEdits, setLengthEdits] = useState<Record<string, string>>({});
+  const [justSavedCode, setJustSavedCode] = useState<string | null>(null);
+  useEffect(() => {
+    if (!showMaterialLengths) return;
+    const initial: Record<string, string> = {};
+    materialLengths.forEach(m => { initial[m.materialCode] = String(m.lengthMm); });
+    setLengthEdits(initial);
+    // Only re-seed when the modal opens, not on every materialLengths
+    // change thereafter — otherwise saving one row while another is
+    // mid-edit would wipe out the unsaved one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showMaterialLengths]);
+  const saveMaterialLength = (code: string) => {
+    const parsed = parseFloat(lengthEdits[code]);
+    if (!Number.isFinite(parsed)) return;
+    setMaterialLengths(prev => prev.map(m => m.materialCode === code ? { ...m, lengthMm: parsed, updatedAt: new Date().toISOString() } : m));
+    setJustSavedCode(code);
+    setTimeout(() => setJustSavedCode(current => (current === code ? null : current)), 1500);
+  };
+
   const outstanding = useMemo(
     () => manufacturerInvoices.filter(m => !m.matchedCrossInvoiceId).sort((a, b) => a.date.localeCompare(b.date)),
     [manufacturerInvoices]
@@ -98,6 +134,29 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     () => manufacturerInvoices.filter(m => m.matchedCrossInvoiceId).sort((a, b) => b.date.localeCompare(a.date)),
     [manufacturerInvoices]
   );
+
+  // Filter bar options — manufacturer names and months are both derived
+  // straight from the data on file, so the dropdowns only ever offer
+  // choices that actually have invoices behind them.
+  const filterManufacturerOptions = useMemo(
+    () => Array.from(new Set(manufacturerInvoices.map(m => m.manufacturerName.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [manufacturerInvoices]
+  );
+  const filterMonthOptions = useMemo(() => {
+    const months = new Set(manufacturerInvoices.map(m => (m.date || '').slice(0, 7)).filter(Boolean));
+    return Array.from(months).sort().reverse().map(ym => {
+      const [y, mo] = ym.split('-').map(Number);
+      return { value: ym, label: new Date(y, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) };
+    });
+  }, [manufacturerInvoices]);
+
+  const matchesFilters = (m: RMManufacturerInvoice) =>
+    (!filterManufacturer || m.manufacturerName === filterManufacturer) &&
+    (!filterMonth || (m.date || '').slice(0, 7) === filterMonth);
+
+  const filteredOutstanding = useMemo(() => outstanding.filter(matchesFilters), [outstanding, filterManufacturer, filterMonth]);
+  const filteredMatched = useMemo(() => matched.filter(matchesFilters), [matched, filterManufacturer, filterMonth]);
+  const filtersActive = Boolean(filterManufacturer || filterMonth);
 
   // --- Manufacturer Invoice form ---
   const blankMfgForm = () => ({
@@ -232,6 +291,11 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         </div>
         <div className="flex gap-3 shrink-0">
           {isAdmin && (
+            <button onClick={() => setShowMaterialLengths(true)} className="px-4 py-2 border-2 border-slate-200 text-slate-600 rounded-xl text-xs font-black uppercase tracking-widest hover:border-emerald-500 hover:text-emerald-600">
+              Material Lengths
+            </button>
+          )}
+          {isAdmin && (
             <button onClick={() => setShowBulkImport(true)} className="px-4 py-2 border-2 border-slate-200 text-slate-600 rounded-xl text-xs font-black uppercase tracking-widest hover:border-emerald-500 hover:text-emerald-600">
               Bulk Import from File
             </button>
@@ -248,16 +312,42 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         <div className="mt-3 text-xs font-bold text-emerald-700 bg-emerald-50 rounded-lg px-3 py-2 inline-block">{bulkStatus}</div>
       )}
 
+      {/* Filter bar */}
+      <div className="flex items-end gap-3 mt-6 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
+        <FormField label="Manufacturer">
+          <select value={filterManufacturer} onChange={(e) => setFilterManufacturer(e.target.value)}
+            className="w-48 border-2 border-slate-200 rounded-xl px-3 py-2 text-sm bg-white">
+            <option value="">All manufacturers</option>
+            {filterManufacturerOptions.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </FormField>
+        <FormField label="Month">
+          <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)}
+            className="w-44 border-2 border-slate-200 rounded-xl px-3 py-2 text-sm bg-white">
+            <option value="">All months</option>
+            {filterMonthOptions.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </FormField>
+        {filtersActive && (
+          <button type="button" onClick={() => { setFilterManufacturer(''); setFilterMonth(''); }}
+            className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 pb-2.5">
+            × Clear filters
+          </button>
+        )}
+      </div>
+
       {/* Outstanding */}
       <div className="mt-8">
         <div className="flex items-center gap-3 mb-3">
-          <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Awaiting Customer Invoice ({outstanding.length})</h3>
+          <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Awaiting Customer Invoice ({filteredOutstanding.length})</h3>
         </div>
-        {outstanding.length === 0 && (
-          <div className="bg-emerald-50 text-emerald-700 text-sm font-bold rounded-2xl px-6 py-6 text-center">Nothing outstanding 🎉</div>
+        {filteredOutstanding.length === 0 && (
+          <div className="bg-emerald-50 text-emerald-700 text-sm font-bold rounded-2xl px-6 py-6 text-center">
+            {filtersActive ? 'Nothing outstanding for this filter.' : 'Nothing outstanding 🎉'}
+          </div>
         )}
         <div className="space-y-2">
-          {outstanding.map(inv => {
+          {filteredOutstanding.map(inv => {
             const days = ageInDays(inv.date);
             const band = ageBand(days);
             return (
@@ -276,7 +366,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       {/* Matched */}
       <div className="mt-10">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Matched ({matched.length})</h3>
+          <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Matched ({filteredMatched.length})</h3>
           <div className="flex items-center gap-2">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Alert if markup exceeds</label>
             <input type="number" placeholder="e.g. 3" value={markupThreshold} onChange={(e) => setMarkupThreshold(e.target.value)}
@@ -285,7 +375,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
           </div>
         </div>
         <div className="space-y-2">
-          {matched.map(inv => {
+          {filteredMatched.map(inv => {
             const cross = crossInvoices.find(c => c.id === inv.matchedCrossInvoiceId);
             if (!cross) return null;
             const safeInvValue = inv.itemValue ?? 0;
@@ -577,6 +667,57 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             <div className="flex gap-3">
               <button onClick={() => { setShowBulkImport(false); setBulkFile(null); }} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
               <button onClick={() => { runBulkImport(); setShowBulkImport(false); }} disabled={!bulkFile} className="flex-[2] py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm disabled:opacity-50">Import</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Material Lengths admin modal */}
+      {showMaterialLengths && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-[2rem] shadow-2xl max-w-2xl w-full p-8 max-h-[85vh] flex flex-col">
+            <h3 className="text-lg font-black text-slate-900 mb-1">Material Lengths</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              The recorded piece length (mm) for each material code — used for the Pcs→Meter check, and locked on the
+              Manufacturer Invoice form once a material is selected. Fix a wrong value here.
+            </p>
+            <div className="overflow-y-auto flex-1 -mx-2 px-2 space-y-2">
+              {[...materialLengths].sort((a, b) => a.materialName.localeCompare(b.materialName)).map(m => {
+                const edited = lengthEdits[m.materialCode] ?? String(m.lengthMm);
+                const dirty = parseFloat(edited) !== m.lengthMm;
+                return (
+                  <div key={m.materialCode} className="flex items-center gap-3 border border-slate-100 rounded-xl px-4 py-2.5">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold text-slate-900 truncate">{m.materialName}</p>
+                      <p className="text-xs text-slate-400 font-mono">{m.materialCode}</p>
+                    </div>
+                    <input type="number" value={edited}
+                      onChange={(e) => setLengthEdits({ ...lengthEdits, [m.materialCode]: e.target.value })}
+                      className="w-28 border-2 border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" />
+                    <span className="text-xs text-slate-400 font-bold">mm</span>
+                    <button
+                      type="button"
+                      onClick={() => saveMaterialLength(m.materialCode)}
+                      disabled={!dirty}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${
+                        justSavedCode === m.materialCode
+                          ? 'bg-emerald-600 text-white'
+                          : dirty
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                      }`}
+                    >
+                      {justSavedCode === m.materialCode ? 'Saved' : 'Save'}
+                    </button>
+                  </div>
+                );
+              })}
+              {materialLengths.length === 0 && (
+                <p className="text-sm text-slate-400 text-center py-8">No material lengths recorded yet.</p>
+              )}
+            </div>
+            <div className="flex gap-3 pt-4">
+              <button type="button" onClick={() => setShowMaterialLengths(false)} className="flex-1 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm">Done</button>
             </div>
           </div>
         </div>
