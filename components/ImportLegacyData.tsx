@@ -1,40 +1,57 @@
 import React, { useState } from 'react';
-import { doc, writeBatch, setDoc } from 'firebase/firestore';
+import { doc, writeBatch, getDocs, query, where, documentId, collection } from 'firebase/firestore';
 import { db } from '../services/firebase';
-import { Part, Sale, InwardLog, MonthlyArchive, Customer, RawMaterial, RMInwardLog } from '../types';
+import { Part, InwardLog, RMInwardLog } from '../types';
 
 interface LegacyBackup {
   parts?: Part[];
-  sales?: Sale[];
+  sales?: any[];
   inwardLogs?: InwardLog[];
-  archives?: MonthlyArchive[];
-  customers?: Customer[];
-  rawMaterials?: RawMaterial[];
+  archives?: any[];
+  customers?: any[];
+  rawMaterials?: any[];
   rmInwardLogs?: RMInwardLog[];
   localRMOpeningBalances?: Record<string, string>;
   timestamp?: string;
   lastModifiedBy?: string;
 }
 
-// Matches your old app's backup shape exactly: collection name -> [Firestore
-// collection to write into, how to derive each item's document ID].
-const COLLECTION_MAP: { key: keyof LegacyBackup; firestoreName: string; getId: (item: any) => string }[] = [
-  { key: 'parts', firestoreName: 'parts', getId: (p) => p.id },
-  { key: 'sales', firestoreName: 'sales', getId: (s) => s.id },
-  { key: 'inwardLogs', firestoreName: 'inwardLogs', getId: (l) => l.id },
-  { key: 'customers', firestoreName: 'customers', getId: (c) => c.id },
-  { key: 'rawMaterials', firestoreName: 'rawMaterials', getId: (r) => r.id },
-  { key: 'rmInwardLogs', firestoreName: 'rmInwardLogs', getId: (l) => l.id },
-  { key: 'archives', firestoreName: 'archives', getId: (a) => a.monthKey },
+interface ResultRow {
+  label: string;
+  count: number;
+  note?: string;
+}
+
+// Full-record restore targets — safe to restore wholesale because the live
+// Tally import never writes to either of these two collections at all, so
+// there's nothing live to clobber.
+const FULL_RESTORE_MAP: { key: 'inwardLogs' | 'rmInwardLogs'; firestoreName: string; label: string; getId: (item: any) => string }[] = [
+  { key: 'inwardLogs', firestoreName: 'inwardLogs', label: 'Item-wise Inward Logs', getId: (l) => l.id },
+  { key: 'rmInwardLogs', firestoreName: 'rmInwardLogs', label: 'RM-wise Inward Logs', getId: (l) => l.id },
 ];
+
+// Firestore 'in' queries cap at 30 IDs per query — chunk larger id lists.
+async function findExistingIds(collectionName: string, ids: string[]): Promise<Set<string>> {
+  const existing = new Set<string>();
+  for (let i = 0; i < ids.length; i += 30) {
+    const chunk = ids.slice(i, i + 30);
+    if (chunk.length === 0) continue;
+    const snap = await getDocs(query(collection(db, collectionName), where(documentId(), 'in', chunk)));
+    snap.forEach((d) => existing.add(d.id));
+  }
+  return existing;
+}
 
 const ImportLegacyData: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [backup, setBackup] = useState<LegacyBackup | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<{ collection: string; count: number }[] | null>(null);
+  const [result, setResult] = useState<ResultRow[] | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  const [restoreInwardLogs, setRestoreInwardLogs] = useState(true);
+  const [restoreSchedules, setRestoreSchedules] = useState(true);
 
   const handleFile = (file: File) => {
     setParseError(null);
@@ -53,10 +70,15 @@ const ImportLegacyData: React.FC = () => {
     reader.readAsText(file);
   };
 
+  const partsWithSchedule = (backup?.parts || []).filter(
+    (p) => p && p.id && p.schedules && Object.keys(p.schedules).length > 0
+  );
+
   const counts = backup
     ? [
-        ...COLLECTION_MAP.map(({ key }) => ({ key, count: (backup[key] as any[])?.length || 0 })),
-        { key: 'localRMOpeningBalances', count: Object.keys(backup.localRMOpeningBalances || {}).length },
+        { label: 'Item-wise Inward Logs', count: backup.inwardLogs?.length || 0 },
+        { label: 'RM-wise Inward Logs', count: backup.rmInwardLogs?.length || 0 },
+        { label: 'Item Master parts with a Monthly Schedule', count: partsWithSchedule.length },
       ]
     : [];
 
@@ -65,31 +87,59 @@ const ImportLegacyData: React.FC = () => {
     setImporting(true);
     setImportError(null);
     try {
-      const summary: { collection: string; count: number }[] = [];
-      for (const { key, firestoreName, getId } of COLLECTION_MAP) {
-        const items = (backup[key] as any[]) || [];
-        if (items.length === 0) continue;
+      const summary: ResultRow[] = [];
 
-        // Firestore batches cap at 500 operations — chunk larger collections.
-        for (let i = 0; i < items.length; i += 450) {
-          const chunk = items.slice(i, i + 450);
-          const batch = writeBatch(db);
-          chunk.forEach((item) => {
-            const id = getId(item);
-            if (id) batch.set(doc(db, firestoreName, String(id)), item, { merge: true });
-          });
-          await batch.commit();
+      if (restoreInwardLogs) {
+        for (const { key, firestoreName, label, getId } of FULL_RESTORE_MAP) {
+          const items = (backup[key] as any[]) || [];
+          if (items.length === 0) {
+            summary.push({ label, count: 0 });
+            continue;
+          }
+          for (let i = 0; i < items.length; i += 450) {
+            const chunk = items.slice(i, i + 450);
+            const batch = writeBatch(db);
+            chunk.forEach((item) => {
+              const id = getId(item);
+              if (id) batch.set(doc(db, firestoreName, String(id)), item, { merge: true });
+            });
+            await batch.commit();
+          }
+          summary.push({ label, count: items.length });
         }
-        summary.push({ collection: firestoreName, count: items.length });
       }
 
-      // Opening balances aren't a per-record collection — they're a single
-      // settings-style map (RM identifier -> balance string). This is what
-      // was missing before, causing the negative "phantom consumption" you saw.
-      if (backup.localRMOpeningBalances && Object.keys(backup.localRMOpeningBalances).length > 0) {
-        await setDoc(doc(db, 'settings', 'rmOpeningBalances'), backup.localRMOpeningBalances, { merge: true });
-        summary.push({ collection: 'localRMOpeningBalances (settings)', count: Object.keys(backup.localRMOpeningBalances).length });
+      if (restoreSchedules) {
+        if (partsWithSchedule.length === 0) {
+          summary.push({ label: 'Item Master — Monthly Schedule', count: 0, note: 'nothing in the backup file had a schedule' });
+        } else {
+          const ids = partsWithSchedule.map((p) => p.id);
+          const existingIds = await findExistingIds('parts', ids);
+          const toRestore = partsWithSchedule.filter((p) => existingIds.has(p.id));
+          const skipped = partsWithSchedule.length - toRestore.length;
+
+          for (let i = 0; i < toRestore.length; i += 450) {
+            const chunk = toRestore.slice(i, i + 450);
+            const batch = writeBatch(db);
+            chunk.forEach((part) => {
+              // ONLY the schedules field. A Firestore set() with merge:true
+              // replaces just the field(s) present in this payload on the
+              // live doc — schedules gets replaced wholesale with the
+              // backup's value, and every other field on that Part
+              // (rate, stock, customerRates, sapCode, etc. — all
+              // live-Tally-driven) is left completely untouched.
+              batch.set(doc(db, 'parts', String(part.id)), { schedules: part.schedules }, { merge: true });
+            });
+            await batch.commit();
+          }
+          summary.push({
+            label: 'Item Master — Monthly Schedule',
+            count: toRestore.length,
+            note: skipped > 0 ? `${skipped} skipped — no matching live part with that ID` : undefined,
+          });
+        }
       }
+
       setResult(summary);
     } catch (e: any) {
       setImportError(e.message || 'Import failed partway through — check the console for details.');
@@ -98,13 +148,16 @@ const ImportLegacyData: React.FC = () => {
     }
   };
 
+  const nothingSelected = !restoreInwardLogs && !restoreSchedules;
+
   return (
     <div className="p-8 max-w-2xl">
       <h2 className="text-xl font-black text-slate-900 mb-1">Import Legacy Data</h2>
       <p className="text-xs text-slate-500 font-medium mb-6">
-        One-time migration from your old app's backup file into this app's live Firestore data.
-        This <strong>merges</strong> by ID — it fills in fields from the backup without wiping out fields
-        added since (like manual sort order), so it's safe to run again with a newer backup.
+        Selective, one-time restore from your old app's backup file. <strong>Sales, Item Master, and RM
+        Master are deliberately NOT touched here</strong> — your live Tally import already keeps those
+        current, so restoring them from an old backup would risk overwriting newer data or creating
+        duplicates. Only the two things below can be restored, and each is opt-in.
       </p>
 
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 text-xs text-amber-800 font-medium">
@@ -140,20 +193,58 @@ const ImportLegacyData: React.FC = () => {
           <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">
             Found in this file {backup.timestamp ? `(backed up ${new Date(backup.timestamp).toLocaleString()})` : ''}
           </p>
-          <div className="grid grid-cols-2 gap-2 mb-4">
-            {counts.map(({ key, count }) => (
-              <div key={key} className="flex justify-between text-sm">
-                <span className="text-slate-500 capitalize">{key}</span>
+          <div className="grid grid-cols-1 gap-2 mb-5">
+            {counts.map(({ label, count }) => (
+              <div key={label} className="flex justify-between text-sm">
+                <span className="text-slate-500">{label}</span>
                 <span className={`font-bold ${count > 0 ? 'text-slate-900' : 'text-slate-300'}`}>{count}</span>
               </div>
             ))}
           </div>
+
+          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">
+            Select what to restore
+          </p>
+          <div className="space-y-3 mb-5">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={restoreInwardLogs}
+                onChange={(e) => setRestoreInwardLogs(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-sm">
+                <span className="font-bold text-slate-800">RM Inward Logs</span>
+                <span className="block text-xs text-slate-500">
+                  Both Item-wise and RM-wise inward logs, restored in full — the live Tally sync never
+                  writes to these collections, so there's nothing new here to conflict with.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={restoreSchedules}
+                onChange={(e) => setRestoreSchedules(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-sm">
+                <span className="font-bold text-slate-800">Item Master — Monthly Schedule</span>
+                <span className="block text-xs text-slate-500">
+                  Only the Monthly Schedule tab's values, and only for parts that already exist in your
+                  live Item Master (matched by ID). Every other field on those parts — rate, stock,
+                  customer rates, SAP code, everything — is left exactly as it is now.
+                </span>
+              </span>
+            </label>
+          </div>
+
           <button
             onClick={handleImport}
-            disabled={importing}
+            disabled={importing || nothingSelected}
             className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold text-sm disabled:opacity-50"
           >
-            {importing ? 'Importing…' : 'Import into Firestore'}
+            {importing ? 'Importing…' : nothingSelected ? 'Select at least one option above' : 'Import selected'}
           </button>
         </div>
       )}
@@ -168,9 +259,12 @@ const ImportLegacyData: React.FC = () => {
         <div className="bg-emerald-50 rounded-2xl p-6">
           <p className="text-sm font-bold text-emerald-700 mb-3">Import complete ✅</p>
           {result.map((r) => (
-            <div key={r.collection} className="flex justify-between text-sm text-emerald-700">
-              <span className="capitalize">{r.collection}</span>
-              <span className="font-bold">{r.count} records</span>
+            <div key={r.label} className="text-sm text-emerald-700 mb-2">
+              <div className="flex justify-between">
+                <span>{r.label}</span>
+                <span className="font-bold">{r.count} restored</span>
+              </div>
+              {r.note && <div className="text-xs text-emerald-600">{r.note}</div>}
             </div>
           ))}
         </div>
