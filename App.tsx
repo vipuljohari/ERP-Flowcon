@@ -76,6 +76,18 @@ const MainApp: React.FC = () => {
   const [rmCrossInvoices, setRmCrossInvoices] = useFirestoreArray<RMCustomerCrossInvoice>('rmCustomerCrossInvoices');
   const [rmMaterialLengths, setRmMaterialLengths] = useFirestoreArray<RMMaterialLength>('rmMaterialLengths', [], (m) => m.materialCode);
   const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
+  // Item-wise (Part) opening balances — same idea as RM's above: a stored,
+  // month-keyed override map, NOT a live-recomputed value. Previously,
+  // Item-wise Opening Balance was recalculated from p.stock and the
+  // ENTIRE inwardLogs/sales history every render, with an optional
+  // override hidden inside an inwardLogs entry's remarks text
+  // ("[OPENING_BALANCE_SET:...]"). That meant a legacy-data restore could
+  // silently reintroduce an old, stale override and corrupt the current
+  // month's Opening Balance — exactly what happened. This map fixes that:
+  // it's the ONLY source of truth for Opening Balance now, set explicitly
+  // via the Inventory screen's audit-lock UI, and it carries forward
+  // month-to-month like RM's does (see resolvedPartOpeningBalances below).
+  const [localPartOpeningBalances, setLocalPartOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'partOpeningBalances', {});
 
   // Single source of truth for display order across the WHOLE app — the
   // Admin's sortOrder (set via the reorder pencil icon) applies everywhere
@@ -151,21 +163,23 @@ const MainApp: React.FC = () => {
   const rawMaterialsRef = useRef(rawMaterials);
   const rmInwardLogsRef = useRef(rmInwardLogs);
   const localRMOpeningBalancesRef = useRef(localRMOpeningBalances);
+  const localPartOpeningBalancesRef = useRef(localPartOpeningBalances);
   const lastSyncTimeRef = useRef(0);
 
   useEffect(() => {
     partsRef.current = parts; salesRef.current = sales; customersRef.current = customers;
-    inwardLogsRef.current = inwardLogs; archivesRef.current = archives; 
+    inwardLogsRef.current = inwardLogs; archivesRef.current = archives;
     activeCustomerRef.current = activeCustomer;
     rawMaterialsRef.current = rawMaterials; rmInwardLogsRef.current = rmInwardLogs;
     localRMOpeningBalancesRef.current = localRMOpeningBalances;
+    localPartOpeningBalancesRef.current = localPartOpeningBalances;
 
     // parts/sales/inwardLogs/archives/customers/rawMaterials/rmInwardLogs now
     // live in Firestore (see useFirestoreArray above) — no longer written to
     // localStorage. Only small local-only preferences stay here.
     localStorage.setItem('autopart_local_rm_opening_balances', JSON.stringify(localRMOpeningBalances));
     localStorage.setItem('autopart_username', userName);
-  }, [parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, localRMOpeningBalances, userName]);
+  }, [parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, localRMOpeningBalances, localPartOpeningBalances, userName]);
 
   const sD = selectedDate;
   const sDK = `${sD.getFullYear()}-${String(sD.getMonth()+1).padStart(2,'0')}-${String(sD.getDate()).padStart(2,'0')}`;
@@ -333,6 +347,103 @@ const MainApp: React.FC = () => {
     return result;
   }, [sD, rawMaterials, parts, sales, rmInwardLogs, localRMOpeningBalances]);
 
+  // An inwardLogs/RM-audit entry tagged this way is a SYNTHETIC quantity
+  // delta injected purely to nudge a stored balance during an audit
+  // correction — never a real physical receipt. Both the old Item-wise
+  // formula and RM's own audit action write these; excluded everywhere a
+  // "how much actually came in this month" total is computed, so an audit
+  // correction never gets double-counted as if goods had arrived.
+  const isAuditDeltaRemark = (remarks?: string) =>
+    !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
+
+  // Item-wise (Part) Opening Balance — same month-by-month rolling
+  // simulation as resolvedRMOpeningBalances above, just without RM's
+  // yield/scrap conversion (a Part's own inwardLogs/sales are already in
+  // the same unit as its stock, so each month's delta is direct).
+  // Anchored at the same base month as RM for consistency. Each month's
+  // opening = the previous month's closing UNLESS an admin explicitly
+  // locked a value for that specific month (via the Inventory screen's
+  // audit-lock UI, or the one-time "Freeze" migration) — that lock then
+  // becomes the new anchor going forward, exactly like RM's does.
+  const resolvedPartOpeningBalances = useMemo(() => {
+    const result: Record<string, string> = {};
+
+    const baseYear = 2026;
+    const baseMonth = 5; // June, same anchor as RM
+
+    const targetYear = sD.getFullYear();
+    const targetMonth = sD.getMonth();
+    const targetMonthKey = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
+
+    const getYM = (timestamp: string): [number, number] => {
+      if (timestamp && timestamp.includes('T')) {
+        const dp = timestamp.split('T')[0].split('-');
+        return [parseInt(dp[0]), parseInt(dp[1]) - 1];
+      }
+      const d = new Date(timestamp);
+      return [d.getFullYear(), d.getMonth()];
+    };
+
+    parts.forEach(p => {
+      const baseOverrideKey = `2026-06_${p.id}`;
+      let currentBal = parseFloat(
+        localPartOpeningBalances[baseOverrideKey] !== undefined
+          ? localPartOpeningBalances[baseOverrideKey]
+          : (localPartOpeningBalances[p.id] || '0')
+      );
+
+      if (targetYear < baseYear || (targetYear === baseYear && targetMonth <= baseMonth)) {
+        const monthOverrideKey = `${targetMonthKey}_${p.id}`;
+        result[p.id] = localPartOpeningBalances[monthOverrideKey] !== undefined
+          ? localPartOpeningBalances[monthOverrideKey]
+          : currentBal.toString();
+        return;
+      }
+
+      let simYear = baseYear;
+      let simMonth = baseMonth;
+
+      while (simYear < targetYear || (simYear === targetYear && simMonth < targetMonth)) {
+        const simMonthKey = `${simYear}-${String(simMonth + 1).padStart(2, '0')}`;
+        const simOverrideKey = `${simMonthKey}_${p.id}`;
+
+        if (localPartOpeningBalances[simOverrideKey] !== undefined) {
+          currentBal = parseFloat(localPartOpeningBalances[simOverrideKey]);
+        }
+
+        const monthInward = inwardLogs
+          .filter(l => {
+            if (l.partId !== p.id || isAuditDeltaRemark(l.remarks)) return false;
+            const [y, m] = getYM(l.timestamp);
+            return y === simYear && m === simMonth;
+          })
+          .reduce((sum, l) => sum + l.quantity, 0);
+
+        const monthSales = sales
+          .filter(s => {
+            if (s.partId !== p.id) return false;
+            const [y, m] = getYM(s.timestamp);
+            return y === simYear && m === simMonth;
+          })
+          .reduce((sum, s) => sum + s.quantity, 0);
+
+        currentBal = currentBal + monthInward - monthSales;
+
+        simMonth++;
+        if (simMonth > 11) { simMonth = 0; simYear++; }
+      }
+
+      const targetOverrideKey = `${targetMonthKey}_${p.id}`;
+      if (localPartOpeningBalances[targetOverrideKey] !== undefined) {
+        currentBal = parseFloat(localPartOpeningBalances[targetOverrideKey]);
+      }
+
+      result[p.id] = currentBal.toString();
+    });
+
+    return result;
+  }, [sD, parts, sales, inwardLogs, localPartOpeningBalances]);
+
   // Synchronize and auto-repair parts mapping for all existing and new master template customers
   const customerNamesKey = useMemo(() => customers.map(c => c.name).join('|'), [customers]);
   
@@ -463,13 +574,14 @@ const MainApp: React.FC = () => {
           rawMaterials: rawMaterialsRef.current,
           rmInwardLogs: rmInwardLogsRef.current,
           localRMOpeningBalances: localRMOpeningBalancesRef.current,
-          timestamp: new Date().toISOString(), 
-          lastModifiedBy: userName 
+          localPartOpeningBalances: localPartOpeningBalancesRef.current,
+          timestamp: new Date().toISOString(),
+          lastModifiedBy: userName
         };
-        
+
         // Update lastSyncTimeRef BEFORE the async call to prevent race conditions
         lastSyncTimeRef.current = nowTime;
-        
+
         if (gService) await gService.uploadData(backup);
         if (dService) await dService.uploadData(backup);
         console.log("[SyncEngine] Instant cloud backup completed.");
@@ -479,7 +591,7 @@ const MainApp: React.FC = () => {
     }, 45000); // 45 second debounce captures batch updates
 
     return () => clearTimeout(debounceTimer);
-  }, [parts, sales, inwardLogs, archives, customers, localRMOpeningBalances]);
+  }, [parts, sales, inwardLogs, archives, customers, localRMOpeningBalances, localPartOpeningBalances]);
 
   // OAuth Callback Handler
   useEffect(() => {
@@ -644,8 +756,9 @@ const MainApp: React.FC = () => {
             rawMaterials: rawMaterialsRef.current,
             rmInwardLogs: rmInwardLogsRef.current,
             localRMOpeningBalances: localRMOpeningBalancesRef.current,
-            timestamp: new Date().toISOString(), 
-            lastModifiedBy: userName 
+            localPartOpeningBalances: localPartOpeningBalancesRef.current,
+            timestamp: new Date().toISOString(),
+            lastModifiedBy: userName
           };
           if (gService) await gService.uploadData(backup);
           if (dService) await dService.uploadData(backup);
@@ -722,7 +835,11 @@ const MainApp: React.FC = () => {
     const restoredOpeningBalances = data.localRMOpeningBalances || {};
     setLocalRMOpeningBalances(restoredOpeningBalances);
     localStorage.setItem('autopart_local_rm_opening_balances', JSON.stringify(restoredOpeningBalances));
-    
+
+    // Support restoring localPartOpeningBalances (Item-wise), mirroring RM's above.
+    const restoredPartOpeningBalances = data.localPartOpeningBalances || {};
+    setLocalPartOpeningBalances(restoredPartOpeningBalances);
+
     if (data.customers && data.customers.length > 0) {
       setActiveCustomer(data.customers[0].name);
     }
@@ -1040,6 +1157,8 @@ const MainApp: React.FC = () => {
               onAddRMInward={handleAddRMInward}
               localRMOpeningBalances={resolvedRMOpeningBalances}
               setLocalRMOpeningBalances={setLocalRMOpeningBalances}
+              localPartOpeningBalances={resolvedPartOpeningBalances}
+              setLocalPartOpeningBalances={setLocalPartOpeningBalances}
               setRawMaterials={setRawMaterials}
             />
           )}
@@ -1079,7 +1198,7 @@ const MainApp: React.FC = () => {
              }
           }} />}
           {canAccessView(role, currentView) && currentView === 'analytics' && <AIAnalyst parts={cDP} sales={contextSales} />}
-          {canAccessView(role, currentView) && currentView === 'data_mgmt' && <DataManagement parts={parts} sales={sales} inwardLogs={inwardLogs} archives={archives} customers={customers} rawMaterials={rawMaterials} rmInwardLogs={rmInwardLogs} localRMOpeningBalances={localRMOpeningBalances} isAdmin={isAdmin} onImportData={handleFullImport} syncLog={syncLog} userName={userName} />}
+          {canAccessView(role, currentView) && currentView === 'data_mgmt' && <DataManagement parts={parts} sales={sales} inwardLogs={inwardLogs} archives={archives} customers={customers} rawMaterials={rawMaterials} rmInwardLogs={rmInwardLogs} localRMOpeningBalances={localRMOpeningBalances} localPartOpeningBalances={localPartOpeningBalances} isAdmin={isAdmin} onImportData={handleFullImport} syncLog={syncLog} userName={userName} />}
           {canAccessView(role, currentView) && currentView === 'item_master' && isAdmin && (
             <ItemMaster 
               parts={sortedParts} 
