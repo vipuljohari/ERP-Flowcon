@@ -27,6 +27,7 @@ interface InventoryProps {
   localPartOpeningBalances?: Record<string, string>;
   setLocalPartOpeningBalances?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setRawMaterials?: (update: RawMaterial[] | ((prev: RawMaterial[]) => RawMaterial[])) => void;
+  setParts?: (update: Part[] | ((prev: Part[]) => Part[])) => void;
 }
 
 // An inwardLogs entry tagged this way is a SYNTHETIC quantity delta injected
@@ -57,6 +58,7 @@ const Inventory: React.FC<InventoryProps> = ({
   localPartOpeningBalances: propPartOpeningBalances,
   setLocalPartOpeningBalances: propSetPartOpeningBalances,
   setRawMaterials,
+  setParts,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -474,6 +476,49 @@ const Inventory: React.FC<InventoryProps> = ({
     return map;
   }, [parts, inwardLogs, sales, rawMaterials, selectedCustomer, localRMOpeningBalances, localPartOpeningBalances, isAdmin]);
 
+  // One-time correction: parts.stock is a running total, incremented and
+  // decremented over time by every inward entry and every Tally-synced
+  // sale — including, historically, the old Opening Balance audit flow's
+  // fake delta entries (removed by the fix above, but their effect on
+  // parts.stock was permanent and never undone). That's why Dashboard,
+  // Item Master, and valuation — everything that reads p.stock directly —
+  // can still disagree with this screen's Plant Balance even after the
+  // Opening Balance fix: Plant Balance is now derived fresh each month
+  // from a verified anchor, but parts.stock itself was never corrected.
+  // This resets parts.stock to match the Plant Balance already verified
+  // correct above, for every part NOT deferred to RM Inventory (those
+  // aren't tracked via their own stock field at all).
+  const [syncingStock, setSyncingStock] = useState(false);
+  const isViewingCurrentMonth = (() => {
+    const now = new Date();
+    return selectedDate.getFullYear() === now.getFullYear() && selectedDate.getMonth() === now.getMonth();
+  })();
+  const syncAvailableStockToPlantBalance = () => {
+    if (!setParts) return;
+    // parts.stock is a single live "right now" field, not month-scoped —
+    // only ever safe to overwrite while viewing the CURRENT month. Plant
+    // Balance for a past month is a historical figure, not today's stock.
+    if (!isViewingCurrentMonth) {
+      alert('Switch to the current month before syncing — Available Stock is a single live value and syncing it from a past month\'s Plant Balance would overwrite today\'s real stock with a historical number.');
+      return;
+    }
+    const eligible = parts.filter(p => (partComputations.get(p.id)?.mappedRMs.length || 0) === 0);
+    const monthDisplay = selectedDate.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+    if (!window.confirm(
+      `Sync Available Stock to Plant Balance?\n\n` +
+      `This resets the live "stock" value for ${eligible.length} item(s) (everything except RM-linked items, which are tracked via RM Inventory instead) to match the Plant Balance already shown on this screen for ${monthDisplay}.\n\n` +
+      `This is what Dashboard, Item Master, and stock valuation read — if those still look wrong even though this screen is now correct, this is the fix. Run it once after correcting Opening Balance.`
+    )) return;
+
+    setSyncingStock(true);
+    setParts(prev => prev.map(p => {
+      const calc = partComputations.get(p.id);
+      if (!calc || calc.mappedRMs.length > 0) return p;
+      return { ...p, stock: calc.plantBalanceValue, lastUpdated: new Date().toISOString() };
+    }));
+    setSyncingStock(false);
+  };
+
   const isAdjustment = parseInt(addQty) < 0 || addQty.startsWith('-');
 
   return (
@@ -498,6 +543,18 @@ const Inventory: React.FC<InventoryProps> = ({
                 className="px-4 py-2 bg-white border-2 border-slate-200 text-slate-600 hover:border-amber-500 hover:text-amber-700 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-50"
               >
                 {freezing ? 'Freezing…' : '❄️ Freeze Opening Balances'}
+              </button>
+            )}
+            {isAdmin && inventoryMode === 'item' && (
+              <button
+                onClick={syncAvailableStockToPlantBalance}
+                disabled={syncingStock || !isViewingCurrentMonth}
+                title={isViewingCurrentMonth
+                  ? "One-time: reset each item's live stock value to match the Plant Balance shown here — fixes Dashboard, Item Master, and valuation if they still disagree with this screen"
+                  : "Switch to the current month first — this writes to today's live stock value"}
+                className="px-4 py-2 bg-white border-2 border-slate-200 text-slate-600 hover:border-indigo-500 hover:text-indigo-700 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-50"
+              >
+                {syncingStock ? 'Syncing…' : '🔄 Sync Available Stock'}
               </button>
             )}
             {rmReorderMode && (
