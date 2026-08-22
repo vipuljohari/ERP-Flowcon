@@ -1160,6 +1160,7 @@ const MainApp: React.FC = () => {
               localPartOpeningBalances={resolvedPartOpeningBalances}
               setLocalPartOpeningBalances={setLocalPartOpeningBalances}
               setRawMaterials={setRawMaterials}
+              setParts={setParts}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
