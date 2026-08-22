@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { doc, writeBatch, getDocs, query, where, documentId, collection } from 'firebase/firestore';
+import { doc, writeBatch, getDocs, query, where, documentId, collection, setDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { Part, InwardLog, RMInwardLog } from '../types';
 
@@ -42,6 +42,19 @@ async function findExistingIds(collectionName: string, ids: string[]): Promise<S
   return existing;
 }
 
+// "2026-07" -> "2026-08". A Monthly Archive is a snapshot of every part's
+// live stock taken automatically at month-end — i.e. that month's real,
+// physically-verified CLOSING balance, which is exactly the next month's
+// correct OPENING balance. Chaining archive months forward like this is how
+// we rebuild Item-wise Opening Balance from verified ground truth instead of
+// a live-recomputed guess.
+function nextMonthKey(monthKey: string): string {
+  const [y, m] = monthKey.split('-').map(Number);
+  const nm = m === 12 ? 1 : m + 1;
+  const ny = m === 12 ? y + 1 : y;
+  return `${ny}-${String(nm).padStart(2, '0')}`;
+}
+
 const ImportLegacyData: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [backup, setBackup] = useState<LegacyBackup | null>(null);
@@ -52,6 +65,7 @@ const ImportLegacyData: React.FC = () => {
 
   const [restoreInwardLogs, setRestoreInwardLogs] = useState(true);
   const [restoreSchedules, setRestoreSchedules] = useState(true);
+  const [restoreOpeningBalances, setRestoreOpeningBalances] = useState(true);
 
   const handleFile = (file: File) => {
     setParseError(null);
@@ -74,11 +88,28 @@ const ImportLegacyData: React.FC = () => {
     (p) => p && p.id && p.schedules && Object.keys(p.schedules).length > 0
   );
 
+  // Item-wise Opening Balance corrections, derived from this backup's
+  // Monthly Archives — one entry per (target month, part), keyed by the
+  // month whose OPENING balance this fixes. E.g. an archive for "2026-07"
+  // (July's verified closing stock) produces corrections keyed "2026-08"
+  // (August's opening balance).
+  const openingBalanceCorrections: Record<string, { partId: string; partName: string; value: number }[]> = {};
+  (backup?.archives || []).forEach((arc: any) => {
+    if (!arc?.monthKey || !Array.isArray(arc.parts)) return;
+    const targetMonth = nextMonthKey(arc.monthKey);
+    openingBalanceCorrections[targetMonth] = arc.parts
+      .filter((p: any) => p && p.id && typeof p.stock === 'number')
+      .map((p: any) => ({ partId: p.id, partName: p.name, value: Math.round(p.stock) }));
+  });
+  const correctionMonths = Object.keys(openingBalanceCorrections).sort();
+  const totalCorrections = correctionMonths.reduce((sum, mk) => sum + openingBalanceCorrections[mk].length, 0);
+
   const counts = backup
     ? [
         { label: 'Item-wise Inward Logs', count: backup.inwardLogs?.length || 0 },
         { label: 'RM-wise Inward Logs', count: backup.rmInwardLogs?.length || 0 },
         { label: 'Item Master parts with a Monthly Schedule', count: partsWithSchedule.length },
+        { label: 'Item-wise Opening Balance corrections (from Monthly Archives)', count: totalCorrections },
       ]
     : [];
 
@@ -140,6 +171,44 @@ const ImportLegacyData: React.FC = () => {
         }
       }
 
+      if (restoreOpeningBalances) {
+        if (correctionMonths.length === 0) {
+          summary.push({ label: 'Item-wise Opening Balance (from Monthly Archives)', count: 0, note: 'no Monthly Archives in this backup' });
+        } else {
+          const allPartIds = Array.from(new Set(correctionMonths.flatMap((mk) => openingBalanceCorrections[mk].map((c) => c.partId))));
+          const existingPartIds = await findExistingIds('parts', allPartIds);
+
+          const updatePayload: Record<string, string> = {};
+          let written = 0;
+          let skipped = 0;
+          correctionMonths.forEach((mk) => {
+            openingBalanceCorrections[mk].forEach((c) => {
+              if (!existingPartIds.has(c.partId)) { skipped++; return; }
+              // Same key format resolvedPartOpeningBalances in App.tsx reads:
+              // "<month>_<partId>" — a locked Opening Balance for that
+              // specific month that then carries forward automatically.
+              updatePayload[`${mk}_${c.partId}`] = c.value.toString();
+              written++;
+            });
+          });
+
+          if (written > 0) {
+            // A flat merge write — every key here is a distinct top-level
+            // field on settings/partOpeningBalances, so this only touches
+            // the exact (month, part) pairs computed above. Any other
+            // stored value (a different month, or a manual audit lock you
+            // set after upgrading) is left completely untouched.
+            await setDoc(doc(db, 'settings', 'partOpeningBalances'), updatePayload, { merge: true });
+          }
+
+          summary.push({
+            label: 'Item-wise Opening Balance (from Monthly Archives)',
+            count: written,
+            note: `${correctionMonths.join(', ')}${skipped > 0 ? ` — ${skipped} skipped, no longer in Item Master` : ''}`,
+          });
+        }
+      }
+
       setResult(summary);
     } catch (e: any) {
       setImportError(e.message || 'Import failed partway through — check the console for details.');
@@ -148,7 +217,7 @@ const ImportLegacyData: React.FC = () => {
     }
   };
 
-  const nothingSelected = !restoreInwardLogs && !restoreSchedules;
+  const nothingSelected = !restoreInwardLogs && !restoreSchedules && !restoreOpeningBalances;
 
   return (
     <div className="p-8 max-w-2xl">
@@ -157,7 +226,7 @@ const ImportLegacyData: React.FC = () => {
         Selective, one-time restore from your old app's backup file. <strong>Sales, Item Master, and RM
         Master are deliberately NOT touched here</strong> — your live Tally import already keeps those
         current, so restoring them from an old backup would risk overwriting newer data or creating
-        duplicates. Only the two things below can be restored, and each is opt-in.
+        duplicates. Only the items below can be restored, and each is opt-in.
       </p>
 
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 text-xs text-amber-800 font-medium">
@@ -234,6 +303,24 @@ const ImportLegacyData: React.FC = () => {
                   Only the Monthly Schedule tab's values, and only for parts that already exist in your
                   live Item Master (matched by ID). Every other field on those parts — rate, stock,
                   customer rates, SAP code, everything — is left exactly as it is now.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={restoreOpeningBalances}
+                onChange={(e) => setRestoreOpeningBalances(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-sm">
+                <span className="font-bold text-slate-800">Item-wise Opening Balance — rebuild from Monthly Archives</span>
+                <span className="block text-xs text-slate-500">
+                  This backup's Monthly Archive is a verified snapshot of every part's real stock at each
+                  month's end — that's the correct Opening Balance for the month right after it. This locks
+                  Opening Balance for {correctionMonths.length > 0 ? correctionMonths.join(', ') : 'each month found in this backup'} from
+                  those snapshots{totalCorrections > 0 ? ` (${totalCorrections} part-month values)` : ''}. Only
+                  touches those specific months for parts still in your live Item Master — nothing else.
                 </span>
               </span>
             </label>
