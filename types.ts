@@ -34,9 +34,9 @@ export interface Company {
 // Which views each role may access. 'admin' implicitly gets everything.
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   admin: ['*'],
-  store: ['dashboard', 'inventory', 'inward_logs', 'item_master'],
-  accounts: ['dashboard', 'sales', 'data_mgmt', 'customer_master', 'import_issues', 'rm_crossbill'],
-  ppc: ['dashboard', 'schedule', 'dispatch_daily', 'sales', 'inventory', 'analytics'],
+  store: ['dashboard', 'inventory', 'inward_logs', 'sales', 'dispatch_daily', 'schedule', 'analytics', 'rm_crossbill'],
+  accounts: ['dashboard', 'sales', 'data_mgmt', 'rm_crossbill', 'inventory'],
+  ppc: ['dashboard', 'schedule', 'sales', 'inventory', 'analytics'],
 };
 
 export const canAccessView = (role: UserRole, viewId: string): boolean => {
@@ -167,6 +167,39 @@ export interface InwardLog {
   timestamp: string;
   remarks?: string; // New field for adjustments
   invoiceNumber?: string;
+}
+
+// Admin-only "Notifications" feed. Every entry is created by a human-
+// initiated action (never the fully-automatic Tally sync) so Admin can
+// cross-check/cross-question it: a negative-quantity Discrepancy Control
+// Entry, a plain RM Inward entry (any quantity, any role), a manual
+// Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
+// Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
+// raised from one login is visible to Admin on any other device/session.
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'dispatch_manual' | 'tally_import';
+
+export interface AdminAlert {
+  id: string;
+  type: AdminAlertType;
+  timestamp: string; // when the underlying entry was posted
+  createdBy: string; // display name / station name of the user who made the entry
+  role: UserRole;
+  partId?: string;
+  partName?: string;
+  sapCode?: string;
+  rmId?: string;
+  rmSize?: string;
+  quantity?: number;
+  supplier?: string;
+  remarks?: string;
+  responsibleName?: string; // Discrepancy Control Entry: who is responsible for the mismatch/rejection
+  invoiceNumber?: string;
+  customer?: string;
+  itemCount?: number; // for dispatch/import batches covering multiple parts
+  details?: string; // free-text summary, e.g. a line-item breakdown for a multi-part dispatch/import
+  verified?: boolean; // Admin has reviewed and confirmed this entry is correct
+  verifiedAt?: string;
+  verifiedBy?: string;
 }
 
 export interface InventoryStats {

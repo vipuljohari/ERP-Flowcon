@@ -294,6 +294,11 @@ const DataManagement: React.FC<DataManagementProps> = ({
   };
 
   const initiateRestore = async (provider: 'gdrive' | 'dropbox', fileIdOrPath: string) => {
+    // Defense in depth — the Restore buttons are already hidden for
+    // non-admins, but a full data restore is destructive enough that this
+    // path should never be reachable by role alone (e.g. a stale UI, or a
+    // future caller that forgets the isAdmin check on the button itself).
+    if (!isAdmin) return;
     try {
       let data;
       if (provider === 'gdrive' && isGdriveLinked) {
@@ -313,6 +318,11 @@ const DataManagement: React.FC<DataManagementProps> = ({
 
   const handlePasscodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isAdmin) {
+      setShowRestoreModal(false);
+      setPendingBackup(null);
+      return;
+    }
     if (passcode === "8359") {
       if (pendingBackup) {
         onImportData(pendingBackup.data);
@@ -407,7 +417,9 @@ const DataManagement: React.FC<DataManagementProps> = ({
                       <p className="text-sm font-black text-slate-800 leading-none mb-1 text-left">{b.displayDate}</p>
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter text-left">{b.name}</p>
                     </div>
-                    <button onClick={() => initiateRestore('gdrive', b.id)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">Restore</button>
+                    {isAdmin && (
+                      <button onClick={() => initiateRestore('gdrive', b.id)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">Restore</button>
+                    )}
                   </div>
                 ))}
                 {gBackups.length === 0 && <p className="text-center py-8 text-[10px] font-black text-slate-300 uppercase tracking-widest text-center">No Google backups listed</p>}
@@ -450,7 +462,9 @@ const DataManagement: React.FC<DataManagementProps> = ({
                       <p className="text-sm font-black text-slate-800 leading-none mb-1 text-left">{b.displayDate}</p>
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter text-left">{b.name}</p>
                     </div>
-                    <button onClick={() => initiateRestore('dropbox', b.path)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">Restore</button>
+                    {isAdmin && (
+                      <button onClick={() => initiateRestore('dropbox', b.path)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">Restore</button>
+                    )}
                   </div>
                 ))}
                 {dBackups.length === 0 && <p className="text-center py-8 text-[10px] font-black text-slate-300 uppercase tracking-widest text-center">No Dropbox backups listed</p>}

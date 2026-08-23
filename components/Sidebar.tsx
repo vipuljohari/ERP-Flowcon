@@ -13,19 +13,21 @@ interface SidebarProps {
   onInstall?: () => void;
   userName: string;
   onUserNameChange: (name: string) => void;
+  pendingAlertsCount?: number;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ 
-  currentView, 
-  onViewChange, 
-  currentMonthDisplay, 
+const Sidebar: React.FC<SidebarProps> = ({
+  currentView,
+  onViewChange,
+  currentMonthDisplay,
   role,
   userDisplayName,
   onLogout,
   showInstallBtn = false,
   onInstall,
   userName,
-  onUserNameChange
+  onUserNameChange,
+  pendingAlertsCount = 0
 }) => {
   const isAdmin = role === 'admin';
   const company = useActiveCompany();
@@ -49,16 +51,24 @@ const Sidebar: React.FC<SidebarProps> = ({
   // Only show items this role is permitted to open.
   const navItems = allNavItems.filter((item) => canAccessView(role, item.id));
 
-  if (role === 'accounts' || isAdmin) {
-    navItems.splice(navItems.findIndex((i) => i.id === 'sales') + 1 || navItems.length, 0,
-      { id: 'import_issues', label: 'Import Issues', icon: '⚠️' },
-      { id: 'rm_crossbill', label: 'RM Cross-Bill Check', icon: '🧾' }
-    );
+  // 'import_issues' and 'rm_crossbill' aren't in allNavItems above (they
+  // don't fit the simple filter's position), so they're spliced in here —
+  // but which of the two show must still follow canAccessView per role,
+  // same as everything else. Store now has rm_crossbill but not
+  // import_issues; Accounts now has neither... except rm_crossbill, which
+  // it keeps; ppc has neither. Admin always gets both via the '*' wildcard.
+  const extraNavItems: { id: string; label: string; icon: string }[] = [];
+  if (canAccessView(role, 'import_issues')) extraNavItems.push({ id: 'import_issues', label: 'Import Issues', icon: '⚠️' });
+  if (canAccessView(role, 'rm_crossbill')) extraNavItems.push({ id: 'rm_crossbill', label: 'RM Cross-Bill Check', icon: '🧾' });
+  if (extraNavItems.length > 0) {
+    const salesIdx = navItems.findIndex((i) => i.id === 'sales');
+    navItems.splice(salesIdx >= 0 ? salesIdx + 1 : navItems.length, 0, ...extraNavItems);
   }
 
   // Admin-only management items, always pinned at the end.
   if (isAdmin) {
     navItems.push(
+      { id: 'notifications', label: pendingAlertsCount > 0 ? `Notifications (${pendingAlertsCount})` : 'Notifications', icon: '🔔' },
       { id: 'user_master', label: 'User Master', icon: '👤' },
       { id: 'company_master', label: 'Company Master', icon: '🏭' },
       { id: 'import_legacy', label: 'Import Legacy Data', icon: '📤' },

@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useMemo } from 'react';
-import { Part, Customer, Sale, InwardLog } from '../types';
+import { Part, Customer, Sale, InwardLog, AdminAlert } from '../types';
 import { TallyService, TallyImportResult, TallyMatchedItem } from '../services/tally';
 
 const getLocalISOString = (date: Date = new Date()): string => {
@@ -21,6 +21,12 @@ interface DailyDispatchProps {
   allSales?: Sale[];
   inwardLogs: InwardLog[];
   onBulkDispatch: (items: { partId: string, quantity: number }[], customer: string, timestamp?: string, invoiceNo?: string) => void;
+  // Pushes an entry into the Admin-only Notifications feed. Fired for every
+  // manual Dispatch Slip submission and every Tally Excel/XML import —
+  // unconditionally, on every submission — so Admin can cross-check who
+  // posted what. Never fired by the fully-automatic Tally sync (that lives
+  // in App.tsx's performAutonomousCycle, outside this component).
+  onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
   readOnly?: boolean;
   isHistorical?: boolean;
   selectedDate: Date; // Added missing prop to handle timestamps correctly
@@ -40,8 +46,9 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
   sales,
   allSales,
   inwardLogs,
-  onBulkDispatch, 
-  readOnly = false, 
+  onBulkDispatch,
+  onCreateAlert,
+  readOnly = false,
   isHistorical = false,
   selectedDate,
   selectedDateDisplay = '',
@@ -195,11 +202,26 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
 
     try {
       onBulkDispatch(
-        items.map(i => ({ partId: i.id, quantity: i.dispatchQty })), 
-        activeCustomer, 
-        finalTimestamp, 
+        items.map(i => ({ partId: i.id, quantity: i.dispatchQty })),
+        activeCustomer,
+        finalTimestamp,
         manualInvoiceNumber.trim()
       );
+
+      // Every manual Dispatch Slip submission alerts Admin — unconditionally,
+      // regardless of whether it trips any discrepancy flag — so Admin can
+      // cross-check it against Tally later.
+      if (onCreateAlert) {
+        onCreateAlert({
+          type: 'dispatch_manual',
+          timestamp: finalTimestamp,
+          customer: activeCustomer,
+          invoiceNumber: manualInvoiceNumber.trim(),
+          itemCount: items.length,
+          quantity: items.reduce((sum, i) => sum + i.dispatchQty, 0),
+          details: items.map(i => `${i.name} (${i.sapCode}) — ${i.dispatchQty} Pcs`).join('\n'),
+        });
+      }
 
       setDispatchData(prev => {
         const reset = { ...prev };
@@ -306,8 +328,26 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
 
     Object.entries(dispatchesByCustomer).forEach(([customer, items]) => {
       onBulkDispatch(items, customer, finalTimestamp, finalInvoice);
+
+      // Every Tally Excel/XML import alerts Admin — unconditionally, on
+      // every import, regardless of hasOpeningBalanceViolations — so Admin
+      // can cross-check it since Sales data is otherwise auto-entered.
+      if (onCreateAlert) {
+        onCreateAlert({
+          type: 'tally_import',
+          timestamp: finalTimestamp,
+          customer,
+          invoiceNumber: finalInvoice,
+          itemCount: items.length,
+          quantity: items.reduce((sum, i) => sum + i.quantity, 0),
+          details: items.map(i => {
+            const part = parts.find(p => p.id === i.partId);
+            return `${part?.name || i.partId} (${part?.sapCode || ''}) — ${i.quantity} Pcs`;
+          }).join('\n'),
+        });
+      }
     });
-    
+
     setDispatchData(prev => {
       const reset = { ...prev };
       parts.forEach(p => { if (reset[p.id]) reset[p.id] = { selected: false, qtyString: '' }; });

@@ -19,12 +19,13 @@ import CompanyMaster from './components/CompanyMaster';
 import ImportLegacyData from './components/ImportLegacyData';
 import ImportIssues from './components/ImportIssues';
 import RMCrossBillCheck from './components/RMCrossBillCheck';
+import Notifications from './components/Notifications';
 import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, canAccessView } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, AdminAlert, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
@@ -65,6 +66,38 @@ const MainApp: React.FC = () => {
     }
   };
 
+  // Creates a persisted Admin Notifications entry. Called only from
+  // human-initiated actions (Discrepancy Control Entry, RM Inward, manual
+  // Dispatch Slip, Tally Excel/XML import) — never from the automatic
+  // Tally sync — so Admin can cross-check/cross-question exactly what was
+  // entered, by whom, and when.
+  const pushAdminAlert = (partial: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => {
+    const merged: AdminAlert = {
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: getLocalISOString(),
+      createdBy: appUser?.displayName || userName,
+      role,
+      verified: false,
+      ...partial,
+    };
+    // Firestore rejects an explicit `undefined` field value outright — strip
+    // any (e.g. a Discrepancy Entry has no invoiceNumber, a plain RM Inward
+    // has no responsibleName) so the write never fails silently.
+    const newAlert = Object.fromEntries(
+      Object.entries(merged).filter(([, v]) => v !== undefined)
+    ) as AdminAlert;
+    setAdminAlerts(prev => [newAlert, ...prev]);
+  };
+
+  const verifyAdminAlert = (id: string) => {
+    setAdminAlerts(prev => prev.map(a => a.id === id ? {
+      ...a,
+      verified: true,
+      verifiedAt: getLocalISOString(),
+      verifiedBy: appUser?.displayName || userName,
+    } : a));
+  };
+
   const [parts, setParts] = useFirestoreArray<Part>('parts', INITIAL_PARTS);
   const [sales, setSales] = useFirestoreArray<Sale>('sales');
   const [inwardLogs, setInwardLogs] = useFirestoreArray<InwardLog>('inwardLogs');
@@ -75,6 +108,11 @@ const MainApp: React.FC = () => {
   const [rmManufacturerInvoices, setRmManufacturerInvoices] = useFirestoreArray<RMManufacturerInvoice>('rmManufacturerInvoices');
   const [rmCrossInvoices, setRmCrossInvoices] = useFirestoreArray<RMCustomerCrossInvoice>('rmCustomerCrossInvoices');
   const [rmMaterialLengths, setRmMaterialLengths] = useFirestoreArray<RMMaterialLength>('rmMaterialLengths', [], (m) => m.materialCode);
+  // Admin-only Notifications feed — persisted so an alert raised from any
+  // login (Store, PPC, Accounts) is visible to Admin on any other
+  // device/session. Never written to by the fully-automatic Tally sync;
+  // only human-initiated entries push here. See pushAdminAlert below.
+  const [adminAlerts, setAdminAlerts] = useFirestoreArray<AdminAlert>('adminAlerts');
   const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
   // Item-wise (Part) opening balances — same idea as RM's above: a stored,
   // month-keyed override map, NOT a live-recomputed value. Previously,
@@ -1102,7 +1140,7 @@ const MainApp: React.FC = () => {
           </div>
         ))}
       </div>
-      <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} />
+      <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} pendingAlertsCount={adminAlerts.filter(a => !a.verified).length} />
       <main className="flex-1 md:ml-64 p-6 md:p-10 relative text-left">
         <div className="max-w-7xl mx-auto">
           <div className="flex justify-between items-start mb-8 text-left">
@@ -1143,13 +1181,14 @@ const MainApp: React.FC = () => {
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inventory' && (
-            <Inventory 
-              parts={cDP} 
-              sales={contextSales} 
-              inwardLogs={contextInwardLogs} 
-              onAddInward={handleAddInward} 
-              isAdmin={isAdmin} 
-              selectedDate={sD} 
+            <Inventory
+              parts={cDP}
+              sales={contextSales}
+              inwardLogs={contextInwardLogs}
+              onAddInward={handleAddInward}
+              isAdmin={isAdmin}
+              readOnly={!(isAdmin || role === 'store')}
+              selectedDate={sD}
               selectedDateDisplay={sD.toLocaleDateString('en-GB')}
               rawMaterials={modelFilteredRawMaterials}
               rmInwardLogs={contextRmInwardLogs}
@@ -1161,6 +1200,7 @@ const MainApp: React.FC = () => {
               setLocalPartOpeningBalances={setLocalPartOpeningBalances}
               setRawMaterials={setRawMaterials}
               setParts={setParts}
+              onCreateAlert={pushAdminAlert}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
@@ -1190,7 +1230,7 @@ const MainApp: React.FC = () => {
                }
                return p;
              }));
-          }} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
+          }} onCreateAlert={pushAdminAlert} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
           {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
              const sale = sales.find(s => s.id === id);
              if (sale) {
@@ -1363,6 +1403,7 @@ const MainApp: React.FC = () => {
               }} 
             />
           )}
+          {isAdmin && currentView === 'notifications' && <Notifications alerts={adminAlerts} onVerify={verifyAdminAlert} />}
           {isAdmin && currentView === 'user_master' && <UserMaster />}
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}

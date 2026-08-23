@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer } from '../types';
+import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert } from '../types';
 import { CATEGORIES } from '../constants';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
@@ -28,6 +28,10 @@ interface InventoryProps {
   setLocalPartOpeningBalances?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setRawMaterials?: (update: RawMaterial[] | ((prev: RawMaterial[]) => RawMaterial[])) => void;
   setParts?: (update: Part[] | ((prev: Part[]) => Part[])) => void;
+  // Pushes an entry into the Admin-only Notifications feed. Fired for every
+  // negative-quantity Discrepancy Control Entry (Item or RM) and for every
+  // RM Inward entry, so Admin can cross-check who entered what.
+  onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
 }
 
 // An inwardLogs entry tagged this way is a SYNTHETIC quantity delta injected
@@ -59,6 +63,7 @@ const Inventory: React.FC<InventoryProps> = ({
   setLocalPartOpeningBalances: propSetPartOpeningBalances,
   setRawMaterials,
   setParts,
+  onCreateAlert,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -244,13 +249,50 @@ const Inventory: React.FC<InventoryProps> = ({
 
   const handleFinalConfirm = () => {
     if (readOnly) return;
-    
+
     if (inventoryMode === 'item' && selectedPart) {
       const qty = parseInt(addQty);
       onAddInward(selectedPart.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, undefined, invoiceNumber.trim() || undefined);
+      // Discrepancy Control Entry (negative value) — alert Admin with full
+      // detail so they can cross-check/cross-question it. Positive Item
+      // Material Entries are routine and do not alert.
+      if (qty < 0 && onCreateAlert) {
+        onCreateAlert({
+          type: 'discrepancy',
+          partId: selectedPart.id,
+          partName: selectedPart.name,
+          sapCode: selectedPart.sapCode,
+          quantity: qty,
+          remarks: remarks.trim(),
+          responsibleName: supplier.trim(),
+        });
+      }
     } else if (inventoryMode === 'rm' && selectedRM && onAddRMInward) {
       const qty = parseInt(addQty);
       onAddRMInward(selectedRM.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, undefined, invoiceNumber.trim() || undefined);
+      if (onCreateAlert) {
+        if (qty < 0) {
+          // Discrepancy Control Entry (negative value) on the RM side.
+          onCreateAlert({
+            type: 'discrepancy',
+            rmId: selectedRM.id,
+            rmSize: selectedRM.size,
+            quantity: qty,
+            remarks: remarks.trim(),
+            responsibleName: supplier.trim(),
+          });
+        } else {
+          // Every RM Inward entry — regardless of role — is logged for Admin.
+          onCreateAlert({
+            type: 'rm_inward',
+            rmId: selectedRM.id,
+            rmSize: selectedRM.size,
+            quantity: qty,
+            supplier: supplier.trim(),
+            invoiceNumber: invoiceNumber.trim() || undefined,
+          });
+        }
+      }
     }
 
     setShowConfirmModal(false);
@@ -1391,10 +1433,10 @@ const Inventory: React.FC<InventoryProps> = ({
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 text-left">
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-md w-full p-10 border border-slate-100 animate-in zoom-in-95 max-h-[92vh] overflow-y-auto">
             <h3 className={`text-2xl font-black mb-1 text-left ${isAdjustment ? 'text-rose-600' : 'text-slate-900'}`}>
-              {isAdjustment ? 'Discrepancy Control' : inventoryMode === 'item' ? 'Material Entry (Part)' : 'Material Entry (RM)'}
+              {isAdjustment ? 'Discrepancy Control Entry (Negative Value)' : inventoryMode === 'item' ? 'Material Entry (Part)' : 'Material Entry (RM)'}
             </h3>
             <p className="text-xs text-slate-500 mb-6 font-medium text-left">
-              {isAdjustment ? 'Adjusting stock level discrepancy for: ' : 'Posting event log for: '} 
+              {isAdjustment ? 'Correcting a mismatch or rejection quantity for: ' : 'Posting event log for: '}
               <span className="text-indigo-600 font-extrabold">
                 {inventoryMode === 'item' ? selectedPart?.name : selectedRM?.size}
               </span>
@@ -1423,10 +1465,10 @@ const Inventory: React.FC<InventoryProps> = ({
 
               {isAdjustment && (
                 <div>
-                  <label className="block text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3 text-left">Justification (Mandatory)</label>
-                  <textarea 
-                    required 
-                    placeholder="e.g. Scrap discard, damage, scale adjustment..."
+                  <label className="block text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3 text-left">Remarks — Reason for Mismatch/Rejection (Mandatory)</label>
+                  <textarea
+                    required
+                    placeholder="e.g. Scrap discard, damage, scale adjustment, rejection qty..."
                     className="w-full px-6 py-4 bg-rose-50/30 border-2 border-rose-100 rounded-2xl focus:border-rose-500 outline-none font-bold text-slate-900 min-h-[90px] shadow-inner" 
                     value={remarks} 
                     onChange={(e) => setRemarks(e.target.value)} 
@@ -1435,13 +1477,13 @@ const Inventory: React.FC<InventoryProps> = ({
               )}
 
               <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
-                  {isAdjustment ? 'Authorised By' : 'Supplier / Mill Name'}
+                <label className={`block text-[10px] font-black uppercase tracking-widest mb-3 text-left ${isAdjustment ? 'text-rose-500' : 'text-slate-400'}`}>
+                  {isAdjustment ? 'Responsible Name (Mandatory)' : 'Supplier / Mill Name'}
                 </label>
-                <input 
-                  type="text" 
-                  placeholder={isAdjustment ? "Responsible name..." : "Vendor/Supplier name..."}
-                  required 
+                <input
+                  type="text"
+                  placeholder={isAdjustment ? "Name of person responsible..." : "Vendor/Supplier name..."}
+                  required
                   className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900 transition-all shadow-inner" 
                   value={supplier} 
                   onChange={(e) => setSupplier(e.target.value)} 
@@ -1480,7 +1522,7 @@ const Inventory: React.FC<InventoryProps> = ({
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-lg w-full overflow-hidden animate-in slide-in-from-bottom-8">
             <div className={`p-8 text-white text-left ${isAdjustment ? 'bg-rose-600' : 'bg-indigo-600'}`}>
               <h3 className="text-2xl font-black uppercase tracking-tight leading-none text-left">
-                {isAdjustment ? 'Confirm Correction' : 'Confirm Receipt'}
+                {isAdjustment ? 'Confirm Discrepancy Control Entry' : 'Confirm Receipt'}
               </h3>
               <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mt-1 text-left">Database Audit Trail Log Event</p>
             </div>
@@ -1500,7 +1542,7 @@ const Inventory: React.FC<InventoryProps> = ({
                 
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 text-left">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 text-left">
-                    {isAdjustment ? 'Authorizer' : 'Supplier'}
+                    {isAdjustment ? 'Responsible Name' : 'Supplier'}
                   </p>
                   <p className="text-sm font-black text-slate-800 uppercase truncate">{supplier}</p>
                   {!isAdjustment && invoiceNumber && (
