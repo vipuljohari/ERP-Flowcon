@@ -5,7 +5,7 @@ import {
   signOut as firebaseSignOut,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, arrayUnion, runTransaction, deleteField } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
 import { AppUser } from '../types';
 
@@ -76,7 +76,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               await firebaseSignOut(auth);
               setAppUser(null);
             } else {
-              setAppUser({ uid: fbUser.uid, ...data });
+              // Single-active-session lock — Store/Accounts/PPC only (Admin
+              // may stay signed in on several devices at once, e.g.
+              // monitoring from a phone). The device already holding the
+              // lock keeps working normally; a login attempt from any OTHER
+              // device is refused here rather than kicking the first one
+              // out live. If the old device wasn't logged out cleanly
+              // (closed laptop, crashed browser), an Admin has to release
+              // it in User Master — see releaseSession() there.
+              let blockedByOtherSession = false;
+              if (data.role !== 'admin') {
+                const myToken = getDeviceToken();
+                const userRef = doc(db, 'users', fbUser.uid);
+                try {
+                  await runTransaction(db, async (tx) => {
+                    const fresh = await tx.get(userRef);
+                    const freshData = fresh.data() as Omit<AppUser, 'uid'> | undefined;
+                    const lockedTo = freshData?.activeDeviceToken;
+                    if (lockedTo && lockedTo !== myToken) {
+                      blockedByOtherSession = true;
+                      return;
+                    }
+                    tx.update(userRef, { activeDeviceToken: myToken, activeSessionAt: new Date().toISOString() });
+                  });
+                } catch (e) {
+                  // Fail open on a transient Firestore error — never lock
+                  // someone out of their own account over a network blip.
+                }
+              }
+
+              if (blockedByOtherSession) {
+                setError("This account is already logged in on another PC. Log out there first, or ask your Admin to release the session in User Master.");
+                await firebaseSignOut(auth);
+                setAppUser(null);
+              } else {
+                setAppUser({ uid: fbUser.uid, ...data });
+              }
             }
           } else {
             // Auth account exists but no role profile — treat as not provisioned yet.
@@ -109,6 +144,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    // Release this device's single-active-session lock (Store/Accounts/PPC
+    // only) so the account can log in again immediately — elsewhere or
+    // back on this device — without needing an Admin to release it.
+    if (appUser && appUser.role !== 'admin') {
+      try {
+        await updateDoc(doc(db, 'users', appUser.uid), {
+          activeDeviceToken: deleteField(),
+          activeSessionAt: deleteField(),
+        });
+      } catch (e) {
+        // best-effort — never block sign-out on this
+      }
+    }
     await firebaseSignOut(auth);
   };
 

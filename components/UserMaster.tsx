@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { collection, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove, deleteField } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { AppUser, UserRole, PendingDevice } from '../types';
@@ -110,6 +110,26 @@ const UserMaster: React.FC = () => {
     }
   };
 
+  // Single-active-session lock (Store/Accounts/PPC only) — releases the
+  // seat that's currently "owning" this user's login so they can sign in
+  // on a new device right away. Needed when the previous device wasn't
+  // logged out cleanly (closed laptop, crashed browser) and is still
+  // holding the lock.
+  const releaseSession = async (u: AppUser) => {
+    if (!confirm(`Release ${u.displayName}'s active session?\n\nThey'll be able to log in on a different PC immediately. Their old device isn't force-logged-out by this — it'll keep working until someone closes it out or logs out there — but it won't be able to log back in elsewhere until this is done.`)) return;
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'users', u.uid), {
+        activeDeviceToken: deleteField(),
+        activeSessionAt: deleteField(),
+      });
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const totalPending = users.reduce((sum, u) => sum + (u.pendingDevices?.length || 0), 0);
 
   return (
@@ -196,9 +216,18 @@ const UserMaster: React.FC = () => {
                   </button>
                 </td>
               </tr>
-              {u.role !== 'admin' && ((u.pendingDevices?.length || 0) > 0 || (u.authorizedDevices?.length || 0) > 0) && (
+              {u.role !== 'admin' && ((u.pendingDevices?.length || 0) > 0 || (u.authorizedDevices?.length || 0) > 0 || u.activeDeviceToken) && (
                 <tr className="bg-slate-50/50">
                   <td colSpan={5} className="px-4 py-3">
+                    {u.activeDeviceToken && (
+                      <div className="flex items-center justify-between text-xs bg-indigo-50 rounded-lg px-3 py-2 mb-1">
+                        <div className="text-indigo-700">
+                          <span className="font-bold">🔒 Session locked to device {u.activeDeviceToken.slice(0, 8)}…</span>
+                          {u.activeSessionAt && <span className="text-indigo-500 block">since {new Date(u.activeSessionAt).toLocaleString()} — logging in elsewhere is blocked until this is released or they log out</span>}
+                        </div>
+                        <button onClick={() => releaseSession(u)} className="font-bold text-rose-600 shrink-0 ml-4">Release Session</button>
+                      </div>
+                    )}
                     {(u.pendingDevices || []).map((d) => (
                       <div key={d.token} className="flex items-center justify-between text-xs bg-amber-50 rounded-lg px-3 py-2 mb-1">
                         <div className="text-amber-700">

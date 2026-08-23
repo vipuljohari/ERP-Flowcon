@@ -19,6 +19,14 @@ export interface AppUser {
   createdAt: string;
   authorizedDevices?: string[]; // device tokens approved to log in as this user
   pendingDevices?: PendingDevice[]; // device tokens awaiting Admin approval
+  // Single-active-session lock (Store/Accounts/PPC only — Admin is exempt).
+  // Set to the device token that currently "owns" the login the moment
+  // that device signs in; a login from any OTHER device is refused while
+  // this is set. Cleared automatically on a clean Log Out, or manually by
+  // an Admin in User Master (Release Session) if the old device wasn't
+  // logged out cleanly (closed laptop, crashed browser, etc).
+  activeDeviceToken?: string;
+  activeSessionAt?: string; // when activeDeviceToken was last claimed, for Admin's info only
 }
 
 export interface Company {
