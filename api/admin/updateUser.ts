@@ -1,8 +1,8 @@
 // Vercel Serverless Function — production entry point for POST /api/admin/updateUser.
 // See services/apiHandlers.ts for the real logic, and gemini/insights.ts's
 // header comment for why this file needs to exist and why it's typed this way.
-import { handleUpdateUser } from "../../services/apiHandlers";
-import type { MinimalRequest, MinimalResponse } from "../../services/apiHandlers";
+import { handleUpdateUser } from "../../services/apiHandlers.js";
+import type { MinimalRequest, MinimalResponse } from "../../services/apiHandlers.js";
 
 export default async function handler(req: MinimalRequest, res: MinimalResponse) {
   try {

@@ -8,8 +8,8 @@
 // (Vercel's real req/res objects satisfy this shape at runtime regardless
 // of the type annotation here) and avoids adding a new dependency just for
 // type-only imports.
-import { handleInsights } from "../../services/apiHandlers";
-import type { MinimalRequest, MinimalResponse } from "../../services/apiHandlers";
+import { handleInsights } from "../../services/apiHandlers.js";
+import type { MinimalRequest, MinimalResponse } from "../../services/apiHandlers.js";
 
 export default async function handler(req: MinimalRequest, res: MinimalResponse) {
   try {

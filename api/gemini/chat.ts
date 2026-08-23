@@ -1,8 +1,8 @@
 // Vercel Serverless Function — production entry point for POST /api/gemini/chat.
 // See services/apiHandlers.ts for the real logic, and insights.ts's header
 // comment for why this file needs to exist and why it's typed this way.
-import { handleChat } from "../../services/apiHandlers";
-import type { MinimalRequest, MinimalResponse } from "../../services/apiHandlers";
+import { handleChat } from "../../services/apiHandlers.js";
+import type { MinimalRequest, MinimalResponse } from "../../services/apiHandlers.js";
 
 export default async function handler(req: MinimalRequest, res: MinimalResponse) {
   try {
