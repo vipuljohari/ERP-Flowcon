@@ -1462,7 +1462,7 @@ const Inventory: React.FC<InventoryProps> = ({
                 <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-rose-50/20 text-rose-950 font-black">Dispatch Kg</th>
                 <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-amber-50/25 text-amber-950 font-black">Scrap Kg (Gross − Net)</th>
                 <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-indigo-50/20 text-indigo-950 font-black">Closing Kg as on date {formattedToday}</th>
-                <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-emerald-50/20 text-emerald-950 font-black">Tentative Closing {formattedNextMonth}</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-emerald-50/20 text-emerald-950 font-black">Tentative Opening Inventory {formattedNextMonth}</th>
                 <th className="px-8 py-6 text-center">Actions</th>
               </tr>
             </thead>

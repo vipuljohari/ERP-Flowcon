@@ -41,6 +41,22 @@ const BulkScheduleImport: React.FC<BulkScheduleImportProps> = ({ isOpen, onClose
   const [busy, setBusy] = useState(false);
   const [writing, setWriting] = useState(false);
 
+  // Must run on every render regardless of `isOpen` — the early return
+  // below skips everything after it, and a hook called only when isOpen is
+  // true changes this component's hook count between renders, which is
+  // exactly what triggered the "Rendered more hooks than during the
+  // previous render" crash the moment the modal was opened (React error
+  // #310). All hooks live above the early return now.
+  const totals = useMemo(() => {
+    if (!sheets) return { updates: 0, unmatched: 0, readySheets: 0 };
+    let updates = 0, unmatched = 0, readySheets = 0;
+    sheets.forEach(s => {
+      if (s.customerName) { updates += s.updates.length; readySheets++; }
+      unmatched += s.unmatched.length;
+    });
+    return { updates, unmatched, readySheets };
+  }, [sheets]);
+
   if (!isOpen) return null;
 
   const reset = () => {
@@ -78,16 +94,6 @@ const BulkScheduleImport: React.FC<BulkScheduleImportProps> = ({ isOpen, onClose
       return next;
     });
   };
-
-  const totals = useMemo(() => {
-    if (!sheets) return { updates: 0, unmatched: 0, readySheets: 0 };
-    let updates = 0, unmatched = 0, readySheets = 0;
-    sheets.forEach(s => {
-      if (s.customerName) { updates += s.updates.length; readySheets++; }
-      unmatched += s.unmatched.length;
-    });
-    return { updates, unmatched, readySheets };
-  }, [sheets]);
 
   const handleConfirm = async () => {
     if (!sheets) return;
