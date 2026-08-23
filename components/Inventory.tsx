@@ -108,7 +108,10 @@ const Inventory: React.FC<InventoryProps> = ({
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  
+  // Guards "Post to Database" against a fast double-click posting the same
+  // inward entry twice before the confirm modal has a chance to close.
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   // Selection
   const [selectedPart, setSelectedPart] = useState<Part | null>(null);
   const [selectedRM, setSelectedRM] = useState<RawMaterial | null>(null);
@@ -248,7 +251,8 @@ const Inventory: React.FC<InventoryProps> = ({
   };
 
   const handleFinalConfirm = () => {
-    if (readOnly) return;
+    if (readOnly || isSubmitting) return;
+    setIsSubmitting(true);
 
     if (inventoryMode === 'item' && selectedPart) {
       const qty = parseInt(addQty);
@@ -303,6 +307,7 @@ const Inventory: React.FC<InventoryProps> = ({
     setSupplier('');
     setRemarks('');
     setInvoiceNumber('');
+    setIsSubmitting(false);
   };
 
   // Item-wise Opening Balance is now a STORED, month-anchored value — the
@@ -1585,7 +1590,7 @@ const Inventory: React.FC<InventoryProps> = ({
             </div>
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex gap-4">
               <button onClick={() => setShowConfirmModal(false)} className="flex-1 py-5 border-2 border-slate-100 rounded-2xl font-black text-slate-500 uppercase text-[11px] tracking-widest hover:bg-white">Modify</button>
-              <button onClick={handleFinalConfirm} className={`flex-[2] py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl active:scale-95 ${isAdjustment ? 'bg-rose-600' : 'bg-slate-900'}`}>Post to Database</button>
+              <button onClick={handleFinalConfirm} disabled={isSubmitting} className={`flex-[2] py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl active:scale-95 disabled:opacity-50 disabled:active:scale-100 ${isAdjustment ? 'bg-rose-600' : 'bg-slate-900'}`}>{isSubmitting ? 'Posting…' : 'Post to Database'}</button>
             </div>
           </div>
         </div>

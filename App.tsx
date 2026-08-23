@@ -926,9 +926,16 @@ const MainApp: React.FC = () => {
       const sMonth = sD.getMonth();
       const sDay = sD.getDate();
       
-      const isCurrentMonth = sYear === new Date().getFullYear() && sMonth === new Date().getMonth();
       const isInMonth = year === sYear && month === sMonth;
-      const isBeforeOrOnDay = isCurrentMonth || year < sYear || (year === sYear && (month < sMonth || (month === sMonth && day <= sDay)));
+      // Bug fix: this used to short-circuit on `isCurrentMonth ||`, which
+      // skipped the day check entirely whenever the selected date fell in
+      // today's calendar month — so picking a back-date earlier this month
+      // silently showed the WHOLE month's data (including entries after the
+      // selected day) instead of only entries up to and including it. The
+      // general year/month/day comparison below already handles "today's
+      // month, day <= sDay" correctly on its own, so the special case was
+      // both redundant and wrong.
+      const isBeforeOrOnDay = year < sYear || (year === sYear && (month < sMonth || (month === sMonth && day <= sDay)));
       
       return isInMonth && isBeforeOrOnDay;
     });
@@ -953,9 +960,16 @@ const MainApp: React.FC = () => {
       const sMonth = sD.getMonth();
       const sDay = sD.getDate();
       
-      const isCurrentMonth = sYear === new Date().getFullYear() && sMonth === new Date().getMonth();
       const isInMonth = year === sYear && month === sMonth;
-      const isBeforeOrOnDay = isCurrentMonth || year < sYear || (year === sYear && (month < sMonth || (month === sMonth && day <= sDay)));
+      // Bug fix: this used to short-circuit on `isCurrentMonth ||`, which
+      // skipped the day check entirely whenever the selected date fell in
+      // today's calendar month — so picking a back-date earlier this month
+      // silently showed the WHOLE month's data (including entries after the
+      // selected day) instead of only entries up to and including it. The
+      // general year/month/day comparison below already handles "today's
+      // month, day <= sDay" correctly on its own, so the special case was
+      // both redundant and wrong.
+      const isBeforeOrOnDay = year < sYear || (year === sYear && (month < sMonth || (month === sMonth && day <= sDay)));
       
       return isInMonth && isBeforeOrOnDay;
     });
@@ -980,9 +994,16 @@ const MainApp: React.FC = () => {
       const sMonth = sD.getMonth();
       const sDay = sD.getDate();
       
-      const isCurrentMonth = sYear === new Date().getFullYear() && sMonth === new Date().getMonth();
       const isInMonth = year === sYear && month === sMonth;
-      const isBeforeOrOnDay = isCurrentMonth || year < sYear || (year === sYear && (month < sMonth || (month === sMonth && day <= sDay)));
+      // Bug fix: this used to short-circuit on `isCurrentMonth ||`, which
+      // skipped the day check entirely whenever the selected date fell in
+      // today's calendar month — so picking a back-date earlier this month
+      // silently showed the WHOLE month's data (including entries after the
+      // selected day) instead of only entries up to and including it. The
+      // general year/month/day comparison below already handles "today's
+      // month, day <= sDay" correctly on its own, so the special case was
+      // both redundant and wrong.
+      const isBeforeOrOnDay = year < sYear || (year === sYear && (month < sMonth || (month === sMonth && day <= sDay)));
       
       return isInMonth && isBeforeOrOnDay;
     });
@@ -1187,7 +1208,14 @@ const MainApp: React.FC = () => {
               inwardLogs={contextInwardLogs}
               onAddInward={handleAddInward}
               isAdmin={isAdmin}
-              readOnly={!(isAdmin || role === 'store')}
+              // Bug fix: previously only role-gated, so Inventory stayed
+              // editable while browsing a past date via the calendar —
+              // unlike Dispatch/Schedule, which already go read-only in
+              // that case. A new entry made while viewing history still
+              // posts with TODAY's real timestamp (see handleAddInward),
+              // so it silently landed on the wrong day. Now matches the
+              // same historical-view lock used elsewhere in the app.
+              readOnly={!(isAdmin || role === 'store') || isH}
               selectedDate={sD}
               selectedDateDisplay={sD.toLocaleDateString('en-GB')}
               rawMaterials={modelFilteredRawMaterials}
