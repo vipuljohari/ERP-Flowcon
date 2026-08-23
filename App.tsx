@@ -30,6 +30,7 @@ import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
 import { TallyService } from './services/tally';
+import { isSheetRM, rmKgPerPart, partsPerRMUnit } from './services/rmYield';
 
 const getLocalISOString = (date: Date = new Date()): string => {
   const pad = (num: number) => String(num).padStart(2, '0');
@@ -235,6 +236,7 @@ const MainApp: React.FC = () => {
     const targetMonthKey = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}`;
 
     rawMaterials.forEach(rm => {
+      const rmIsSheet = isSheetRM(rm);
       const rmLength = rm.length || 6000;
       const rmStandardMeters = rmLength / 1000;
 
@@ -286,6 +288,47 @@ const MainApp: React.FC = () => {
             return l.rmId === rm.id && y === simYear && m === simMonth;
           })
           .reduce((sum, l) => sum + l.quantity, 0);
+
+        // Sheet RM: `quantity` on each inward log IS Kg (admin enters it
+        // directly, see Inventory.tsx) — there's no bar-length conversion,
+        // and no separate cut-scrap term (a Sheet part's Gross Weight
+        // already bakes in its own scrap allowance, see rmKgPerPart).
+        if (rmIsSheet) {
+          const mappedParts = parts.filter(
+            p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)) || (p.customerRMMappings?.[rm.customerName] === rm.id)
+          );
+
+          let totalConsumedKg = 0;
+          mappedParts.forEach(item => {
+            const kgPerPiece = rmKgPerPart(item);
+            if (kgPerPiece <= 0) return;
+            const salesQty = sales
+              .filter(s => {
+                if (s.partId !== item.id) return false;
+                if (s.customer.toUpperCase().trim() !== rm.customerName.toUpperCase().trim()) return false;
+                let y: number, m: number;
+                if (s.timestamp && s.timestamp.includes('T')) {
+                  const dateParts = s.timestamp.split('T')[0].split('-');
+                  y = parseInt(dateParts[0]);
+                  m = parseInt(dateParts[1]) - 1;
+                } else {
+                  const d = new Date(s.timestamp);
+                  y = d.getFullYear();
+                  m = d.getMonth();
+                }
+                return y === simYear && m === simMonth;
+              })
+              .reduce((sum, s) => sum + s.quantity, 0);
+            totalConsumedKg += salesQty * kgPerPiece;
+          });
+
+          const openingKg = currentPipes; // for a Sheet RM, this variable already holds Kg, not pieces
+          currentPipes = parseFloat((openingKg + monthInwardPipes - totalConsumedKg).toFixed(2));
+
+          simMonth++;
+          if (simMonth > 11) { simMonth = 0; simYear++; }
+          continue;
+        }
 
         const monthInwardMeters = monthInwardPipes * rmStandardMeters;
 
@@ -534,19 +577,10 @@ const MainApp: React.FC = () => {
         const totalRMOpeningPcs = mappedRMs.reduce((sum, rm) => {
           const opBalancePipesStr = resolvedRMOpeningBalances[rm.id] || localRMOpeningBalances[rm.id] || '0';
           const openingBalancePipes = parseFloat(opBalancePipesStr);
-
-          const rmLength = rm.length || 6000;
-          const partLength = p.itemLength || 0;
-          let yieldFactor = 0;
-          if (partLength > 0) {
-            yieldFactor = Math.floor(rmLength / partLength);
-          } else {
-            const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-            const partWeight = p.itemWeight || 0;
-            if (partWeight > 0 && rmWeight > 0) {
-              yieldFactor = Math.floor(rmWeight / partWeight);
-            }
-          }
+          // partsPerRMUnit branches on rm.category: Tube = pieces-per-bar
+          // (by length, or weight fallback); Sheet = pieces-per-Kg (the
+          // opening balance for a Sheet RM is already stored in Kg).
+          const yieldFactor = partsPerRMUnit(p, rm);
           return sum + Math.round(openingBalancePipes * yieldFactor);
         }, 0);
 
@@ -1031,19 +1065,7 @@ const MainApp: React.FC = () => {
         const monthRMOpeningPcs = mappedRMs.reduce((sum, rm) => {
           const opBalancePipesStr = resolvedRMOpeningBalances[rm.id] || '0';
           const openingBalancePipes = parseFloat(opBalancePipesStr);
-
-          const rmLength = rm.length || 6000;
-          const partLength = p.itemLength || 0;
-          let yieldFactor = 0;
-          if (partLength > 0) {
-            yieldFactor = Math.floor(rmLength / partLength);
-          } else {
-            const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-            const partWeight = p.itemWeight || 0;
-            if (partWeight > 0 && rmWeight > 0) {
-              yieldFactor = Math.floor(rmWeight / partWeight);
-            }
-          }
+          const yieldFactor = partsPerRMUnit(p, rm);
           return sum + Math.round(openingBalancePipes * yieldFactor);
         }, 0);
 
@@ -1320,7 +1342,8 @@ const MainApp: React.FC = () => {
                   }
                   return rm;
                 }));
-              }} 
+              }}
+              onBulkAdd={handleBulkAddParts}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'rm_master' && isAdmin && (
@@ -1457,7 +1480,7 @@ const MainApp: React.FC = () => {
               isAdmin={isAdmin}
             />
           )}
-          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} />}
+          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
           </ErrorBoundary>
         </div>
       </main>
@@ -1485,18 +1508,11 @@ const MainApp: React.FC = () => {
       setRmInwardLogs(prev => {
         let nextLogs = [...prev];
         linkedRMs.forEach(rm => {
-          const rmLength = rm.length || 6000;
-          const partLength = part.itemLength || 0;
-          let yieldFactor = 0;
-          if (partLength > 0) {
-            yieldFactor = Math.floor(rmLength / partLength);
-          } else {
-            const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-            const partWeight = part.itemWeight || 0;
-            if (partWeight > 0 && rmWeight > 0) {
-              yieldFactor = Math.floor(rmWeight / partWeight);
-            }
-          }
+          // yieldFactor = pieces this RM unit yields (partsPerRMUnit branches
+          // tube/sheet, see services/rmYield.ts). qty/yieldFactor is the
+          // RM-unit-equivalent of `qty` pieces either way: bars for Tube,
+          // Kg for Sheet (1/yieldFactor === grossWeight Kg/pc there).
+          const yieldFactor = partsPerRMUnit(part, rm);
           if (yieldFactor > 0) {
             const pipesQty = parseFloat((qty / yieldFactor).toFixed(2));
             if (pipesQty !== 0) {
@@ -1508,6 +1524,7 @@ const MainApp: React.FC = () => {
                 supplier: sup,
                 timestamp: finalTs,
                 invoiceNumber: invNum,
+                unit: isSheetRM(rm) ? 'kg' : 'pcs',
                 remarks: rem || `Auto-Converted from Part Inward (${qty} Pcs of ${part.name})`
               }, ...nextLogs];
             }
@@ -1520,18 +1537,7 @@ const MainApp: React.FC = () => {
       setRawMaterials(prevRMs => prevRMs.map(rm => {
         const isLinked = (part.customerRMMappings?.[rm.customerName] === rm.id) || (rm.partId === part.id) || (rm.partIds && rm.partIds.includes(part.id));
         if (isLinked) {
-          const rmLength = rm.length || 6000;
-          const partLength = part.itemLength || 0;
-          let yieldFactor = 0;
-          if (partLength > 0) {
-            yieldFactor = Math.floor(rmLength / partLength);
-          } else {
-            const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-            const partWeight = part.itemWeight || 0;
-            if (partWeight > 0 && rmWeight > 0) {
-              yieldFactor = Math.floor(rmWeight / partWeight);
-            }
-          }
+          const yieldFactor = partsPerRMUnit(part, rm);
           if (yieldFactor > 0) {
             const pipesQty = parseFloat((qty / yieldFactor).toFixed(2));
             return { ...rm, stock: rm.stock + pipesQty };
@@ -1542,11 +1548,11 @@ const MainApp: React.FC = () => {
     }
   }
 
-  function handleAddRMInward(rmId: string, qty: number, sup: string, rem?: string, ts?: string, invNum?: string) {
+  function handleAddRMInward(rmId: string, qty: number, sup: string, rem?: string, ts?: string, invNum?: string, unit?: 'pcs' | 'kg', sheetSizeText?: string) {
     const finalTs = ts || getLocalISOString();
     const rm = rawMaterials.find(r => r.id === rmId);
     if (!rm) return;
-    setRmInwardLogs(prev => [{ id: Math.random().toString(36).substr(2, 9), rmId, rmSize: rm.size, quantity: qty, supplier: sup, timestamp: finalTs, remarks: rem, invoiceNumber: invNum }, ...prev]);
+    setRmInwardLogs(prev => [{ id: Math.random().toString(36).substr(2, 9), rmId, rmSize: rm.size, quantity: qty, supplier: sup, timestamp: finalTs, remarks: rem, invoiceNumber: invNum, unit: unit || (isSheetRM(rm) ? 'kg' : 'pcs'), sheetSizeText }, ...prev]);
     setRawMaterials(prev => prev.map(r => r.id === rmId ? { ...r, stock: r.stock + qty } : r));
 
     // Find linked parts using RM mappings
@@ -1555,21 +1561,14 @@ const MainApp: React.FC = () => {
     });
 
     if (linkedParts.length > 0) {
+      const rmUnitLabel = isSheetRM(rm) ? `${qty} Kg of ${rm.thickness || rm.size}` : `${qty} Pipes of size ${rm.size}`;
       setInwardLogs(prev => {
         let nextLogs = [...prev];
         linkedParts.forEach(p => {
-          const rmLength = rm.length || 6000;
-          const partLength = p.itemLength || 0;
-          let yieldFactor = 0;
-          if (partLength > 0) {
-            yieldFactor = Math.floor(rmLength / partLength);
-          } else {
-            const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-            const partWeight = p.itemWeight || 0;
-            if (partWeight > 0 && rmWeight > 0) {
-              yieldFactor = Math.floor(rmWeight / partWeight);
-            }
-          }
+          // yieldFactor = pieces per RM unit (partsPerRMUnit branches
+          // tube/sheet). qty*yieldFactor is pieces obtainable from `qty`
+          // RM units either way: bars for Tube, Kg for Sheet.
+          const yieldFactor = partsPerRMUnit(p, rm);
           const pcs = Math.round(qty * yieldFactor);
           if (pcs !== 0) {
             nextLogs = [{
@@ -1581,13 +1580,75 @@ const MainApp: React.FC = () => {
               supplier: sup,
               timestamp: finalTs,
               invoiceNumber: invNum,
-              remarks: rem || `Auto-Converted from RM Inward (${qty} Pipes of size ${rm.size})`
+              remarks: rem || `Auto-Converted from RM Inward (${rmUnitLabel})`
             }, ...nextLogs];
           }
         });
         return nextLogs;
       });
     }
+  }
+
+  // Bulk Item Master upload (Admin only, see components/BulkItemImport.tsx).
+  // Writes in chunks of <=450 new parts per setParts() call rather than one
+  // call for the whole upload — useFirestoreArray's setData() commits one
+  // Firestore writeBatch per call (hooks/useFirestoreArray.ts), and Firestore
+  // batches hard-cap at 500 operations; a single-shot >500-row upload would
+  // silently fail that commit (a rejected batch is only console.error'd, no
+  // user-facing error surfaces). Yielding via setTimeout between chunks lets
+  // the hook's internal `dataRef` catch up before the next chunk reads
+  // `prev`, so no chunk's new rows get clobbered by an earlier chunk's
+  // stale snapshot.
+  async function handleBulkAddParts(newPartsData: Partial<Part>[]) {
+    if (newPartsData.length === 0) return;
+    const CHUNK_SIZE = 450;
+    const built: Part[] = newPartsData.map(p => ({
+      ...p,
+      id: Math.random().toString(36).substr(2, 9),
+      stock: 0,
+      inward: 0,
+      revisionCount: 0,
+      lastUpdated: new Date().toISOString(),
+      status: 'Out of Stock',
+      schedules: {},
+    } as Part));
+
+    for (let i = 0; i < built.length; i += CHUNK_SIZE) {
+      const chunk = built.slice(i, i + CHUNK_SIZE);
+      setParts(prev => [...prev, ...chunk]);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  // Bulk Customer Schedule upload (Admin only, see
+  // components/BulkScheduleImport.tsx). A part can appear in multiple
+  // customer sheets in one upload, so updates are grouped by partId first —
+  // one setParts() pass touching every affected part once, each bump of
+  // revisionCount matching the existing single-schedule edit path above
+  // (ScheduleManager's onUpdateSchedule) for a consistent audit trail.
+  function handleBulkUpdateSchedules(updates: { partId: string; customerName: string; qty: number }[]) {
+    if (updates.length === 0) return;
+    const byPart = new Map<string, { customerName: string; qty: number }[]>();
+    updates.forEach(u => {
+      if (!byPart.has(u.partId)) byPart.set(u.partId, []);
+      byPart.get(u.partId)!.push({ customerName: u.customerName, qty: u.qty });
+    });
+
+    setParts(prev => prev.map(p => {
+      const changes = byPart.get(p.id);
+      if (!changes) return p;
+      const nextSchedules = { ...p.schedules };
+      let changed = false;
+      changes.forEach(c => {
+        if (nextSchedules[c.customerName] !== c.qty) {
+          nextSchedules[c.customerName] = c.qty;
+          changed = true;
+        }
+      });
+      if (!changed) return p;
+      return { ...p, schedules: nextSchedules, revisionCount: p.revisionCount + 1 };
+    }));
   }
 };
 

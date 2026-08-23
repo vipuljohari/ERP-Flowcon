@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Part, Customer, RawMaterial } from '../types';
+import { Part, Customer, RawMaterial, PartType } from '../types';
 import { CATEGORIES } from '../constants';
+import BulkItemImport from './BulkItemImport';
+
+// Mirrors RMMaster.tsx's partMatchesRMCategory (inverse direction) — an RM
+// with no category set is a pre-existing Tube RM (see types.ts's
+// RMCategory comment).
+const rmMatchesPartType = (rm: RawMaterial, partType: PartType): boolean =>
+  partType === 'sheet_metal' ? rm.category === 'sheet' : (rm.category || 'tube') === 'tube';
 
 interface ItemMasterDraft {
   sapCode: string;
@@ -19,9 +26,11 @@ interface ItemMasterProps {
   setParts?: (update: Part[] | ((prev: Part[]) => Part[])) => void;
   prefillDraft?: ItemMasterDraft | null;
   onDraftConsumed?: () => void;
+  onBulkAdd?: (newParts: Partial<Part>[]) => void;
 }
 
-const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts, prefillDraft, onDraftConsumed }) => {
+const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete, customers, rawMaterials, setParts, prefillDraft, onDraftConsumed, onBulkAdd }) => {
+  const [showBulkImport, setShowBulkImport] = useState(false);
   // Models scoped per customer — so the dropdown for SKH Palwal only shows
   // models actually used by SKH Palwal's own parts, not every customer's.
   const modelsByCustomer = useMemo(() => {
@@ -93,7 +102,10 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     customerRMMappings: {} as Record<string, string>,
     hasCustomScrap: false,
     customScrapMm: 0,
-    excludeFromBTDispatch: false
+    excludeFromBTDispatch: false,
+    partType: 'tubular' as PartType,
+    netWeight: 0,
+    grossWeight: 0,
   });
 
   const handleOpenAdd = () => {
@@ -102,7 +114,8 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       name: '', sapCode: '', sku: '', category: CATEGORIES[0],
       rate: 0, customerRates: {}, customerModels: {}, size: '', minThreshold: 100, mappedCustomers: [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
-      hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false
+      hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false,
+      partType: 'tubular', netWeight: 0, grossWeight: 0,
     });
     setShowModal(true);
   };
@@ -122,7 +135,8 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       size: '', minThreshold: 100,
       mappedCustomers: prefillDraft.customer ? [prefillDraft.customer] : [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
-      hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false
+      hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false,
+      partType: 'tubular', netWeight: 0, grossWeight: 0,
     });
     setShowModal(true);
     onDraftConsumed?.();
@@ -139,7 +153,10 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       customerRMMappings: p.customerRMMappings || {},
       hasCustomScrap: p.hasCustomScrap || false,
       customScrapMm: p.customScrapMm || 0,
-      excludeFromBTDispatch: p.excludeFromBTDispatch || false
+      excludeFromBTDispatch: p.excludeFromBTDispatch || false,
+      partType: p.partType || 'tubular',
+      netWeight: p.netWeight || 0,
+      grossWeight: p.grossWeight || 0,
     });
     setShowModal(true);
   };
@@ -192,6 +209,10 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (formData.partType === 'sheet_metal' && formData.grossWeight < formData.netWeight) {
+      window.alert('Gross Weight must be greater than or equal to Net Weight (Scrap = Gross - Net can\'t be negative).');
+      return;
+    }
     if (editingId) onEdit(editingId, formData);
     else onAdd(formData);
     setShowModal(false);
@@ -264,7 +285,15 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
             className="px-6 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none font-bold text-slate-700 bg-white w-64 shadow-sm"
             value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
           />
-          <button 
+          {onBulkAdd && (
+            <button
+              onClick={() => setShowBulkImport(true)}
+              className="bg-slate-900 text-white px-6 py-4 rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-slate-800 transition-all shadow-xl active:scale-95"
+            >
+              📊 Bulk Upload
+            </button>
+          )}
+          <button
             onClick={handleOpenAdd}
             className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 active:scale-95"
           >
@@ -272,6 +301,16 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
           </button>
         </div>
       </header>
+
+      {onBulkAdd && (
+        <BulkItemImport
+          isOpen={showBulkImport}
+          onClose={() => setShowBulkImport(false)}
+          parts={parts}
+          customers={customers}
+          onConfirm={onBulkAdd}
+        />
+      )}
 
       {reorderMode && (
         <div className="bg-white rounded-[2rem] shadow-sm border border-indigo-200 p-6">
@@ -327,21 +366,40 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                 </td>
                 <td className="px-8 py-6">
                   <div className="flex flex-col gap-1 items-start">
-                    <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-md text-[10px] font-black uppercase tracking-tight border border-slate-200">{p.size}</span>
-                    {(p.itemWeight !== undefined && p.itemWeight > 0) && (
-                      <div className="text-[10px] text-slate-500 font-medium">Weight: <span className="font-bold text-slate-700">{p.itemWeight} Kg</span></div>
-                    )}
-                    {(p.itemLength !== undefined && p.itemLength > 0) && (
-                      <div className="text-[10px] text-slate-500 font-medium">Length: <span className="font-bold text-slate-700">{p.itemLength} mm</span></div>
-                    )}
-                    {p.itemLength !== undefined && p.itemLength > 0 && (
-                      <div className="text-[10px] text-slate-500 font-medium">
-                        End Scrap: {p.hasCustomScrap ? (
-                          <span className="font-black text-amber-600 bg-amber-50 border border-amber-200 px-1 py-0.5 rounded text-[9px] uppercase">Custom: {p.customScrapMm} mm</span>
-                        ) : (
-                          <span className="font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-1 py-0.5 rounded text-[9px] uppercase">Remainder %</span>
+                    <span className="bg-slate-100 text-slate-600 px-3 py-1 rounded-md text-[10px] font-black uppercase tracking-tight border border-slate-200 flex items-center gap-1.5">
+                      {p.size}
+                      {p.partType === 'sheet_metal' && <span className="bg-violet-100 text-violet-700 px-1 py-0.5 rounded text-[8px] normal-case">Sheet Metal</span>}
+                    </span>
+                    {p.partType === 'sheet_metal' ? (
+                      <>
+                        {(p.netWeight !== undefined && p.netWeight > 0) && (
+                          <div className="text-[10px] text-slate-500 font-medium">Net Wt: <span className="font-bold text-slate-700">{p.netWeight} Kg</span></div>
                         )}
-                      </div>
+                        {(p.grossWeight !== undefined && p.grossWeight > 0) && (
+                          <div className="text-[10px] text-slate-500 font-medium">Gross Wt: <span className="font-bold text-slate-700">{p.grossWeight} Kg</span></div>
+                        )}
+                        {(p.grossWeight !== undefined && p.netWeight !== undefined && p.grossWeight > 0) && (
+                          <div className="text-[10px] text-slate-500 font-medium">Scrap/pc: <span className="font-black text-violet-600">{Math.max(0, p.grossWeight - p.netWeight).toFixed(3)} Kg</span></div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {(p.itemWeight !== undefined && p.itemWeight > 0) && (
+                          <div className="text-[10px] text-slate-500 font-medium">Weight: <span className="font-bold text-slate-700">{p.itemWeight} Kg</span></div>
+                        )}
+                        {(p.itemLength !== undefined && p.itemLength > 0) && (
+                          <div className="text-[10px] text-slate-500 font-medium">Length: <span className="font-bold text-slate-700">{p.itemLength} mm</span></div>
+                        )}
+                        {p.itemLength !== undefined && p.itemLength > 0 && (
+                          <div className="text-[10px] text-slate-500 font-medium">
+                            End Scrap: {p.hasCustomScrap ? (
+                              <span className="font-black text-amber-600 bg-amber-50 border border-amber-200 px-1 py-0.5 rounded text-[9px] uppercase">Custom: {p.customScrapMm} mm</span>
+                            ) : (
+                              <span className="font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-1 py-0.5 rounded text-[9px] uppercase">Remainder %</span>
+                            )}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </td>
@@ -416,6 +474,28 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                     {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                   </select>
                 </div>
+                <div className="col-span-2 text-left">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Part Type</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {(['tubular', 'sheet_metal'] as PartType[]).map(pt => (
+                      <button
+                        key={pt}
+                        type="button"
+                        onClick={() => {
+                          if (formData.partType === pt) return;
+                          // Switching type invalidates any RM already linked
+                          // per customer (a Tube RM can't back a Sheet Metal
+                          // part and vice versa) — clear those links so a
+                          // stale mismatched mapping can't slip through.
+                          setFormData({ ...formData, partType: pt, customerRMMappings: {} });
+                        }}
+                        className={`py-4 rounded-2xl font-black uppercase text-[11px] tracking-widest border-2 transition-all ${formData.partType === pt ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-200'}`}
+                      >
+                        {pt === 'tubular' ? 'Tubular' : 'Sheet Metal'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="text-left">
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Size/Specifications</label>
                   <input type="text" required placeholder="e.g. 60x40x4" className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.size} onChange={(e) => setFormData({...formData, size: e.target.value})} />
@@ -428,42 +508,63 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Min Stock Threshold</label>
                   <input type="number" required className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.minThreshold} onChange={(e) => setFormData({...formData, minThreshold: parseInt(e.target.value) || 0})} />
                 </div>
-                <div className="text-left">
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Item Weight (Kg)</label>
-                  <input type="number" step="0.001" placeholder="Weight in Kg..." className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.itemWeight || ''} onChange={(e) => setFormData({...formData, itemWeight: parseFloat(e.target.value) || 0})} />
-                </div>
-                <div className="text-left">
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Item Length (mm)</label>
-                  <input type="number" step="1" placeholder="Length in mm..." className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.itemLength || ''} onChange={(e) => setFormData({...formData, itemLength: parseInt(e.target.value) || 0})} />
-                </div>
-                <div className="col-span-2 flex flex-col md:flex-row gap-6 items-start md:items-center bg-amber-50/40 border border-amber-200/50 p-5 rounded-[1.5rem] mt-1">
-                  <label className="flex items-center gap-3 cursor-pointer flex-1">
-                    <input 
-                      type="checkbox" 
-                      className="w-5 h-5 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer" 
-                      checked={formData.hasCustomScrap || false} 
-                      onChange={(e) => setFormData({...formData, hasCustomScrap: e.target.checked})} 
-                    />
+                {formData.partType === 'sheet_metal' ? (
+                  <>
                     <div className="text-left">
-                      <span className="block text-xs font-black text-slate-800">Specify Custom End-Piece Scrap</span>
-                      <span className="block text-[10px] text-slate-500 font-medium">Check to override automatic length-remainder calculations with a constant scrap value per raw pipe</span>
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Net Weight (Kg)</label>
+                      <input type="number" step="0.001" required placeholder="Finished piece weight..." className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.netWeight || ''} onChange={(e) => setFormData({...formData, netWeight: parseFloat(e.target.value) || 0})} />
                     </div>
-                  </label>
-                  {formData.hasCustomScrap && (
-                    <div className="w-full md:w-56 text-left">
-                      <label className="block text-[9px] font-black text-amber-700 uppercase tracking-widest mb-1.5">End-Piece Scrap (mm)</label>
-                      <input 
-                        type="number" 
-                        required 
-                        min="0" 
-                        placeholder="e.g. 50" 
-                        className="w-full px-4 py-3 bg-white border-2 border-amber-250 rounded-xl focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none font-black text-slate-900" 
-                        value={formData.customScrapMm || ''} 
-                        onChange={(e) => setFormData({...formData, customScrapMm: parseInt(e.target.value) || 0})} 
-                      />
+                    <div className="text-left">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Gross Weight (Kg)</label>
+                      <input type="number" step="0.001" required placeholder="Weight before trimming..." className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.grossWeight || ''} onChange={(e) => setFormData({...formData, grossWeight: parseFloat(e.target.value) || 0})} />
                     </div>
-                  )}
-                </div>
+                    <div className="col-span-2 text-left bg-violet-50/50 border border-violet-200/50 px-5 py-4 rounded-2xl">
+                      <span className="text-[10px] font-black text-violet-500 uppercase tracking-widest">Scrap / Piece (auto-calculated)</span>
+                      <div className="font-black text-violet-700 text-lg">
+                        {Math.max(0, (formData.grossWeight || 0) - (formData.netWeight || 0)).toFixed(3)} Kg
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-left">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Item Weight (Kg)</label>
+                      <input type="number" step="0.001" placeholder="Weight in Kg..." className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.itemWeight || ''} onChange={(e) => setFormData({...formData, itemWeight: parseFloat(e.target.value) || 0})} />
+                    </div>
+                    <div className="text-left">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Item Length (mm)</label>
+                      <input type="number" step="1" placeholder="Length in mm..." className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" value={formData.itemLength || ''} onChange={(e) => setFormData({...formData, itemLength: parseInt(e.target.value) || 0})} />
+                    </div>
+                    <div className="col-span-2 flex flex-col md:flex-row gap-6 items-start md:items-center bg-amber-50/40 border border-amber-200/50 p-5 rounded-[1.5rem] mt-1">
+                      <label className="flex items-center gap-3 cursor-pointer flex-1">
+                        <input
+                          type="checkbox"
+                          className="w-5 h-5 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
+                          checked={formData.hasCustomScrap || false}
+                          onChange={(e) => setFormData({...formData, hasCustomScrap: e.target.checked})}
+                        />
+                        <div className="text-left">
+                          <span className="block text-xs font-black text-slate-800">Specify Custom End-Piece Scrap</span>
+                          <span className="block text-[10px] text-slate-500 font-medium">Check to override automatic length-remainder calculations with a constant scrap value per raw pipe</span>
+                        </div>
+                      </label>
+                      {formData.hasCustomScrap && (
+                        <div className="w-full md:w-56 text-left">
+                          <label className="block text-[9px] font-black text-amber-700 uppercase tracking-widest mb-1.5">End-Piece Scrap (mm)</label>
+                          <input
+                            type="number"
+                            required
+                            min="0"
+                            placeholder="e.g. 50"
+                            className="w-full px-4 py-3 bg-white border-2 border-amber-250 rounded-xl focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-none font-black text-slate-900"
+                            value={formData.customScrapMm || ''}
+                            onChange={(e) => setFormData({...formData, customScrapMm: parseInt(e.target.value) || 0})}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
                 <div className="col-span-2 flex items-start gap-3 bg-indigo-50/40 border border-indigo-200/50 p-5 rounded-[1.5rem] mt-1">
                   <label className="flex items-center gap-3 cursor-pointer flex-1">
                     <input 
@@ -490,7 +591,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                 <div className="space-y-4 bg-slate-50 p-6 rounded-[2rem] border border-slate-100 text-left">
                   {customers.map(c => {
                     const isSelected = formData.mappedCustomers.includes(c.name);
-                    const customerRMs = rawMaterials.filter(rm => rm.customerName === c.name);
+                    const customerRMs = rawMaterials.filter(rm => rm.customerName === c.name && rmMatchesPartType(rm, formData.partType));
                     const selectedRMId = formData.customerRMMappings?.[c.name] || '';
 
                     return (
@@ -552,7 +653,9 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                               <option value="">-- No Raw Material (Manual updates only) --</option>
                               {customerRMs.map(rm => (
                                 <option key={rm.id} value={rm.id}>
-                                  {rm.size} (Len: {rm.length}mm, {rm.weightPer1000} Kg/1000mm)
+                                  {(rm.category || 'tube') === 'sheet'
+                                    ? `${rm.size} (Thickness: ${rm.thickness || '—'}, Grade: ${rm.grade || '—'})`
+                                    : `${rm.size} (Len: ${rm.length}mm, ${rm.weightPer1000} Kg/1000mm)`}
                                 </option>
                               ))}
                             </select>

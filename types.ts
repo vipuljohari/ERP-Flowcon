@@ -61,6 +61,11 @@ export interface Customer {
   sortOrder?: number; // Admin-controlled manual display order
 }
 
+// Tubular = the app's original/default part shape (pipes cut to length from
+// a tube RM bar). Sheet Metal = new part shape (stamped/cut from a flat
+// sheet RM) — no item length, instead defined by Net/Gross weight per piece.
+export type PartType = 'tubular' | 'sheet_metal';
+
 export interface Part {
   id: string;
   name: string;
@@ -70,12 +75,12 @@ export interface Part {
   rate: number; // Base rate for valuation
   customerRates: Record<string, number>; // Mapping: { 'Customer Name': 1200.50 }
   customerModels?: Record<string, string>; // Mapping: { 'Customer Name': '2DX' } — which vehicle model/platform this part belongs to, for that customer
-  size: string; 
-  stock: number; 
-  inward: number; 
+  size: string;
+  stock: number;
+  inward: number;
   schedules: Record<string, number>; // Mapping: { 'SKH-PRITHLA': 500, 'SKH-JAIPUR': 300 }
   mappedCustomers: string[]; // List of customer names this part belongs to
-  revisionCount: number; 
+  revisionCount: number;
   minThreshold: number;
   status: StockStatus;
   lastUpdated: string;
@@ -87,6 +92,14 @@ export interface Part {
   customScrapMm?: number; // custom scrap value in mm
   sortOrder?: number; // Admin-controlled manual display order
   excludeFromBTDispatch?: boolean; // job-work exception: BT challans for this part are NOT dispatch — the real Sales Invoice after it returns from Unit 1 is what counts
+  // undefined/missing = 'tubular' (every part created before this field
+  // existed). See services/rmYield.ts for how this drives RM stock math.
+  partType?: PartType;
+  netWeight?: number; // Kg per piece — Sheet Metal only
+  grossWeight?: number; // Kg per piece — Sheet Metal only (netWeight + scrap).
+  // Scrap per piece is NEVER stored directly — always derive it as
+  // (grossWeight - netWeight) wherever it's needed, so it can't drift out
+  // of sync with the two weights it's defined from.
 }
 
 export interface RMManufacturerInvoice {
@@ -128,6 +141,13 @@ export interface RMMaterialLength {
   updatedAt: string;
 }
 
+// 'tube' = the original RM shape (a fixed-length bar, tracked by
+// length + weight/1000mm). 'sheet' = new RM shape for sheet metal, where
+// the delivered sheet size varies every time (2500x1250, 1500x3000,
+// 3000x6300, etc.) so there is no fixed "bar length" — instead identified
+// by Thickness + Grade, with weight entered directly at each inward.
+export type RMCategory = 'tube' | 'sheet';
+
 export interface RawMaterial {
   id: string;
   size: string;
@@ -140,6 +160,17 @@ export interface RawMaterial {
   stock: number; // Current stock (can be in Kg or number of bars. We will represent as total weight in Kg, or tracked as starting/current bars)
   partIds?: string[]; // Mapped Item/Part IDs from item master
   sortOrder?: number; // Admin-controlled manual display order
+  // undefined/missing = 'tube' (every RM created before this field existed).
+  category?: RMCategory;
+  thickness?: string; // Sheet only, e.g. "1.6mm" — deliberately a separate
+  // field from `size` rather than reusing it: `size` is shown throughout
+  // the app with tube-oriented labels ("RM SIZE"), and a sheet's thickness
+  // isn't the same concept as a tube's cross-section spec.
+  grade?: string; // Sheet only, e.g. "IS 513 CR2"
+  // `length`/`weightPer1000` above are meaningless for category==='sheet'
+  // — every place that reads them must branch on category first (see
+  // services/rmYield.ts), never assume a fallback like `rm.length || 6000`
+  // is safe for a Sheet RM.
 }
 
 export interface RMInwardLog {
@@ -151,6 +182,12 @@ export interface RMInwardLog {
   timestamp: string;
   remarks?: string;
   invoiceNumber?: string;
+  // undefined/missing = 'pcs' (every log created before this field existed
+  // — all of them are tube pipe/bar counts). Sheet Metal RM inward logs
+  // set this to 'kg' since the admin types total Kg received directly.
+  unit?: 'pcs' | 'kg';
+  sheetSizeText?: string; // Sheet only — free text e.g. "2500x1250",
+  // record-only for traceability, NEVER used in any weight/stock calc.
 }
 
 export interface Sale {
@@ -184,7 +221,7 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'dispatch_manual' | 'tally_import';
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import';
 
 export interface AdminAlert {
   id: string;

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { InwardLog, Part, RawMaterial } from '../types';
 import * as XLSX from 'xlsx';
+import { isSheetRM } from '../services/rmYield';
 
 interface InwardLogsProps {
   logs: InwardLog[];
@@ -141,6 +142,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
 
         if (!alreadyExists) {
           const dateStr = `${mK}-01T00:00:00.000Z`;
+          const unitLabel = rm && isSheetRM(rm) ? 'Kg' : 'Pipes';
           combined.push({
             id: `audit_local_rm_${key}`,
             partId: part?.id || rm?.partId || 'audit_rm',
@@ -149,7 +151,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
             quantity: val,
             supplier: 'ADMIN_AUDIT',
             timestamp: dateStr,
-            remarks: `[RM_OPENING_BALANCE_SET:${val}|PREV:0] RM Opening Balance set to ${val} Pipes from Previous 0 Pipes (+${val} Pipes) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${mK}]`
+            remarks: `[RM_OPENING_BALANCE_SET:${val}|PREV:0] RM Opening Balance set to ${val} ${unitLabel} from Previous 0 ${unitLabel} (+${val} ${unitLabel}) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${mK}]`
           });
         }
       });

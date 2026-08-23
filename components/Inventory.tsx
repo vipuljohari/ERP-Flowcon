@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert } from '../types';
 import { CATEGORIES } from '../constants';
+import { isSheetRM, partsPerRMUnit, rmKgPerPart } from '../services/rmYield';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -21,7 +22,7 @@ interface InventoryProps {
   rawMaterials?: RawMaterial[];
   rmInwardLogs?: RMInwardLog[];
   customers?: Customer[];
-  onAddRMInward?: (rmId: string, quantity: number, supplier: string, remarks?: string, timestamp?: string, invoiceNumber?: string) => void;
+  onAddRMInward?: (rmId: string, quantity: number, supplier: string, remarks?: string, timestamp?: string, invoiceNumber?: string, unit?: 'pcs' | 'kg', sheetSizeText?: string) => void;
   localRMOpeningBalances?: Record<string, string>;
   setLocalRMOpeningBalances?: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   localPartOpeningBalances?: Record<string, string>;
@@ -74,6 +75,10 @@ const Inventory: React.FC<InventoryProps> = ({
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
+  // RM Inventory (inventoryMode==='rm') tube/sheet toggle — Sheet Metal RM
+  // gets its own, much simpler Kg-only table below (no meters/pipes/
+  // per-cut-scrap concept applies to it), so the two don't share a table.
+  const [selectedRMCategory, setSelectedRMCategory] = useState<'tube' | 'sheet'>('tube');
 
   // --- Admin RM reorder mode ---
   const [rmReorderMode, setRmReorderMode] = useState(false);
@@ -117,10 +122,13 @@ const Inventory: React.FC<InventoryProps> = ({
   const [selectedRM, setSelectedRM] = useState<RawMaterial | null>(null);
   
   // Controlled states for Material Entry
-  const [addQty, setAddQty] = useState<string>(''); 
+  const [addQty, setAddQty] = useState<string>('');
   const [supplier, setSupplier] = useState('');
   const [remarks, setRemarks] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
+  // Sheet Metal RM Inward only — record-only, never used in any calc (see
+  // types.ts's RMInwardLog.sheetSizeText comment).
+  const [sheetSizeText, setSheetSizeText] = useState('');
 
   // Local state to track changes in opening balances before saving
   const [localOpeningBalances, setLocalOpeningBalances] = useState<Record<string, string>>({});
@@ -183,29 +191,22 @@ const Inventory: React.FC<InventoryProps> = ({
     return (rawMaterials || []).filter(rm => {
       return (selectedPart.customerRMMappings?.[rm.customerName] === rm.id) || (rm.partId === selectedPart.id) || (rm.partIds && rm.partIds.includes(selectedPart.id));
     }).map(rm => {
-      const rmLength = rm.length || 6000;
-      const partLength = selectedPart.itemLength || 0;
-      let yieldFactor = 0;
-      if (partLength > 0) {
-        yieldFactor = Math.floor(rmLength / partLength);
-      } else {
-        const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-        const partWeight = selectedPart.itemWeight || 0;
-        if (partWeight > 0 && rmWeight > 0) {
-          yieldFactor = Math.floor(rmWeight / partWeight);
-        }
-      }
-
+      // partsPerRMUnit branches tube/sheet (services/rmYield.ts) — for a
+      // Sheet RM, 1 unit is 1 Kg, so pipesQty below is already the Kg
+      // figure and the separate pipeWeight/kgQty conversion doesn't apply.
+      const yieldFactor = partsPerRMUnit(selectedPart, rm);
       const pipesQty = yieldFactor > 0 ? parseFloat((qtyValue / yieldFactor).toFixed(2)) : 0;
+      const rmLength = rm.length || 6000;
       const pipeWeight = (rmLength * (rm.weightPer1000 || 0)) / 1000;
-      const kgQty = parseFloat((pipesQty * pipeWeight).toFixed(2));
+      const kgQty = isSheetRM(rm) ? pipesQty : parseFloat((pipesQty * pipeWeight).toFixed(2));
 
       return {
         rmSize: rm.size,
         pipesQty,
         kgQty,
         yieldFactor,
-        customerName: rm.customerName
+        customerName: rm.customerName,
+        isSheet: isSheetRM(rm),
       };
     });
   }, [inventoryMode, selectedPart, addQty, rawMaterials]);
@@ -228,9 +229,10 @@ const Inventory: React.FC<InventoryProps> = ({
       const matchesSearch = rm.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             rm.partName.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCustomer = selectedCustomer === 'All' || rm.customerName.toUpperCase().trim() === selectedCustomer.toUpperCase().trim();
-      return matchesSearch && matchesCustomer;
+      const matchesCategory = (rm.category || 'tube') === selectedRMCategory;
+      return matchesSearch && matchesCustomer && matchesCategory;
     });
-  }, [rawMaterials, searchTerm, selectedCustomer]);
+  }, [rawMaterials, searchTerm, selectedCustomer, selectedRMCategory]);
 
 
 
@@ -273,7 +275,7 @@ const Inventory: React.FC<InventoryProps> = ({
       }
     } else if (inventoryMode === 'rm' && selectedRM && onAddRMInward) {
       const qty = parseInt(addQty);
-      onAddRMInward(selectedRM.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, undefined, invoiceNumber.trim() || undefined);
+      onAddRMInward(selectedRM.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, undefined, invoiceNumber.trim() || undefined, isSheetRM(selectedRM) ? 'kg' : 'pcs', isSheetRM(selectedRM) ? (sheetSizeText.trim() || undefined) : undefined);
       if (onCreateAlert) {
         if (qty < 0) {
           // Discrepancy Control Entry (negative value) on the RM side.
@@ -307,6 +309,7 @@ const Inventory: React.FC<InventoryProps> = ({
     setSupplier('');
     setRemarks('');
     setInvoiceNumber('');
+    setSheetSizeText('');
     setIsSubmitting(false);
   };
 
@@ -372,10 +375,11 @@ const Inventory: React.FC<InventoryProps> = ({
     const rm = rawMaterials.find(r => r.id === rmId);
     const targetPartId = rm?.partId || parts.find(p => p.id === rm?.partId || (rm?.customerName && p.customerRMMappings?.[rm.customerName] === rmId))?.id || parts[0]?.id;
 
+    const unitLabel = rm && isSheetRM(rm) ? 'Kg' : 'Pipes';
     const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
-    const remark = `[RM_OPENING_BALANCE_SET:${newVal}|PREV:${currentOpeningPipes}] RM Opening Balance set to ${newVal} Pipes from Previous ${currentOpeningPipes} Pipes (${deltaStr} Pipes) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${monthDisplay}]`;
+    const remark = `[RM_OPENING_BALANCE_SET:${newVal}|PREV:${currentOpeningPipes}] RM Opening Balance set to ${newVal} ${unitLabel} from Previous ${currentOpeningPipes} ${unitLabel} (${deltaStr} ${unitLabel}) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${monthDisplay}]`;
 
-    if (window.confirm(`Audit Action: Adjust Raw Material Opening Balance for ${monthDisplay}?\n\nTarget Balance: ${newVal} Pipes\nPrevious Balance: ${currentOpeningPipes} Pipes\nCorrection: ${deltaStr} Pipes`)) {
+    if (window.confirm(`Audit Action: Adjust Raw Material Opening Balance for ${monthDisplay}?\n\nTarget Balance: ${newVal} ${unitLabel}\nPrevious Balance: ${currentOpeningPipes} ${unitLabel}\nCorrection: ${deltaStr} ${unitLabel}`)) {
       if (propSetRMOpeningBalances) {
         propSetRMOpeningBalances(prev => {
           const updated = { ...prev, [overrideKey]: newVal.toString() };
@@ -491,19 +495,14 @@ const Inventory: React.FC<InventoryProps> = ({
         // RM's own (correct, already-stored) opening balance, not tracked
         // independently for the part. Unrelated to the Opening Balance bug.
         openingBalValue = mappedRMs.reduce((sum, rm) => {
-          const opBalancePipesStr = localRMOpeningBalances[rm.id] || '0';
-          const openingBalancePipes = parseFloat(opBalancePipesStr);
-          const rmLength = rm.length || 6000;
-          const partLength = p.itemLength || 0;
-          let yieldFactor = 0;
-          if (partLength > 0) {
-            yieldFactor = Math.floor(rmLength / partLength);
-          } else {
-            const rmWeight = rmLength * (rm.weightPer1000 / 1000);
-            const partWeight = p.itemWeight || 0;
-            if (partWeight > 0 && rmWeight > 0) yieldFactor = Math.floor(rmWeight / partWeight);
-          }
-          return sum + Math.round(openingBalancePipes * yieldFactor);
+          // localRMOpeningBalances is Pipes for Tube RMs, Kg for Sheet RMs —
+          // partsPerRMUnit already branches on rm.category, so this reduces
+          // correctly to "pieces per Kg" for Sheet instead of the tube-only
+          // bar-length/weight math this used to inline.
+          const opBalanceStr = localRMOpeningBalances[rm.id] || '0';
+          const openingBalanceUnits = parseFloat(opBalanceStr);
+          const yieldFactor = partsPerRMUnit(p, rm);
+          return sum + Math.round(openingBalanceUnits * yieldFactor);
         }, 0);
       } else {
         // Stored, month-anchored value — see resolvedPartOpeningBalances in
@@ -644,6 +643,20 @@ const Inventory: React.FC<InventoryProps> = ({
               <option value="rm">🪵 RM Inventory (RM-wise)</option>
             </select>
           </div>
+
+          {inventoryMode === 'rm' && (
+            <div className="flex flex-col">
+              <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">RM Type</label>
+              <select
+                className="px-5 py-3 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-emerald-500/10 outline-none text-sm font-bold bg-white text-slate-900 shadow-sm"
+                value={selectedRMCategory}
+                onChange={(e) => setSelectedRMCategory(e.target.value as 'tube' | 'sheet')}
+              >
+                <option value="tube">🧵 Tube</option>
+                <option value="sheet">📄 Sheet Metal</option>
+              </select>
+            </div>
+          )}
 
           <div className="flex flex-col">
             <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Customer / Consignee</label>
@@ -1015,7 +1028,7 @@ const Inventory: React.FC<InventoryProps> = ({
         </div>
       )}
 
-      {inventoryMode === 'rm' && !rmReorderMode && (
+      {inventoryMode === 'rm' && !rmReorderMode && selectedRMCategory === 'tube' && (
         <div className={`bg-white rounded-[2.5rem] shadow-sm border overflow-hidden transition-all duration-500 border-indigo-500 shadow-indigo-500/5`}>
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
@@ -1403,12 +1416,13 @@ const Inventory: React.FC<InventoryProps> = ({
                     <td className="px-8 py-6 text-center">
                       {!readOnly && (
                         <button 
-                          onClick={() => { 
-                            setSelectedRM(rm); 
-                            setShowAddModal(true); 
+                          onClick={() => {
+                            setSelectedRM(rm);
+                            setShowAddModal(true);
                             setAddQty('');
                             setSupplier('');
                             setRemarks('');
+                            setSheetSizeText('');
                           }}
                           className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-indigo-600 hover:bg-emerald-600 active:scale-95`}
                         >
@@ -1425,6 +1439,194 @@ const Inventory: React.FC<InventoryProps> = ({
                     {rawMaterials.length === 0 
                       ? 'No Raw Materials defined. Establish RM specs in "RM Master (Admin)" first to track RM Inventory.'
                       : 'No raw materials found matching the selected customer filter.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* SHEET METAL RM-WISE TABLE — Kg-only, no bar-length/pipe concept.
+          Dispatch Kg is the actual RM draw (salesQty * grossWeight, which
+          already includes scrap) — Scrap Kg is shown separately purely for
+          analysis and is NOT subtracted a second time from Closing Kg. */}
+      {inventoryMode === 'rm' && !rmReorderMode && selectedRMCategory === 'sheet' && (
+        <div className={`bg-white rounded-[2.5rem] shadow-sm border overflow-hidden transition-all duration-500 border-violet-500 shadow-violet-500/5`}>
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
+              <tr>
+                <th className="px-8 py-6 border-r border-slate-200/40">Sheet RM & Item</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40">Opening Kg</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40">RM Inward Kg</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-rose-50/20 text-rose-950 font-black">Dispatch Kg</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-amber-50/25 text-amber-950 font-black">Scrap Kg (Gross − Net)</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-indigo-50/20 text-indigo-950 font-black">Closing Kg as on date {formattedToday}</th>
+                <th className="px-8 py-6 text-center border-r border-slate-200/40 bg-emerald-50/20 text-emerald-950 font-black">Tentative Closing {formattedNextMonth}</th>
+                <th className="px-8 py-6 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200/60 bg-white">
+              {filteredRawMaterials.map(rm => {
+                const mappedItems = parts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
+
+                let dispatchKg = 0;
+                let scrapKg = 0;
+                let totalSalesQty = 0;
+                const itemConsumptionBreakdown: { name: string; qty: number; kgUsed: number; scrapKg: number }[] = [];
+
+                mappedItems.forEach(item => {
+                  const salesQty = sales
+                    .filter(s => s.partId === item.id && s.customer.toUpperCase().trim() === rm.customerName.toUpperCase().trim())
+                    .reduce((sum, s) => sum + s.quantity, 0);
+                  totalSalesQty += salesQty;
+
+                  const kgPerPart = rmKgPerPart(item);
+                  const itemKgUsed = salesQty * kgPerPart;
+                  const itemScrapKg = salesQty * Math.max(0, (item.grossWeight || 0) - (item.netWeight || 0));
+
+                  dispatchKg += itemKgUsed;
+                  scrapKg += itemScrapKg;
+
+                  if (salesQty > 0) {
+                    itemConsumptionBreakdown.push({ name: item.name, qty: salesQty, kgUsed: itemKgUsed, scrapKg: itemScrapKg });
+                  }
+                });
+
+                dispatchKg = parseFloat(dispatchKg.toFixed(2));
+                scrapKg = parseFloat(scrapKg.toFixed(2));
+
+                const monthRMInwardKg = parseFloat(rmInwardLogs
+                  .filter(l => l.rmId === rm.id)
+                  .reduce((sum, l) => sum + l.quantity, 0)
+                  .toFixed(2));
+
+                const opBalanceStr = localRMOpeningBalances[rm.id] || '0';
+                const openingBalanceKg = parseFloat(opBalanceStr) || 0;
+
+                const closingBalanceKg = parseFloat((openingBalanceKg + monthRMInwardKg - dispatchKg).toFixed(2));
+
+                let totalScheduleKgNeeded = 0;
+                mappedItems.forEach(item => {
+                  const target = getCustomerSchedule(item, rm.customerName);
+                  const salesQty = sales
+                    .filter(s => s.partId === item.id && s.customer.toUpperCase().trim() === rm.customerName.toUpperCase().trim())
+                    .reduce((sum, s) => sum + s.quantity, 0);
+                  const balanceQtyNeeded = Math.max(0, target - salesQty);
+                  totalScheduleKgNeeded += balanceQtyNeeded * rmKgPerPart(item);
+                });
+                totalScheduleKgNeeded = parseFloat(totalScheduleKgNeeded.toFixed(2));
+
+                const tentativeClosingKg = Math.max(0, parseFloat((closingBalanceKg - totalScheduleKgNeeded).toFixed(2)));
+
+                const isRMNegative = closingBalanceKg < 0;
+
+                const localRMVal = localOpeningBalances[rm.id];
+                const isRMDirty = localRMVal !== undefined && parseFloat(localRMVal) !== openingBalanceKg;
+
+                return (
+                  <tr key={rm.id} className={`hover:bg-violet-50/10 transition-all ${isRMNegative ? 'bg-rose-50/50' : ''}`}>
+                    <td className="px-8 py-6">
+                      <div className="text-[9px] text-violet-500 font-black tracking-tight uppercase mb-0.5">{rm.customerName}</div>
+                      <div className="font-extrabold text-slate-900 text-sm leading-tight uppercase">{rm.size}</div>
+                      <div className="mt-1 text-[10px] text-slate-500 font-medium">
+                        Thickness: <span className="font-bold text-violet-650">{rm.thickness || '—'}</span> · Grade: <span className="font-bold text-violet-650">{rm.grade || '—'}</span>
+                      </div>
+                      {mappedItems.length > 0 && (
+                        <div className="mt-2 text-[10px] text-slate-400 font-bold">
+                          {mappedItems.map(i => i.name).join(', ')}
+                        </div>
+                      )}
+                      {itemConsumptionBreakdown.length > 0 && (
+                        <div className="mt-2 space-y-0.5">
+                          {itemConsumptionBreakdown.map((b, idx) => (
+                            <div key={idx} className="text-[9px] text-slate-400 font-medium">
+                              {b.name}: {b.qty} pcs → {b.kgUsed.toFixed(2)} Kg (scrap {b.scrapKg.toFixed(2)} Kg)
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-8 py-6 text-center border-r border-slate-200/40">
+                      {isAdmin && !readOnly ? (
+                        <div className="flex flex-col items-center gap-1">
+                          <input
+                            type="number"
+                            step="0.01"
+                            className={`w-28 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
+                              isRMDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
+                            }`}
+                            value={localRMVal !== undefined ? localRMVal : openingBalanceKg}
+                            onChange={(e) => setLocalOpeningBalances({ ...localOpeningBalances, [rm.id]: e.target.value })}
+                          />
+                          {isRMDirty && (
+                            <button
+                              onClick={() => commitRMOpeningBalance(rm.id, openingBalanceKg)}
+                              className="w-20 py-1.5 bg-violet-600 text-white rounded-lg shadow-md hover:bg-violet-700 active:scale-95 transition-all text-xs font-bold mt-1"
+                            >
+                              Save 💾
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="font-black text-sm text-slate-800">{openingBalanceKg.toFixed(2)} Kg</span>
+                      )}
+                    </td>
+                    <td className="px-8 py-6 text-center border-r border-slate-200/40">
+                      <span className="font-black text-sm text-slate-800">{monthRMInwardKg.toFixed(2)} Kg</span>
+                    </td>
+                    <td className="px-8 py-6 text-center border-r border-slate-200/40 bg-rose-50/10">
+                      <div className="flex flex-col items-center">
+                        <span className="font-black text-sm text-rose-700">{dispatchKg.toFixed(2)} Kg</span>
+                        <span className="text-[9px] font-medium text-slate-400">{totalSalesQty} pcs dispatched</span>
+                      </div>
+                    </td>
+                    <td className="px-8 py-6 text-center border-r border-slate-200/40 bg-amber-50/10">
+                      <span className="font-black text-sm text-amber-700">{scrapKg.toFixed(2)} Kg</span>
+                    </td>
+                    <td className="px-8 py-6 text-center border-r border-slate-200/40 bg-indigo-50/10">
+                      <div className="flex flex-col items-center">
+                        <div className={`px-4 py-1.5 rounded-full flex flex-col items-center ${isRMNegative ? 'bg-rose-600 text-white' : 'bg-indigo-50 text-slate-800'}`}>
+                          <span className={`font-black text-sm ${isRMNegative ? 'text-white' : 'text-slate-800'}`}>{closingBalanceKg.toFixed(2)} Kg</span>
+                        </div>
+                        {isRMNegative && (
+                          <span className="text-[8px] font-black uppercase tracking-tighter mt-2 px-2 py-0.5 rounded bg-rose-100 text-rose-700 animate-pulse ring-2 ring-rose-400">
+                            Audit Required
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-8 py-6 bg-emerald-50/10 text-center border-r border-slate-200/20">
+                      <div className="px-4 py-1.5 rounded-full inline-flex flex-col items-center bg-emerald-50 text-slate-800">
+                        <span className="font-black text-sm text-slate-800">{tentativeClosingKg.toFixed(2)} Kg</span>
+                      </div>
+                    </td>
+                    <td className="px-8 py-6 text-center">
+                      {!readOnly && (
+                        <button
+                          onClick={() => {
+                            setSelectedRM(rm);
+                            setShowAddModal(true);
+                            setAddQty('');
+                            setSupplier('');
+                            setRemarks('');
+                            setSheetSizeText('');
+                          }}
+                          className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-violet-600 hover:bg-emerald-600 active:scale-95`}
+                        >
+                          RM Inward Receipt +
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredRawMaterials.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-8 py-12 text-center text-slate-400 font-bold uppercase text-xs tracking-wide">
+                    {rawMaterials.filter(rm => (rm.category || 'tube') === 'sheet').length === 0
+                      ? 'No Sheet Metal Raw Materials defined. Establish RM specs in "RM Master (Admin)" first to track Sheet RM Inventory.'
+                      : 'No sheet metal raw materials found matching the selected customer filter.'}
                   </td>
                 </tr>
               )}
@@ -1450,23 +1652,36 @@ const Inventory: React.FC<InventoryProps> = ({
             <form onSubmit={handlePreSubmit} className="space-y-5 text-left">
               <div>
                 <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
-                  Quantity ({inventoryMode === 'item' ? 'Pcs' : 'No of Pipes'})
+                  Quantity ({inventoryMode === 'item' ? 'Pcs' : selectedRM && isSheetRM(selectedRM) ? 'Kg Received' : 'No of Pipes'})
                 </label>
-                <input 
-                  autoFocus 
-                  type="text" 
-                  required 
-                  placeholder={inventoryMode === 'item' ? "0" : "0 Pipes"}
-                  className={`w-full px-6 py-5 bg-white border-2 rounded-2xl outline-none font-black text-3xl transition-all shadow-inner text-slate-900 ${isAdjustment ? 'border-rose-300 text-rose-600' : 'border-slate-200 focus:border-indigo-600'}`} 
-                  value={addQty} 
+                <input
+                  autoFocus
+                  type="text"
+                  required
+                  placeholder={inventoryMode === 'item' ? "0" : selectedRM && isSheetRM(selectedRM) ? "0 Kg" : "0 Pipes"}
+                  className={`w-full px-6 py-5 bg-white border-2 rounded-2xl outline-none font-black text-3xl transition-all shadow-inner text-slate-900 ${isAdjustment ? 'border-rose-300 text-rose-600' : 'border-slate-200 focus:border-indigo-600'}`}
+                  value={addQty}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (val === '' || val === '-' || /^-?\d*$/.test(val)) {
                       setAddQty(val);
                     }
-                  }} 
+                  }}
                 />
               </div>
+
+              {inventoryMode === 'rm' && selectedRM && isSheetRM(selectedRM) && !isAdjustment && (
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Sheet Size (record only)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 2500x1250"
+                    className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900 transition-all shadow-inner"
+                    value={sheetSizeText}
+                    onChange={(e) => setSheetSizeText(e.target.value)}
+                  />
+                </div>
+              )}
 
               {isAdjustment && (
                 <div>
@@ -1536,12 +1751,15 @@ const Inventory: React.FC<InventoryProps> = ({
                 <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 text-left">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 text-left">Quantity</p>
                   <p className={`text-2xl font-black ${isAdjustment ? 'text-rose-600' : 'text-indigo-600'}`}>
-                    {addQty} {inventoryMode === 'item' ? 'Pcs' : 'Pipes'}
+                    {addQty} {inventoryMode === 'item' ? 'Pcs' : selectedRM && isSheetRM(selectedRM) ? 'Kg' : 'Pipes'}
                   </p>
-                  {inventoryMode === 'rm' && selectedRM && (
+                  {inventoryMode === 'rm' && selectedRM && !isSheetRM(selectedRM) && (
                     <p className="text-xs text-slate-500 font-bold mt-1">
                       = {((parseFloat(addQty) || 0) * ((selectedRM.length * selectedRM.weightPer1000) / 1000)).toFixed(2)} Kg
                     </p>
+                  )}
+                  {inventoryMode === 'rm' && selectedRM && isSheetRM(selectedRM) && sheetSizeText && (
+                    <p className="text-xs text-slate-500 font-bold mt-1">Sheet Size: {sheetSizeText}</p>
                   )}
                 </div>
                 
@@ -1568,13 +1786,15 @@ const Inventory: React.FC<InventoryProps> = ({
                         <div className="flex justify-between items-baseline">
                           <span className="text-sm font-black text-slate-800 capitalize">{info.rmSize} <span className="opacity-60 text-[9px] font-bold">({info.customerName})</span></span>
                           <span className="text-sm font-black text-indigo-600">
-                            {info.pipesQty > 0 ? '+' : ''}{info.pipesQty} Pipes
+                            {info.isSheet ? `${info.pipesQty > 0 ? '+' : ''}${info.pipesQty} Kg` : `${info.pipesQty > 0 ? '+' : ''}${info.pipesQty} Pipes`}
                           </span>
                         </div>
-                        <div className="flex justify-between text-[10px] text-slate-400 font-bold">
-                          <span>Yield Factor: {info.yieldFactor} Pcs/Pipe</span>
-                          <span className="text-emerald-600 font-extrabold">({info.kgQty > 0 ? '+' : ''}{info.kgQty} Kg)</span>
-                        </div>
+                        {!info.isSheet && (
+                          <div className="flex justify-between text-[10px] text-slate-400 font-bold">
+                            <span>Yield Factor: {info.yieldFactor} Pcs/Pipe</span>
+                            <span className="text-emerald-600 font-extrabold">({info.kgQty > 0 ? '+' : ''}{info.kgQty} Kg)</span>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

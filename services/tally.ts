@@ -1,6 +1,7 @@
 
 import { Part, Customer } from '../types';
 import * as XLSX from 'xlsx';
+import { findMatchingCustomer, findMatchingPartBySapOrName } from './customerMatch';
 
 export interface TallyMatchedItem {
   partId: string;
@@ -19,122 +20,15 @@ export interface TallyImportResult {
 }
 
 export class TallyService {
+  // Both extracted to services/customerMatch.ts so Bulk Item Master import
+  // and Bulk Schedule import share the exact same matching logic instead of
+  // a second copy that could drift out of sync with this one.
   private static findMatchingPart(tallyText: string, inventory: Part[]): Part | undefined {
-    const cleanTallyText = tallyText.trim().toLowerCase();
-    if (!cleanTallyText) return undefined;
-
-    // 1. Try exact matches first
-    let part = inventory.find(p => 
-      p.name.trim().toLowerCase() === cleanTallyText || 
-      p.sapCode.trim().toLowerCase() === cleanTallyText ||
-      p.sku.trim().toLowerCase() === cleanTallyText
-    );
-    if (part) return part;
-
-    // 2. Try SAP code containment (most reliable for partial strings)
-    part = inventory.find(p => {
-      const sap = p.sapCode.trim().toLowerCase();
-      return sap.length >= 2 && cleanTallyText.includes(sap);
-    });
-    if (part) return part;
-
-    // 3. Try Name containment (Reverse: does inventory name exist in the Tally string)
-    part = inventory.find(p => {
-      const invName = p.name.trim().toLowerCase();
-      return invName.length >= 3 && cleanTallyText.includes(invName);
-    });
-    
-    return part;
-  }
-
-  private static getAutomaticKeywords(name: string): string[] {
-    const commonWords = new Set([
-      'SIAC', 'SKH', 'INDIA', 'CABS', 'MFG', 'PVT', 'LTD', 'LIMITED', 'AND', 'THE', 
-      'FOR', 'OF', 'CO', 'CORP', 'CORPORATION', 'PRIVATE', 'MANUFACTURING', 'PLANT',
-      'DIVISION', 'GROUP', 'INDUSTRIES', 'INDUSTRY', 'ENTERPRISES', 'PVT.', 'LTD.', 'MFG.'
-    ]);
-    const words = name.toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').split(/\s+/);
-    return words.filter(w => w.length > 2 && !commonWords.has(w));
+    return findMatchingPartBySapOrName(tallyText, inventory);
   }
 
   private static findMatchingCustomer(tallyText: string, customers: Customer[]): string | null {
-    if (!tallyText) return null;
-    const text = tallyText.toUpperCase().trim();
-    if (!text) return null;
-    
-    // Sort customers descending by name length to ensure most specific match wins first
-    const sortedCustomers = [...customers].sort((a, b) => b.name.length - a.name.length);
-
-    // 1. Exact or direct match
-    for (const customer of sortedCustomers) {
-      const custName = customer.name.toUpperCase();
-      if (text === custName) return customer.name;
-    }
-
-    // 2. Contains entire customer name as substring
-    for (const customer of sortedCustomers) {
-      const custName = customer.name.toUpperCase();
-      if (text.includes(custName)) return customer.name;
-    }
-
-    // 3. High-robustness normalized comparison (ignores punctuation, dots, dashes, spaces)
-    const cleanTally = text.replace(/[^A-Z0-9]/g, '');
-    for (const customer of sortedCustomers) {
-      const cleanCust = customer.name.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      if (cleanCust.length >= 3) {
-        // Safe: Excel consignee contains the database customer name
-        if (cleanTally.includes(cleanCust)) {
-          return customer.name;
-        }
-        // Safe: If database customer name includes the Excel text, but ONLY if clean tally is almost the entire name (>= 80% coverage)
-        if (cleanCust.includes(cleanTally) && (cleanTally.length >= cleanCust.length * 0.8)) {
-          return customer.name;
-        }
-      }
-    }
-
-    // 4. Match using user-supplied check keywords
-    const keywordMatches: { keyword: string; customerName: string }[] = [];
-    for (const customer of sortedCustomers) {
-      if (!customer.matchKeywords) continue;
-      const userKeywords = customer.matchKeywords.split(',')
-        .map(k => k.trim().toUpperCase())
-        .filter(k => k.length >= 3);
-        
-      for (const k of userKeywords) {
-        // Check for full word boundary or exact containment
-        const regex = new RegExp(`\\b${k.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
-        if (regex.test(text) || text.includes(k)) {
-          keywordMatches.push({ keyword: k, customerName: customer.name });
-        }
-      }
-    }
-
-    if (keywordMatches.length > 0) {
-      keywordMatches.sort((a, b) => b.keyword.length - a.keyword.length);
-      return keywordMatches[0].customerName;
-    }
-
-    // 5. Automatic keyword match (safeguarded)
-    const autoKeywordMatches: { keyword: string; customerName: string }[] = [];
-    for (const customer of sortedCustomers) {
-      const autoKeywords = this.getAutomaticKeywords(customer.name);
-      for (const k of autoKeywords) {
-        if (k.length >= 4) { // Only match on automatic keywords of length >= 4 to avoid false positives
-          const regex = new RegExp(`\\b${k}\\b`, 'i');
-          if (regex.test(text)) {
-            autoKeywordMatches.push({ keyword: k, customerName: customer.name });
-          }
-        }
-      }
-    }
-
-    if (autoKeywordMatches.length > 0) {
-      autoKeywordMatches.sort((a, b) => b.keyword.length - a.keyword.length);
-      return autoKeywordMatches[0].customerName;
-    }
-
-    return null;
+    return findMatchingCustomer(tallyText, customers);
   }
 
   private static parseExcelDate(val: any): Date | null {

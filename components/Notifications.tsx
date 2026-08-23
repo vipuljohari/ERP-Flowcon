@@ -12,6 +12,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   rm_inward: { label: 'RM Inward Entry', icon: '📥', color: 'indigo' },
   dispatch_manual: { label: 'Manual Dispatch Slip', icon: '📝', color: 'amber' },
   tally_import: { label: 'Tally Excel/XML Import', icon: '📊', color: 'emerald' },
+  schedule_bulk_import: { label: 'Bulk Customer Schedule Import', icon: '📋', color: 'violet' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {
@@ -19,6 +20,7 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   indigo: { badge: 'bg-indigo-100 text-indigo-700 border-indigo-200', border: 'border-l-indigo-500' },
   amber: { badge: 'bg-amber-100 text-amber-700 border-amber-200', border: 'border-l-amber-500' },
   emerald: { badge: 'bg-emerald-100 text-emerald-700 border-emerald-200', border: 'border-l-emerald-500' },
+  violet: { badge: 'bg-violet-100 text-violet-700 border-violet-200', border: 'border-l-violet-500' },
 };
 
 const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {

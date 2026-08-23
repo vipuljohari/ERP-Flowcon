@@ -1,5 +1,11 @@
 import React, { useState, useMemo } from 'react';
-import { RawMaterial, Customer, Part } from '../types';
+import { RawMaterial, Customer, Part, RMCategory } from '../types';
+
+// A Part with no partType set is a pre-existing Tubular part (see
+// types.ts's PartType comment) — treat undefined the same as 'tubular'
+// everywhere so old data doesn't need a migration.
+const partMatchesRMCategory = (p: Part, category: RMCategory): boolean =>
+  category === 'sheet' ? p.partType === 'sheet_metal' : (p.partType || 'tubular') === 'tubular';
 
 interface RMMasterProps {
   rawMaterials: RawMaterial[];
@@ -27,11 +33,15 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCustFilter, setSelectedCustFilter] = useState('All');
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<'All' | RMCategory>('All');
 
   const [formData, setFormData] = useState({
+    category: 'tube' as RMCategory,
     size: '',
     length: 6000,
     weightPer1000: 0,
+    thickness: '',
+    grade: '',
     customerName: '',
     model: '',
     partId: '',
@@ -43,9 +53,12 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
     const initialCustomer = customers[0]?.name || '';
     const initialPartId = parts[0]?.id || '';
     setFormData({
+      category: 'tube',
       size: '',
       length: 6000,
       weightPer1000: 0,
+      thickness: '',
+      grade: '',
       customerName: initialCustomer,
       model: '',
       partId: initialPartId,
@@ -58,9 +71,12 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
     e.stopPropagation();
     setEditingId(rm.id);
     setFormData({
+      category: rm.category || 'tube',
       size: rm.size,
       length: rm.length,
       weightPer1000: rm.weightPer1000,
+      thickness: rm.thickness || '',
+      grade: rm.grade || '',
       customerName: rm.customerName,
       model: rm.model || '',
       partId: rm.partId || '',
@@ -103,18 +119,27 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
     }
   };
 
-  const customerParts = parts.filter(p => 
-    !formData.customerName || 
-    p.mappedCustomers?.some(c => c.toUpperCase().trim() === formData.customerName.toUpperCase().trim()) ||
-    (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === formData.customerName.toUpperCase().trim()))
+  // Only offer parts whose type matches this RM's category — the key
+  // guardrail against linking a Tubular part to a Sheet RM (or vice versa),
+  // which would silently feed the wrong numbers into the stock/shortage
+  // math in App.tsx (see services/rmYield.ts).
+  const customerParts = parts.filter(p =>
+    partMatchesRMCategory(p, formData.category) && (
+      !formData.customerName ||
+      p.mappedCustomers?.some(c => c.toUpperCase().trim() === formData.customerName.toUpperCase().trim()) ||
+      (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === formData.customerName.toUpperCase().trim()))
+    )
   );
-  const displayedParts = customerParts.length > 0 ? customerParts : parts;
+  const displayedParts = customerParts.length > 0
+    ? customerParts
+    : parts.filter(p => partMatchesRMCategory(p, formData.category));
 
   const filteredRMs = rawMaterials.filter(rm => {
     const matchesSearch = rm.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           rm.partName.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCustomer = selectedCustFilter === 'All' || rm.customerName.toUpperCase().trim() === selectedCustFilter.toUpperCase().trim();
-    return matchesSearch && matchesCustomer;
+    const matchesCategory = selectedCategoryFilter === 'All' || (rm.category || 'tube') === selectedCategoryFilter;
+    return matchesSearch && matchesCustomer && matchesCategory;
   });
 
   return (
@@ -134,13 +159,22 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
           />
           <select
             className="px-5 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none text-sm font-bold bg-white text-slate-700 shadow-sm"
+            value={selectedCategoryFilter}
+            onChange={(e) => setSelectedCategoryFilter(e.target.value as 'All' | RMCategory)}
+          >
+            <option value="All">Tube + Sheet</option>
+            <option value="tube">Tube Only</option>
+            <option value="sheet">Sheet Metal Only</option>
+          </select>
+          <select
+            className="px-5 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none text-sm font-bold bg-white text-slate-700 shadow-sm"
             value={selectedCustFilter}
             onChange={(e) => setSelectedCustFilter(e.target.value)}
           >
             <option value="All">All Customers</option>
             {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
           </select>
-          <button 
+          <button
             onClick={handleOpenAdd}
             className="bg-amber-500 text-slate-900 px-8 py-4 rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-amber-600 transition-all shadow-xl shadow-amber-100 active:scale-95"
           >
@@ -163,14 +197,24 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
             {filteredRMs.map(rm => (
               <tr key={rm.id} className="hover:bg-slate-50 transition-colors">
                 <td className="px-8 py-6">
-                  <div className="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5">RM SIZE</div>
+                  <div className="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5 flex items-center gap-2">
+                    RM SIZE
+                    {(rm.category || 'tube') === 'sheet' && <span className="bg-violet-50 text-violet-700 px-1.5 py-0.5 rounded text-[8px] font-black normal-case">Sheet Metal</span>}
+                  </div>
                   <div className="font-black text-slate-900 text-base uppercase">{rm.size}</div>
                 </td>
                 <td className="px-8 py-6">
-                  <div className="space-y-1">
-                    <div className="text-xs text-slate-500 font-medium">Standard Length: <span className="font-bold text-slate-800">{rm.length} mm</span></div>
-                    <div className="text-xs text-slate-500 font-medium">Weight Factor: <span className="font-bold text-slate-800">{rm.weightPer1000} Kg / 1000 mm</span></div>
-                  </div>
+                  {(rm.category || 'tube') === 'sheet' ? (
+                    <div className="space-y-1">
+                      <div className="text-xs text-slate-500 font-medium">Thickness: <span className="font-bold text-slate-800">{rm.thickness || '—'}</span></div>
+                      <div className="text-xs text-slate-500 font-medium">Grade: <span className="font-bold text-slate-800">{rm.grade || '—'}</span></div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <div className="text-xs text-slate-500 font-medium">Standard Length: <span className="font-bold text-slate-800">{rm.length} mm</span></div>
+                      <div className="text-xs text-slate-500 font-medium">Weight Factor: <span className="font-bold text-slate-800">{rm.weightPer1000} Kg / 1000 mm</span></div>
+                    </div>
+                  )}
                 </td>
                 <td className="px-8 py-6">
                   <div className="space-y-1 text-left">
@@ -212,40 +256,93 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
             <form onSubmit={handleSubmit} className="space-y-6 text-left">
               <div className="space-y-4">
                 <div className="text-left">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">RM Category</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {(['tube', 'sheet'] as RMCategory[]).map(cat => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => {
+                          if (formData.category === cat) return;
+                          // Switching category invalidates the previous part
+                          // selection (a Tube part can't be mapped to a Sheet
+                          // RM and vice versa) — reset it so the guardrail in
+                          // customerParts/displayedParts can't be bypassed by
+                          // leftover selections from before the switch.
+                          setFormData({ ...formData, category: cat, partId: '', partIds: [] });
+                        }}
+                        className={`py-4 rounded-2xl font-black uppercase text-[11px] tracking-widest border-2 transition-all ${formData.category === cat ? 'bg-slate-900 text-white border-slate-900' : 'bg-slate-50 text-slate-500 border-slate-100 hover:border-slate-200'}`}
+                      >
+                        {cat === 'tube' ? 'Tube' : 'Sheet Metal'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="text-left">
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">RM Size Description</label>
-                  <input 
-                    type="text" 
-                    required 
-                    placeholder="e.g. Round Bar 45mm dia" 
-                    className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" 
-                    value={formData.size} 
-                    onChange={(e) => setFormData({...formData, size: e.target.value})} 
+                  <input
+                    type="text"
+                    required
+                    placeholder={formData.category === 'sheet' ? 'e.g. CRCA Sheet 1.6mm' : 'e.g. Round Bar 45mm dia'}
+                    className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900"
+                    value={formData.size}
+                    onChange={(e) => setFormData({...formData, size: e.target.value})}
                   />
                 </div>
+                {formData.category === 'sheet' ? (
+                  <div className="grid grid-cols-2 gap-4 text-left">
+                    <div className="text-left">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Thickness</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. 1.6mm"
+                        className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900"
+                        value={formData.thickness}
+                        onChange={(e) => setFormData({...formData, thickness: e.target.value})}
+                      />
+                    </div>
+                    <div className="text-left">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Grade</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. IS 513 CR2"
+                        className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900"
+                        value={formData.grade}
+                        onChange={(e) => setFormData({...formData, grade: e.target.value})}
+                      />
+                    </div>
+                    <p className="col-span-2 text-[11px] text-slate-400 font-medium -mt-1">
+                      Sheet size (e.g. 2500x1250) isn't fixed here — it varies per delivery, so it's recorded per Inward entry instead (Inventory → RM Inward).
+                    </p>
+                  </div>
+                ) : (
                 <div className="grid grid-cols-2 gap-4 text-left">
                   <div className="text-left">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Standard Length (mm)</label>
-                    <input 
-                      type="number" 
-                      required 
-                      className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" 
-                      value={formData.length} 
-                      onChange={(e) => setFormData({...formData, length: parseInt(e.target.value) || 0})} 
+                    <input
+                      type="number"
+                      required
+                      className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900"
+                      value={formData.length}
+                      onChange={(e) => setFormData({...formData, length: parseInt(e.target.value) || 0})}
                     />
                   </div>
                   <div className="text-left">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Weight (Kg / 1000 mm)</label>
-                    <input 
-                      type="number" 
-                      step="0.001" 
-                      required 
-                      placeholder="e.g. 1.578" 
-                      className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900" 
-                      value={formData.weightPer1000 || ''} 
-                      onChange={(e) => setFormData({...formData, weightPer1000: parseFloat(e.target.value) || 0})} 
+                    <input
+                      type="number"
+                      step="0.001"
+                      required
+                      placeholder="e.g. 1.578"
+                      className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-black text-slate-900"
+                      value={formData.weightPer1000 || ''}
+                      onChange={(e) => setFormData({...formData, weightPer1000: parseFloat(e.target.value) || 0})}
                     />
                   </div>
                 </div>
+                )}
                 <div className="grid grid-cols-2 gap-4 text-left">
                   <div className="text-left col-span-2 sm:col-span-1">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Map to Customer</label>
@@ -255,7 +352,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                       onChange={(e) => {
                         const nextCust = e.target.value;
                         // Pre-populate with first item of this customer to make UX smooth
-                        const filtered = parts.filter(p => p.mappedCustomers?.some(c => c.toUpperCase().trim() === nextCust.toUpperCase().trim()) || (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === nextCust.toUpperCase().trim())));
+                        const filtered = parts.filter(p => partMatchesRMCategory(p, formData.category) && (p.mappedCustomers?.some(c => c.toUpperCase().trim() === nextCust.toUpperCase().trim()) || (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === nextCust.toUpperCase().trim()))));
                         const nextPartId = filtered[0]?.id || '';
                         setFormData({
                           ...formData,

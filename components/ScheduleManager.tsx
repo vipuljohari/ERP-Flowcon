@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
-import { Part, Customer } from '../types';
+import { Part, Customer, AdminAlert } from '../types';
+import BulkScheduleImport from './BulkScheduleImport';
 
 interface ScheduleManagerProps {
   parts: Part[];
@@ -10,6 +11,9 @@ interface ScheduleManagerProps {
   customers: Customer[];
   isHistorical?: boolean;
   selectedMonthDisplay?: string;
+  isAdmin?: boolean;
+  onBulkUpdateSchedules?: (updates: { partId: string; customerName: string; qty: number }[]) => void;
+  onCreateAlert?: (partial: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
 }
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
@@ -26,12 +30,16 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
   onCustomerChange, 
   customers,
   isHistorical = false,
-  selectedMonthDisplay = ''
+  selectedMonthDisplay = '',
+  isAdmin = false,
+  onBulkUpdateSchedules,
+  onCreateAlert,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPart, setSelectedPart] = useState<Part | null>(null);
   const [newTarget, setNewTarget] = useState<number>(0);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
 
   // Filter parts mapped to the current customer
   const mappedParts = useMemo(() => parts.filter(p => p.mappedCustomers?.some(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim())), [parts, activeCustomer]);
@@ -80,15 +88,34 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
               {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </div>
-          <input 
-            type="text" 
-            placeholder="Search Part/SAP..." 
+          <input
+            type="text"
+            placeholder="Search Part/SAP..."
             className="px-5 py-3 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-600 outline-none w-full md:w-64 bg-white text-slate-900 font-medium shadow-sm"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
+          {isAdmin && onBulkUpdateSchedules && !isHistorical && (
+            <button
+              onClick={() => setShowBulkImport(true)}
+              className="px-6 py-3 bg-slate-900 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-slate-800 transition-all shadow-md active:scale-95 whitespace-nowrap"
+            >
+              📊 Bulk Upload
+            </button>
+          )}
         </div>
       </header>
+
+      {isAdmin && onBulkUpdateSchedules && (
+        <BulkScheduleImport
+          isOpen={showBulkImport}
+          onClose={() => setShowBulkImport(false)}
+          parts={parts}
+          customers={customers}
+          onConfirm={onBulkUpdateSchedules}
+          onCreateAlert={onCreateAlert}
+        />
+      )}
 
       {isSetupRequired && (
         <div className="bg-indigo-600 text-white p-8 rounded-[2.5rem] shadow-2xl flex flex-col md:flex-row items-center justify-between gap-6 animate-in slide-in-from-top-4 duration-500">
