@@ -130,6 +130,35 @@ const Inventory: React.FC<InventoryProps> = ({
   // types.ts's RMInwardLog.sheetSizeText comment).
   const [sheetSizeText, setSheetSizeText] = useState('');
 
+  // The actual day the goods physically arrived — deliberately separate
+  // from `selectedDate` (the TimeMachine date the rest of the screen is
+  // reviewing). Before this field existed, back-dating an inward meant
+  // navigating TimeMachine itself into the past first, which flips this
+  // whole screen `readOnly` for non-Admins (see the `readOnly` prop below)
+  // and silently blocked BOTH "Review Entry" and "Post to Database" with
+  // zero feedback — the exact "app just sits there" report from Store.
+  // Bounded to the current real calendar month, same rule Daily Dispatch's
+  // Tally import already enforces (`isDateInPreviousMonth` there) — entries
+  // for a closed previous month are blocked everywhere in the app.
+  const todayDateStr = useMemo(() => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const now = new Date();
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  }, []);
+  const minEntryDateStr = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  }, []);
+  const [entryDate, setEntryDate] = useState<string>(todayDateStr);
+
+  // Reset to today every time a Material Entry modal opens, rather than
+  // leaving whatever date was picked for a previous entry.
+  useEffect(() => {
+    if (showAddModal) setEntryDate(todayDateStr);
+  }, [showAddModal, todayDateStr]);
+
+  const isEntryDateValid = entryDate >= minEntryDateStr && entryDate <= todayDateStr;
+
   // Local state to track changes in opening balances before saving
   const [localOpeningBalances, setLocalOpeningBalances] = useState<Record<string, string>>({});
   const [internalRMOpeningBalances, setInternalRMOpeningBalances] = useState<Record<string, string>>(() => {
@@ -238,79 +267,106 @@ const Inventory: React.FC<InventoryProps> = ({
 
   const handlePreSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) return;
-    
+    // Previously a silent no-op when readOnly — from Store's side that
+    // looked identical to the app just not responding at all (the exact
+    // "it stucks over there" report). Always say why now.
+    if (readOnly) {
+      alert("This date is read-only (viewing a previous month, or a past TimeMachine date as a non-Admin). Use the Entry Date field below instead of navigating TimeMachine to back-date within the current month.");
+      return;
+    }
+
     const qty = parseInt(addQty);
     if ((inventoryMode === 'item' && !selectedPart) || (inventoryMode === 'rm' && !selectedRM) || isNaN(qty) || qty === 0 || !supplier.trim()) return;
-    
+
+    if (!isEntryDateValid) {
+      alert(`Entry Date must be within the current month (from ${minEntryDateStr} to ${todayDateStr}). Previous months are locked.`);
+      return;
+    }
+
     // Mandatory remarks for negative adjustments
     if (qty < 0 && !remarks.trim()) {
       alert("Remarks are required for stock adjustments (negative values).");
       return;
     }
-    
+
     setShowConfirmModal(true);
   };
 
   const handleFinalConfirm = () => {
-    if (readOnly || isSubmitting) return;
+    if (readOnly || isSubmitting || !isEntryDateValid) return;
     setIsSubmitting(true);
 
-    if (inventoryMode === 'item' && selectedPart) {
-      const qty = parseInt(addQty);
-      onAddInward(selectedPart.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, undefined, invoiceNumber.trim() || undefined);
-      // Discrepancy Control Entry (negative value) — alert Admin with full
-      // detail so they can cross-check/cross-question it. Positive Item
-      // Material Entries are routine and do not alert.
-      if (qty < 0 && onCreateAlert) {
-        onCreateAlert({
-          type: 'discrepancy',
-          partId: selectedPart.id,
-          partName: selectedPart.name,
-          sapCode: selectedPart.sapCode,
-          quantity: qty,
-          remarks: remarks.trim(),
-          responsibleName: supplier.trim(),
-        });
-      }
-    } else if (inventoryMode === 'rm' && selectedRM && onAddRMInward) {
-      const qty = parseInt(addQty);
-      onAddRMInward(selectedRM.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, undefined, invoiceNumber.trim() || undefined, isSheetRM(selectedRM) ? 'kg' : 'pcs', isSheetRM(selectedRM) ? (sheetSizeText.trim() || undefined) : undefined);
-      if (onCreateAlert) {
-        if (qty < 0) {
-          // Discrepancy Control Entry (negative value) on the RM side.
+    // Noon anchor avoids a date field flipping to the previous/next day
+    // across timezone conversion — same pattern used for backdated posts
+    // elsewhere in the app (Daily Dispatch's Tally import, Bulk Schedule).
+    const finalTimestamp = `${entryDate}T12:00:00.000`;
+
+    try {
+      if (inventoryMode === 'item' && selectedPart) {
+        const qty = parseInt(addQty);
+        onAddInward(selectedPart.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, finalTimestamp, invoiceNumber.trim() || undefined);
+        // Discrepancy Control Entry (negative value) — alert Admin with full
+        // detail so they can cross-check/cross-question it. Positive Item
+        // Material Entries are routine and do not alert.
+        if (qty < 0 && onCreateAlert) {
           onCreateAlert({
             type: 'discrepancy',
-            rmId: selectedRM.id,
-            rmSize: selectedRM.size,
+            partId: selectedPart.id,
+            partName: selectedPart.name,
+            sapCode: selectedPart.sapCode,
             quantity: qty,
             remarks: remarks.trim(),
             responsibleName: supplier.trim(),
           });
-        } else {
-          // Every RM Inward entry — regardless of role — is logged for Admin.
-          onCreateAlert({
-            type: 'rm_inward',
-            rmId: selectedRM.id,
-            rmSize: selectedRM.size,
-            quantity: qty,
-            supplier: supplier.trim(),
-            invoiceNumber: invoiceNumber.trim() || undefined,
-          });
+        }
+      } else if (inventoryMode === 'rm' && selectedRM && onAddRMInward) {
+        const qty = parseInt(addQty);
+        onAddRMInward(selectedRM.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, finalTimestamp, invoiceNumber.trim() || undefined, isSheetRM(selectedRM) ? 'kg' : 'pcs', isSheetRM(selectedRM) ? (sheetSizeText.trim() || undefined) : undefined);
+        if (onCreateAlert) {
+          if (qty < 0) {
+            // Discrepancy Control Entry (negative value) on the RM side.
+            onCreateAlert({
+              type: 'discrepancy',
+              rmId: selectedRM.id,
+              rmSize: selectedRM.size,
+              quantity: qty,
+              remarks: remarks.trim(),
+              responsibleName: supplier.trim(),
+            });
+          } else {
+            // Every RM Inward entry — regardless of role — is logged for Admin.
+            onCreateAlert({
+              type: 'rm_inward',
+              rmId: selectedRM.id,
+              rmSize: selectedRM.size,
+              quantity: qty,
+              supplier: supplier.trim(),
+              invoiceNumber: invoiceNumber.trim() || undefined,
+            });
+          }
         }
       }
-    }
 
-    setShowConfirmModal(false);
-    setShowAddModal(false);
-    setSelectedPart(null);
-    setSelectedRM(null);
-    setAddQty('');
-    setSupplier('');
-    setRemarks('');
-    setInvoiceNumber('');
-    setSheetSizeText('');
-    setIsSubmitting(false);
+      setShowConfirmModal(false);
+      setShowAddModal(false);
+      setSelectedPart(null);
+      setSelectedRM(null);
+      setAddQty('');
+      setSupplier('');
+      setRemarks('');
+      setInvoiceNumber('');
+      setSheetSizeText('');
+    } catch (err) {
+      // Guarantees the button can never get stuck showing "Posting…"
+      // forever again, whatever actually goes wrong inside onAddInward/
+      // onAddRMInward/onCreateAlert — the entry above had no error handling
+      // at all, so any thrown exception left isSubmitting=true permanently
+      // with no recovery path (not even Cancel/Modify reset it).
+      console.error('Material Entry post failed:', err);
+      alert('Something went wrong while posting this entry. Please try again, and let Admin know if it keeps failing.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Item-wise Opening Balance is now a STORED, month-anchored value — the
@@ -1712,13 +1768,33 @@ const Inventory: React.FC<InventoryProps> = ({
 
               {!isAdjustment && (
                 <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
+                    Entry Date <span className="text-slate-300 normal-case font-bold">(the day it actually arrived)</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    min={minEntryDateStr}
+                    max={todayDateStr}
+                    className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900 transition-all shadow-inner"
+                    value={entryDate}
+                    onChange={(e) => setEntryDate(e.target.value)}
+                  />
+                  <p className="text-[9px] text-slate-400 font-bold mt-1.5 ml-1">
+                    Current month only ({minEntryDateStr} to {todayDateStr}) — previous months are locked.
+                  </p>
+                </div>
+              )}
+
+              {!isAdjustment && (
+                <div>
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Invoice Number</label>
-                  <input 
-                    type="text" 
-                    placeholder="Enter Invoice Number..." 
-                    className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900 transition-all shadow-inner" 
-                    value={invoiceNumber} 
-                    onChange={(e) => setInvoiceNumber(e.target.value)} 
+                  <input
+                    type="text"
+                    placeholder="Enter Invoice Number..."
+                    className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-indigo-600 outline-none font-bold text-slate-900 transition-all shadow-inner"
+                    value={invoiceNumber}
+                    onChange={(e) => setInvoiceNumber(e.target.value)}
                   />
                 </div>
               )}
@@ -1768,6 +1844,15 @@ const Inventory: React.FC<InventoryProps> = ({
                     {isAdjustment ? 'Responsible Name' : 'Supplier'}
                   </p>
                   <p className="text-sm font-black text-slate-800 uppercase truncate">{supplier}</p>
+                  {!isAdjustment && (
+                    <div className="mt-2 pt-2 border-t border-slate-100">
+                      <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Entry Date</p>
+                      <p className="text-xs font-black text-slate-800 uppercase tracking-tight">
+                        {new Date(`${entryDate}T12:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        {entryDate !== todayDateStr && <span className="ml-2 text-amber-600">(Back-dated)</span>}
+                      </p>
+                    </div>
+                  )}
                   {!isAdjustment && invoiceNumber && (
                     <div className="mt-2 pt-2 border-t border-slate-100">
                       <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Invoice Number</p>
@@ -1809,8 +1894,8 @@ const Inventory: React.FC<InventoryProps> = ({
               )}
             </div>
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex gap-4">
-              <button onClick={() => setShowConfirmModal(false)} className="flex-1 py-5 border-2 border-slate-100 rounded-2xl font-black text-slate-500 uppercase text-[11px] tracking-widest hover:bg-white">Modify</button>
-              <button onClick={handleFinalConfirm} disabled={isSubmitting} className={`flex-[2] py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl active:scale-95 disabled:opacity-50 disabled:active:scale-100 ${isAdjustment ? 'bg-rose-600' : 'bg-slate-900'}`}>{isSubmitting ? 'Posting…' : 'Post to Database'}</button>
+              <button onClick={() => { setShowConfirmModal(false); setIsSubmitting(false); }} className="flex-1 py-5 border-2 border-slate-100 rounded-2xl font-black text-slate-500 uppercase text-[11px] tracking-widest hover:bg-white">Modify</button>
+              <button onClick={handleFinalConfirm} disabled={isSubmitting || !isEntryDateValid} className={`flex-[2] py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl active:scale-95 disabled:opacity-50 disabled:active:scale-100 ${isAdjustment ? 'bg-rose-600' : 'bg-slate-900'}`}>{isSubmitting ? 'Posting…' : 'Post to Database'}</button>
             </div>
           </div>
         </div>
