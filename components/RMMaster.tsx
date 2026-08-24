@@ -34,6 +34,11 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCustFilter, setSelectedCustFilter] = useState('All');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<'All' | RMCategory>('All');
+  // Filters the "Map to Finished Goods Items" checklist inside the modal —
+  // separate from the page-level `searchTerm` above, which filters the RM
+  // list itself. Reset whenever the modal is (re)opened (see handleOpenAdd/
+  // handleOpenEdit) so it never carries over stale text between RMs.
+  const [partSearchTerm, setPartSearchTerm] = useState('');
 
   const [formData, setFormData] = useState({
     category: 'tube' as RMCategory,
@@ -64,12 +69,14 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       partId: initialPartId,
       partIds: initialPartId ? [initialPartId] : [],
     });
+    setPartSearchTerm('');
     setShowModal(true);
   };
 
   const handleOpenEdit = (e: React.MouseEvent, rm: RawMaterial) => {
     e.stopPropagation();
     setEditingId(rm.id);
+    setPartSearchTerm('');
     setFormData({
       category: rm.category || 'tube',
       size: rm.size,
@@ -133,6 +140,20 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   const displayedParts = customerParts.length > 0
     ? customerParts
     : parts.filter(p => partMatchesRMCategory(p, formData.category));
+
+  // Search box inside the "Map to Finished Goods Items" checklist — matches
+  // name, SAP code, SKU, or size, so a shop-floor user can type any of what
+  // they'd recognize a part by. Purely a display filter: items outside the
+  // filtered set stay checked/selected even while hidden by a search term.
+  const partSearchQuery = partSearchTerm.trim().toLowerCase();
+  const searchedDisplayedParts = partSearchQuery
+    ? displayedParts.filter(p =>
+        p.name.toLowerCase().includes(partSearchQuery) ||
+        p.sapCode.toLowerCase().includes(partSearchQuery) ||
+        p.sku.toLowerCase().includes(partSearchQuery) ||
+        p.size.toLowerCase().includes(partSearchQuery)
+      )
+    : displayedParts;
 
   const filteredRMs = rawMaterials.filter(rm => {
     const matchesSearch = rm.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -390,10 +411,17 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                   
                   <div className="col-span-2 text-left pt-2">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
-                      Map to Finished Goods Items (Select one or more)
+                      Map to Finished Goods Items ({formData.partIds.length} item{formData.partIds.length === 1 ? '' : 's'} selected)
                     </label>
+                    <input
+                      type="text"
+                      placeholder="Search items by name, SAP code, SKU or size..."
+                      className="w-full px-4 py-3 mb-2 border-2 border-slate-100 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-200 outline-none font-bold text-xs text-slate-700 bg-white"
+                      value={partSearchTerm}
+                      onChange={(e) => setPartSearchTerm(e.target.value)}
+                    />
                     <div className="border-2 border-slate-100 rounded-2xl p-4 max-h-48 overflow-y-auto space-y-1 bg-slate-50">
-                      {displayedParts.map(p => {
+                      {searchedDisplayedParts.map(p => {
                         const isChecked = formData.partIds.includes(p.id);
                         return (
                           <label key={p.id} className="flex items-start gap-3 p-2 hover:bg-white rounded-xl cursor-pointer select-none transition-all border border-transparent hover:border-slate-200/60">
@@ -424,6 +452,11 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                       {displayedParts.length === 0 && (
                         <div className="text-xs text-slate-400 font-medium py-4 text-center">
                           No items found for this customer in Item Master.
+                        </div>
+                      )}
+                      {displayedParts.length > 0 && searchedDisplayedParts.length === 0 && (
+                        <div className="text-xs text-slate-400 font-medium py-4 text-center">
+                          No items match "{partSearchTerm}".
                         </div>
                       )}
                     </div>
