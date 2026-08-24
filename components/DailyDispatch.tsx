@@ -1,5 +1,7 @@
 
 import React, { useState, useRef, useMemo } from 'react';
+import { writeBatch, doc, collection } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import { Part, Customer, Sale, InwardLog, AdminAlert } from '../types';
 import { TallyService, TallyImportResult, TallyMatchedItem } from '../services/tally';
 
@@ -66,7 +68,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showSuccessOverlay, setShowSuccessOverlay] = useState(false);
-  const [importSummary, setImportSummary] = useState<{ count: number, customers: string[], date?: string } | null>(null);
+  const [importSummary, setImportSummary] = useState<{ count: number, customers: string[], date?: string, unmatchedCount?: number } | null>(null);
   const [manualInvoiceNumber, setManualInvoiceNumber] = useState('');
   
   const mappedParts = useMemo(() => parts.filter(p => p.mappedCustomers?.some(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim())), [parts, activeCustomer]);
@@ -295,7 +297,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
     }
   };
 
-  const applyTallyImport = () => {
+  const applyTallyImport = async () => {
     if (!tallyImportResult) return;
     if (isDuplicateInvoice) {
       alert("System Block: This invoice number has already been imported.");
@@ -348,16 +350,49 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
       }
     });
 
+    // Log every unmatched line to Import Issues instead of letting it vanish
+    // silently — see the 24-Aug-26 SIAC-SKH incident: an invoice line whose
+    // SAP code is genuinely new (a dimensional/model variant not yet in
+    // Item Master) must never just disappear with no record anywhere.
+    // Firestore batches cap at 500 ops — chunk defensively even though a
+    // single invoice is never remotely that large.
+    if (tallyImportResult.unmatchedItems.length > 0) {
+      try {
+        const nowIso = new Date().toISOString();
+        for (let i = 0; i < tallyImportResult.unmatchedItems.length; i += 450) {
+          const chunk = tallyImportResult.unmatchedItems.slice(i, i + 450);
+          const batch = writeBatch(db);
+          chunk.forEach(u => {
+            const ref = doc(collection(db, 'importIssues'));
+            batch.set(ref, {
+              type: 'sales_unmatched',
+              invoiceNumber: finalInvoice || '',
+              date: finalTimestamp,
+              customer: finalCustomer,
+              rawText: u.rawText,
+              quantity: u.quantity,
+              createdAt: nowIso,
+            });
+          });
+          // eslint-disable-next-line no-await-in-loop
+          await batch.commit();
+        }
+      } catch (err) {
+        console.error('Failed to log unmatched Tally lines to Import Issues:', err);
+      }
+    }
+
     setDispatchData(prev => {
       const reset = { ...prev };
       parts.forEach(p => { if (reset[p.id]) reset[p.id] = { selected: false, qtyString: '' }; });
       return reset;
     });
-    
-    setImportSummary({ 
-      count: tallyImportResult.matchedItems.length, 
+
+    setImportSummary({
+      count: tallyImportResult.matchedItems.length,
       customers: Array.from(detectedCustomersSet),
-      date: finalTimestamp ? new Date(finalTimestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : undefined
+      date: finalTimestamp ? new Date(finalTimestamp).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : undefined,
+      unmatchedCount: tallyImportResult.unmatchedItems.length,
     });
 
     setShowTallyModal(false);
@@ -398,9 +433,14 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
             <div className="text-left">
               <p className="text-[10px] font-black uppercase tracking-widest opacity-80 text-left">Sync Successful</p>
               <p className="text-sm font-black text-left">
-                Logged {importSummary?.count} items to {importSummary?.customers.join(', ')} 
+                Logged {importSummary?.count} items to {importSummary?.customers.join(', ')}
                 {importSummary?.date && ` for ${importSummary.date}`}
               </p>
+              {!!importSummary?.unmatchedCount && (
+                <p className="text-[10px] font-bold text-emerald-100 text-left mt-0.5">
+                  ⚠️ {importSummary.unmatchedCount} line{importSummary.unmatchedCount === 1 ? '' : 's'} couldn't be matched — sent to Import Issues for review.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -660,21 +700,45 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
                       </div>
                     </div>
                   ))}
+
+                  {tallyImportResult.unmatchedItems.length > 0 && (
+                    <div className="bg-amber-50 border-2 border-amber-200 rounded-3xl p-6 text-left">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xl">⚠️</span>
+                        <h5 className="text-[10px] font-black text-amber-700 uppercase tracking-widest text-left">
+                          {tallyImportResult.unmatchedItems.length} Line{tallyImportResult.unmatchedItems.length === 1 ? '' : 's'} Could Not Be Matched
+                        </h5>
+                      </div>
+                      <p className="text-xs text-amber-700/80 font-semibold mb-3 text-left">
+                        No part in Item Master matched these by SAP code or name — nothing will be posted for them.
+                        Confirming below logs them to Import Issues for manual review. If any are new parts (e.g. a
+                        dimensional/model variant with its own SAP code), add them to Item Master first, then re-upload.
+                      </p>
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                        {tallyImportResult.unmatchedItems.map((u, idx) => (
+                          <div key={idx} className="flex justify-between items-center gap-4 text-xs bg-white/70 rounded-xl px-3 py-2 border border-amber-100">
+                            <span className="font-bold text-slate-700">{u.rawText}</span>
+                            <span className="font-black text-amber-700 shrink-0">Qty {u.quantity}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="p-10 border-t border-slate-100 bg-white flex gap-4 text-left">
               <button onClick={() => { setShowTallyModal(false); setTallyImportResult(null); }} className="flex-1 py-5 border-2 border-slate-100 rounded-2xl font-black text-slate-400 uppercase text-[11px] tracking-widest hover:bg-slate-50 transition-all">Cancel</button>
-              {tallyImportResult && tallyImportResult.matchedItems.length > 0 && (
-                <button 
+              {tallyImportResult && (tallyImportResult.matchedItems.length > 0 || tallyImportResult.unmatchedItems.length > 0) && (
+                <button
                   disabled={isDuplicateInvoice || isPreviousMonthBlocked}
-                  onClick={applyTallyImport} 
+                  onClick={applyTallyImport}
                   className={`flex-[2] py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl transition-all ${
                     isDuplicateInvoice || isPreviousMonthBlocked ? 'bg-slate-300 cursor-not-allowed text-slate-500' : 'bg-[#008c45] shadow-emerald-100 hover:bg-[#007037]'
                   }`}
                 >
-                  {isPreviousMonthBlocked ? '🔒 Previous Month Blocked' : isDuplicateInvoice ? 'Duplicate Blocked' : 'Post Routed Dispatches'}
+                  {isPreviousMonthBlocked ? '🔒 Previous Month Blocked' : isDuplicateInvoice ? 'Duplicate Blocked' : tallyImportResult.matchedItems.length === 0 ? 'Log Unmatched to Import Issues' : 'Post Routed Dispatches'}
                 </button>
               )}
             </div>

@@ -8,15 +8,24 @@ export interface TallyMatchedItem {
   partName: string;
   quantity: number;
   tallyName: string;
-  customer: string; 
+  customer: string;
+}
+
+// Same rows as unmatchedNames, but carrying quantity too — needed so an
+// unmatched line can be logged to Import Issues with a usable quantity
+// instead of just a name (see DailyDispatch.tsx's applyTallyImport).
+export interface TallyUnmatchedItem {
+  rawText: string;
+  quantity: number;
 }
 
 export interface TallyImportResult {
   matchedItems: TallyMatchedItem[];
   unmatchedNames: string[];
-  detectedDate?: string; 
-  detectedConsignee?: string; 
-  detectedInvoice?: string; 
+  unmatchedItems: TallyUnmatchedItem[];
+  detectedDate?: string;
+  detectedConsignee?: string;
+  detectedInvoice?: string;
 }
 
 export class TallyService {
@@ -124,7 +133,8 @@ export class TallyService {
 
     const matchedItems: TallyMatchedItem[] = [];
     const unmatchedNames: string[] = [];
-    
+    const unmatchedItems: TallyUnmatchedItem[] = [];
+
     for (const entry of inventoryEntries) {
       const stockItemName = entry.getElementsByTagName("STOCKITEMNAME")[0]?.textContent || "";
       const billedQtyStr = entry.getElementsByTagName("BILLEDQTY")[0]?.textContent || "0";
@@ -134,12 +144,15 @@ export class TallyService {
       if (part) {
         matchedItems.push({ partId: part.id, partName: part.name, quantity, tallyName: stockItemName, customer: finalCustomer });
       } else {
-        unmatchedNames.push(stockItemName.trim());
+        const trimmedName = stockItemName.trim();
+        unmatchedNames.push(trimmedName);
+        unmatchedItems.push({ rawText: trimmedName, quantity });
       }
     }
-    return { 
-      matchedItems, 
-      unmatchedNames: Array.from(new Set(unmatchedNames)), 
+    return {
+      matchedItems,
+      unmatchedNames: Array.from(new Set(unmatchedNames)),
+      unmatchedItems,
       detectedDate: detectedDateStr,
       detectedInvoice: voucherNo,
       detectedConsignee: detectedCust || undefined
@@ -150,7 +163,7 @@ export class TallyService {
     const workbook = XLSX.read(buffer, { type: 'array' });
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
-    if (jsonData.length < 1) return { matchedItems: [], unmatchedNames: [] };
+    if (jsonData.length < 1) return { matchedItems: [], unmatchedNames: [], unmatchedItems: [] };
 
     let detectedDateStr: string | undefined;
     let detectedInvoiceNo: string | undefined;
@@ -341,6 +354,7 @@ export class TallyService {
 
     const matchedItems: TallyMatchedItem[] = [];
     const unmatchedNames: string[] = [];
+    const unmatchedItems: TallyUnmatchedItem[] = [];
     for (let r = 0; r < jsonData.length; r++) {
       const row = jsonData[r]; if (!row || row.length < 2) continue;
       const stockItemName = String(row[itemColIdx] || "").trim();
@@ -354,15 +368,17 @@ export class TallyService {
         matchedItems.push({ partId: part.id, partName: part.name, quantity, tallyName: stockItemName, customer: finalCustomer });
       } else if (stockItemName.length > 3) {
         unmatchedNames.push(stockItemName);
+        unmatchedItems.push({ rawText: stockItemName, quantity });
       }
     }
 
-    return { 
-      matchedItems, 
-      unmatchedNames: Array.from(new Set(unmatchedNames)), 
-      detectedDate: detectedDateStr, 
-      detectedConsignee: sheetMasterCustomer || undefined, 
-      detectedInvoice: detectedInvoiceNo 
+    return {
+      matchedItems,
+      unmatchedNames: Array.from(new Set(unmatchedNames)),
+      unmatchedItems,
+      detectedDate: detectedDateStr,
+      detectedConsignee: sheetMasterCustomer || undefined,
+      detectedInvoice: detectedInvoiceNo
     };
   }
 }

@@ -98,6 +98,12 @@ export const findMatchingCustomer = (rawText: string, customers: Customer[]): st
   return null;
 };
 
+// A SAP-code-shaped token embedded in free text — 2+ letters then 6+ digits
+// (matches this company's "BOCS00007557" convention, but written generic
+// rather than hardcoded to "BOCS" so it still catches a future customer's
+// own numbering scheme). Used only as a guardrail below, never to match.
+const SAP_CODE_SHAPE = /\b[a-z]{2,}\d{6,}\b/i;
+
 // Same 3-tier logic TallyService.findMatchingPart uses (exact -> SAP-code
 // containment -> name containment), exposed here so bulk-schedule column
 // detection (services/bulkScheduleImport logic in BulkScheduleImport.tsx)
@@ -121,6 +127,19 @@ export const findMatchingPartBySapOrName = <T extends { name: string; sapCode: s
     return sap.length >= 2 && cleanText.includes(sap);
   });
   if (part) return part;
+
+  // Guardrail added after the 24-Aug-26 SIAC-SKH misattribution: two lines
+  // on that invoice carried NEW SAP codes (BOCS00007556/57, dimensional
+  // variants of existing parts for a different model) that didn't exist in
+  // Item Master yet, but their text also contained an EXISTING part's name
+  // verbatim — so the name-only tier below matched them to the wrong
+  // (old) part instead of flagging them as new. If the text carries its
+  // own SAP-code-shaped token that didn't match anything above, that code
+  // is authoritative: refuse to guess from the name and let the caller
+  // route this to manual review (Import Issues) instead. Text with NO
+  // SAP-code-shaped token at all (e.g. a bare hand-typed description)
+  // still falls through to the name match below as before.
+  if (SAP_CODE_SHAPE.test(text)) return undefined;
 
   part = inventory.find(p => {
     const invName = p.name.trim().toLowerCase();

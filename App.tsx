@@ -23,6 +23,8 @@ import Notifications from './components/Notifications';
 import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
+import { writeBatch, doc, collection } from 'firebase/firestore';
+import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, AdminAlert, canAccessView } from './types';
@@ -795,7 +797,47 @@ const MainApp: React.FC = () => {
                          console.log(`[SyncEngine] Deducted ${i.quantity} from ${p.name}. Mapped to ${officialCustomer}. New Stock: ${p.stock}`);
                        }
                      });
-                    addNotification(`Tally Invoice ${res.detectedInvoice || file.name} Imported`, "success");
+                    addNotification(
+                      res.unmatchedItems.length > 0
+                        ? `Tally Invoice ${res.detectedInvoice || file.name} Imported (${res.unmatchedItems.length} line${res.unmatchedItems.length === 1 ? '' : 's'} sent to Import Issues)`
+                        : `Tally Invoice ${res.detectedInvoice || file.name} Imported`,
+                      "success"
+                    );
+
+                    // Log every unmatched line to Import Issues instead of
+                    // letting it silently vanish — see the 24-Aug-26
+                    // SIAC-SKH incident, where a genuinely new SAP code
+                    // (a dimensional/model variant not yet in Item Master)
+                    // had no consumer for `unmatchedItems` anywhere in this
+                    // auto-sync cycle, so it just disappeared with zero
+                    // record. This runs unattended (no admin reviewing a
+                    // modal), so it's the only place this can be caught.
+                    if (res.unmatchedItems.length > 0) {
+                      try {
+                        const nowIso = new Date().toISOString();
+                        for (let ui = 0; ui < res.unmatchedItems.length; ui += 450) {
+                          const chunk = res.unmatchedItems.slice(ui, ui + 450);
+                          const batch = writeBatch(db);
+                          chunk.forEach(u => {
+                            const ref = doc(collection(db, 'importIssues'));
+                            batch.set(ref, {
+                              type: 'sales_unmatched',
+                              invoiceNumber: res.detectedInvoice || file.name,
+                              date: res.detectedDate || getLocalISOString(),
+                              customer: res.detectedConsignee || null,
+                              rawText: u.rawText,
+                              quantity: u.quantity,
+                              createdAt: nowIso,
+                            });
+                          });
+                          // eslint-disable-next-line no-await-in-loop
+                          await batch.commit();
+                        }
+                      } catch (issueErr) {
+                        console.error('[SyncEngine] Failed to log unmatched Tally lines to Import Issues:', issueErr);
+                      }
+                    }
+
                     await gService.archiveProcessedFile(file.path);
                     console.log(`[SyncEngine] File ${file.name} processed and archived.`);
                   } else {
