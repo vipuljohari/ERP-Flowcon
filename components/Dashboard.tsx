@@ -3,6 +3,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Part, Sale, InventoryStats, Customer, RawMaterial } from '../types';
 import ReportGenerator from './ReportGenerator';
 import { useBrandName } from '../contexts/CompanyContext';
+import { isSheetRM, rmKgPerPart } from '../services/rmYield';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -153,7 +154,15 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       let kgShort = 0;
       let pipesShort = 0;
 
-      if (rm) {
+      if (rm && isSheetRM(rm)) {
+        // Sheet Metal: no bar/length concept — Kg short is simply the
+        // shortfall in pieces times the part's Gross Weight (which already
+        // includes scrap, see rmYield.ts). `pipesShort` has no meaning here
+        // and stays 0 — callers branch on rm.category to hide it.
+        if (gap > 0) {
+          kgShort = gap * rmKgPerPart(p);
+        }
+      } else if (rm) {
         const rmLength = rm.length || 6000;
         const rmStandardMeters = rmLength / 1000;
         let lengthFactorMeters = 0;
@@ -217,6 +226,81 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
     const actualOpeningBalances = localRMOpeningBalances || {};
 
     return activeRMs.map(rm => {
+      // Parts linked to this RM — same lookup regardless of Tube/Sheet, so
+      // it's computed once here and shared by both branches below.
+      const linkedParts = parts.filter(p =>
+        (p.customerRMMappings?.[activeCustomer] === rm.id) ||
+        (rm.partId === p.id) ||
+        (rm.partIds && rm.partIds.includes(p.id)) ||
+        (p.mappedCustomers?.some(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim()) &&
+         (p.customerRMMappings?.[p.mappedCustomers.find(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim()) || ''] === rm.id))
+      );
+
+      // --- Sheet Metal RM: stock is tracked directly in Kg — admin enters
+      // Kg received at each inward and Kg on hand as the opening balance
+      // (see Inventory.tsx's Sheet Kg table), no bar/length concept at all.
+      // `rmKgPerPart` (= a part's Gross Weight) already represents the FULL
+      // Kg consumed per finished piece — net weight *and* scrap together —
+      // so unlike Tube there's no separate scrap term to add here; see the
+      // comment on rmKgPerPart in services/rmYield.ts.
+      if (isSheetRM(rm)) {
+        const monthRMInwardKg = actualInwardLogs
+          .filter((l: any) => l.rmId === rm.id)
+          .reduce((sum: number, l: any) => sum + (l.quantity || 0), 0);
+
+        const totalSalesKg = linkedParts.reduce((sum, item) => {
+          const salesQty = filteredSales.filter(s => s.partId === item.id).reduce((s, sale) => s + sale.quantity, 0);
+          return sum + salesQty * rmKgPerPart(item);
+        }, 0);
+
+        const openingBalanceKg = parseFloat(actualOpeningBalances[rm.id] || '0');
+        const closingBalanceKg = parseFloat((openingBalanceKg + monthRMInwardKg - totalSalesKg).toFixed(2));
+
+        let totalRequiredKg = 0;
+        const partDetails = linkedParts.map(p => {
+          const target = getCustomerSchedule(p, activeCustomer);
+          const dispatched = filteredSales.filter(s => s.partId === p.id).reduce((sum, s) => sum + s.quantity, 0);
+          const balanceNeeded = Math.max(0, target - dispatched);
+          const partRequiredKg = balanceNeeded * rmKgPerPart(p);
+          totalRequiredKg += partRequiredKg;
+
+          return {
+            id: p.id,
+            name: p.name,
+            sapCode: p.sapCode,
+            target,
+            dispatched,
+            balanceNeeded,
+            isShortage: balanceNeeded > p.stock,
+            gap: balanceNeeded,
+            factor: rmKgPerPart(p),
+            kgShort: partRequiredKg,
+            pipesShort: 0,
+            metersShort: 0
+          };
+        });
+
+        const totalKgShort = parseFloat(Math.max(0, totalRequiredKg - closingBalanceKg).toFixed(2));
+
+        return {
+          rm,
+          rmLength: 0,
+          rmStandardMeters: 0,
+          pipeWeight: 0,
+          actualStockMeters: 0,
+          actualStockPipes: 0,
+          actualStockKg: closingBalanceKg,
+          requiredMeters: 0,
+          requiredKg: parseFloat(totalRequiredKg.toFixed(2)),
+          partDetails,
+          totalKgShort,
+          totalPipesShort: 0,
+          totalMetersShort: 0,
+          hasShortage: totalKgShort > 0
+        };
+      }
+
+      // --- Tube RM: fixed-length bar, tracked in pipes/meters/Kg (unchanged). ---
       // Standard RM pipe details
       const rmLength = rm.length || 6000;
       const rmStandardMeters = rmLength / 1000;
@@ -228,15 +312,6 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         .reduce((sum: number, l: any) => sum + l.quantity, 0);
       const monthRMInwardKg = parseFloat((monthRMInwardPipes * pipeWeight).toFixed(2));
       const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
-
-      // 2. Find all parts linked to this RM
-      const linkedParts = parts.filter(p => 
-        (p.customerRMMappings?.[activeCustomer] === rm.id) || 
-        (rm.partId === p.id) || 
-        (rm.partIds && rm.partIds.includes(p.id)) ||
-        (p.mappedCustomers?.some(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim()) && 
-         (p.customerRMMappings?.[p.mappedCustomers.find(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim()) || ''] === rm.id))
-      );
 
       // 3. Compute RM consumed so far: dispatches (Sales) + scrap of those dispatches
       let totalSalesMeters = 0;
@@ -380,13 +455,16 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         actualStockPipes: closingBalancePipes,
         actualStockKg: closingBalanceKg,
         requiredMeters: totalRmRequiredMeters,
+        requiredKg: parseFloat((totalRmRequiredMeters * (rm.weightPer1000 || 0)).toFixed(2)),
         partDetails,
         totalKgShort,
         totalPipesShort,
         totalMetersShort,
         hasShortage
       };
-    }).sort((a, b) => b.totalMetersShort - a.totalMetersShort);
+      // Sorted by Kg short (not meters) so Tube and Sheet Metal deficits —
+      // which don't share a meters/pipes unit — rank together sensibly.
+    }).sort((a, b) => b.totalKgShort - a.totalKgShort);
   }, [parts, rawMaterials, activeCustomer, filteredSales, rmInwardLogs, localRMOpeningBalances]);
 
   const stats: InventoryStats = {
@@ -542,37 +620,57 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {rmShortageAnalysis.filter(x => x.hasShortage).map(({ rm, totalKgShort, totalPipesShort, totalMetersShort, actualStockMeters, requiredMeters, partDetails }) => (
+            {rmShortageAnalysis.filter(x => x.hasShortage).map(({ rm, totalKgShort, totalPipesShort, totalMetersShort, actualStockMeters, actualStockKg, requiredMeters, requiredKg, partDetails }) => {
+              const isSheet = rm.category === 'sheet';
+              return (
               <div key={rm.id} className="bg-white border border-rose-100/70 rounded-[2rem] p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between">
                 <div>
                   <div className="flex justify-between items-start mb-4">
                     <div>
                       <p className="text-[9px] font-black text-rose-500 uppercase tracking-widest">Raw Material Size</p>
                       <h4 className="text-base font-black text-slate-800 uppercase leading-none">{rm.size}</h4>
-                      <p className="text-[9px] text-slate-400 font-bold mt-1.5">Length: {rm.length}mm • Factor: {rm.weightPer1000} Kg/1k mm</p>
+                      <p className="text-[9px] text-slate-400 font-bold mt-1.5">
+                        {isSheet ? `Thickness: ${rm.thickness || '—'} • Grade: ${rm.grade || '—'}` : `Length: ${rm.length}mm • Factor: ${rm.weightPer1000} Kg/1k mm`}
+                      </p>
                     </div>
                   </div>
 
                   {/* Highlights of meters, pipes and kgs short on the main dashboard */}
-                  <div className="grid grid-cols-3 gap-2 bg-rose-50/40 p-3 rounded-xl border border-rose-50 mb-4 text-left">
-                    <div className="text-left">
-                      <p className="text-[9px] font-black text-rose-500 uppercase tracking-wide mb-1">Meters Short</p>
-                      <p className="text-base font-black text-rose-700 leading-none">-{totalMetersShort.toFixed(1)} <span className="text-[9px] font-bold">m</span></p>
-                    </div>
-                    <div className="text-left border-l border-rose-100 pl-2">
-                      <p className="text-[9px] font-black text-rose-500 uppercase tracking-wide mb-1">Pipes Short</p>
-                      <p className="text-base font-black text-rose-700 leading-none">-{totalPipesShort.toFixed(1)} <span className="text-[9px] font-bold">Pipes</span></p>
-                    </div>
-                    <div className="text-left border-l border-rose-100 pl-2">
+                  {isSheet ? (
+                    <div className="bg-rose-50/40 p-3 rounded-xl border border-rose-50 mb-4 text-left">
                       <p className="text-[9px] font-black text-rose-500 uppercase tracking-wide mb-1">Weight Short</p>
                       <p className="text-base font-black text-rose-700 leading-none">-{totalKgShort.toFixed(1)} <span className="text-[9px] font-bold">Kg</span></p>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2 bg-rose-50/40 p-3 rounded-xl border border-rose-50 mb-4 text-left">
+                      <div className="text-left">
+                        <p className="text-[9px] font-black text-rose-500 uppercase tracking-wide mb-1">Meters Short</p>
+                        <p className="text-base font-black text-rose-700 leading-none">-{totalMetersShort.toFixed(1)} <span className="text-[9px] font-bold">m</span></p>
+                      </div>
+                      <div className="text-left border-l border-rose-100 pl-2">
+                        <p className="text-[9px] font-black text-rose-500 uppercase tracking-wide mb-1">Pipes Short</p>
+                        <p className="text-base font-black text-rose-700 leading-none">-{totalPipesShort.toFixed(1)} <span className="text-[9px] font-bold">Pipes</span></p>
+                      </div>
+                      <div className="text-left border-l border-rose-100 pl-2">
+                        <p className="text-[9px] font-black text-rose-500 uppercase tracking-wide mb-1">Weight Short</p>
+                        <p className="text-base font-black text-rose-700 leading-none">-{totalKgShort.toFixed(1)} <span className="text-[9px] font-bold">Kg</span></p>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Stock vs Requirement summary */}
                   <div className="text-[9.5px] text-slate-500 font-bold mb-4 bg-slate-50 p-2.5 rounded-xl border border-slate-100/70 flex justify-between">
-                     <span>Stock: <strong className="text-slate-800">{(actualStockMeters || 0).toFixed(1)} m</strong></span>
-                     <span>Schedule needed: <strong className="text-slate-800">{(requiredMeters || 0).toFixed(1)} m</strong></span>
+                     {isSheet ? (
+                       <>
+                         <span>Stock: <strong className="text-slate-800">{(actualStockKg || 0).toFixed(1)} Kg</strong></span>
+                         <span>Schedule needed: <strong className="text-slate-800">{(requiredKg || 0).toFixed(1)} Kg</strong></span>
+                       </>
+                     ) : (
+                       <>
+                         <span>Stock: <strong className="text-slate-800">{(actualStockMeters || 0).toFixed(1)} m</strong></span>
+                         <span>Schedule needed: <strong className="text-slate-800">{(requiredMeters || 0).toFixed(1)} m</strong></span>
+                       </>
+                     )}
                   </div>
 
                   {/* Deficit breakdown by parts mapping to intermediate RM */}
@@ -587,7 +685,9 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                           </div>
                           <div className="text-right">
                             <p className="font-extrabold text-rose-600">-{Math.round(p.gap)} pcs</p>
-                            <p className="text-[9px] text-slate-400 font-black">-{p.metersShort.toFixed(1)} m (-{p.pipesShort.toFixed(1)} Pipes / -{p.kgShort.toFixed(1)} Kg)</p>
+                            <p className="text-[9px] text-slate-400 font-black">
+                              {isSheet ? `-${p.kgShort.toFixed(1)} Kg` : `-${p.metersShort.toFixed(1)} m (-${p.pipesShort.toFixed(1)} Pipes / -${p.kgShort.toFixed(1)} Kg)`}
+                            </p>
                           </div>
                         </div>
                       ))}
@@ -595,7 +695,8 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -793,9 +894,11 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                       <p className="text-[10px] text-slate-500 font-black uppercase flex items-center gap-1">
                         ⚖️ RM Weight Short: <span className="text-rose-600 font-black">{item.kgShort.toFixed(2)} Kg</span>
                       </p>
-                      <p className="text-[10px] text-slate-500 font-black uppercase flex items-center gap-1">
-                        📏 Standard Pipes Short: <span className="text-rose-600 font-black">{item.pipesShort.toFixed(1)} Pipes</span>
-                      </p>
+                      {item.linkedRM.category !== 'sheet' && (
+                        <p className="text-[10px] text-slate-500 font-black uppercase flex items-center gap-1">
+                          📏 Standard Pipes Short: <span className="text-rose-600 font-black">{item.pipesShort.toFixed(1)} Pipes</span>
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
