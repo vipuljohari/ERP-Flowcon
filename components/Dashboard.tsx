@@ -714,11 +714,11 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
               <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest text-left">
                 <tr>
                   <th className="px-8 py-5 border-r border-slate-200/40 text-left">Description</th>
-                  <th className="px-8 py-5 text-center border-r border-slate-200/40">Available Stock</th>
                   <th className="px-8 py-5 text-center border-r border-slate-200/40">Target</th>
                   <th className="px-8 py-5 text-center border-r border-slate-200/40">Dispatch</th>
                   <th className="px-8 py-5 text-center border-r border-slate-200/40">ACH %</th>
-                  <th className="px-8 py-5 text-center">Bal</th>
+                  <th className="px-8 py-5 text-center border-r border-slate-200/40">Balance Qty to Dispatch</th>
+                  <th className="px-8 py-5 text-center">Available Stock</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-left">
@@ -734,11 +734,6 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                         <div className="text-[11px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5 text-left">{p.sapCode}</div>
                         <div className="font-bold text-slate-800 text-sm leading-tight group-hover:text-indigo-600 transition-colors uppercase text-left">{p.name}</div>
                       </td>
-                      <td className="px-8 py-5 text-center border-r border-slate-200/20 font-black">
-                        <span className={`px-3 py-1.5 rounded-full text-xs font-black ${p.stock < 0 ? 'bg-rose-100 text-rose-700' : p.stock <= p.minThreshold ? 'bg-amber-100 text-amber-700' : 'bg-slate-50 text-slate-800 border border-slate-100'}`}>
-                          {Math.round(p.stock)}
-                        </span>
-                      </td>
                       <td className="px-8 py-5 text-center font-black text-slate-600 text-sm">{target}</td>
                       <td className="px-8 py-5 text-center font-black text-indigo-600 text-sm">{dispatchCount}</td>
                       <td className="px-8 py-5">
@@ -749,8 +744,13 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                           <span className={`text-[10px] font-black w-8 text-right ${achv >= 90 ? 'text-emerald-600' : achv < 40 ? 'text-rose-600' : 'text-indigo-600'}`}>{achv}%</span>
                         </div>
                       </td>
-                      <td className="px-8 py-5 text-center">
+                      <td className="px-8 py-5 text-center border-r border-slate-200/20">
                         <span className={`font-black text-xs ${balance > 0 ? 'text-slate-900' : 'text-emerald-500'}`}>{balance}</span>
+                      </td>
+                      <td className="px-8 py-5 text-center font-black">
+                        <span className={`px-3 py-1.5 rounded-full text-xs font-black ${p.stock < 0 ? 'bg-rose-100 text-rose-700' : p.stock <= p.minThreshold ? 'bg-amber-100 text-amber-700' : 'bg-slate-50 text-slate-800 border border-slate-100'}`}>
+                          {Math.round(p.stock)}
+                        </span>
                       </td>
                     </tr>
                   );

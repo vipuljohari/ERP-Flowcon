@@ -23,6 +23,21 @@ const getCustomerRate = (p: Part, customerName: string) => {
   return key ? p.customerRates[key] ?? p.rate : p.rate;
 };
 
+const normalizeCustomerName = (s: string) => (s || '').toUpperCase().trim();
+
+// The original Share Achievement card (16-item list, top-8/bottom-8 HT/NML
+// boxes) was custom-built for exactly these 2 customers and must keep its
+// exact existing logic/appearance untouched. Every other customer gets the
+// generic card built below (their own Item Master list, SAP code instead of
+// Part Name, no HT/NML boxes).
+const LEGACY_ACHIEVEMENT_CUSTOMERS = [
+  'SIAC-SKH INDIA CABS Mfg. Pvt. Ltd. Palwal',
+  'SIAC-SKH INDIA CABS MFG Pvt. Ltd. Jaipur',
+].map(normalizeCustomerName);
+
+const isLegacyAchievementCustomer = (customerName: string) =>
+  LEGACY_ACHIEVEMENT_CUSTOMERS.includes(normalizeCustomerName(customerName));
+
 const ReportGenerator: React.FC<ReportGeneratorProps> = ({ parts, sales, activeCustomer, onImageGenerated, trigger, reportDate }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -125,13 +140,18 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ parts, sales, activeC
     const totalAchv = (totalSalesValue / totalScheduledValue) * 100;
     const valueAchvDisplay = `${(totalSalesValue / 100000).toFixed(2)} L / ${(totalScheduledValue / 100000).toFixed(2)} L`;
 
-    // HT (Top 8 Items)
+    // This custom card (16-item list, HT/NML top-8/bottom-8 boxes) is
+    // preserved exactly as-is for SIAC Palwal/Jaipur. Every other customer
+    // gets the generic card (own Item Master list, SAP code, TTL ACH only).
+    const isLegacyCard = isLegacyAchievementCustomer(activeCustomer);
+
+    // HT (Top 8 Items) — legacy card only
     const htPartsList = parts.slice(0, 8);
     const htTarget = htPartsList.reduce((acc, p) => acc + getCustomerSchedule(p, activeCustomer), 0) || 1;
     const htDispatch = filteredSales.filter(s => htPartsList.some(p => p.id === s.partId)).reduce((acc, s) => acc + s.quantity, 0);
     const htAchvPercent = (htDispatch / htTarget) * 100;
 
-    // Nml (Last 8 Items)
+    // Nml (Last 8 Items) — legacy card only
     const nmlPartsList = parts.slice(8, 16);
     const nmlTarget = nmlPartsList.reduce((acc, p) => acc + getCustomerSchedule(p, activeCustomer), 0) || 1;
     const nmlDispatch = filteredSales.filter(s => nmlPartsList.some(p => p.id === s.partId)).reduce((acc, s) => acc + s.quantity, 0);
@@ -140,16 +160,18 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ parts, sales, activeC
     // --- RENDER TOP METRICS ---
     ctx.textAlign = 'center';
 
-    // HT ACH Box (Left)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-    ctx.roundRect(80, 500, 240, 160, 30);
-    ctx.fill();
-    ctx.fillStyle = htAchvPercent >= adherenceThreshold ? '#10b981' : '#ef4444';
-    ctx.font = '900 50px Inter, system-ui, sans-serif';
-    ctx.fillText(`${htAchvPercent.toFixed(1)}%`, 200, 580);
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '800 24px Inter, system-ui, sans-serif';
-    ctx.fillText('HT ACH', 200, 625);
+    if (isLegacyCard) {
+      // HT ACH Box (Left)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.roundRect(80, 500, 240, 160, 30);
+      ctx.fill();
+      ctx.fillStyle = htAchvPercent >= adherenceThreshold ? '#10b981' : '#ef4444';
+      ctx.font = '900 50px Inter, system-ui, sans-serif';
+      ctx.fillText(`${htAchvPercent.toFixed(1)}%`, 200, 580);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '800 24px Inter, system-ui, sans-serif';
+      ctx.fillText('HT ACH', 200, 625);
+    }
 
     // Main Circle (Center)
     ctx.strokeStyle = 'rgba(255,255,255,0.1)';
@@ -179,66 +201,132 @@ const ReportGenerator: React.FC<ReportGeneratorProps> = ({ parts, sales, activeC
     ctx.fillStyle = '#ffffff';
     ctx.fillText(valueAchvDisplay, 540, 675);
 
-    // Nml ACH Box (Right)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-    ctx.roundRect(760, 500, 240, 160, 30);
-    ctx.fill();
-    ctx.fillStyle = nmlAchvPercent >= adherenceThreshold ? '#10b981' : '#ef4444';
-    ctx.font = '900 50px Inter, system-ui, sans-serif';
-    ctx.fillText(`${nmlAchvPercent.toFixed(1)}%`, 880, 580);
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '800 24px Inter, system-ui, sans-serif';
-    ctx.fillText('NML ACH', 880, 625);
-
-    // --- RENDER 16 PARTS LIST ---
-    ctx.textAlign = 'left';
-    let y = 760;
-    const rowHeight = 65;
-    const barX = 580; 
-    const barWidth = 300;
-    const barHeight = 40;
-
-    parts.slice(0, 16).forEach((p, index) => {
-      const pTarget = getCustomerSchedule(p, activeCustomer);
-      const pDispatch = filteredSales.filter(s => s.partId === p.id).reduce((sum, s) => sum + s.quantity, 0);
-      const pAchv = (pDispatch / (pTarget || 1)) * 100;
-
-      ctx.beginPath();
-      
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '800 26px Inter, system-ui, sans-serif';
-      const nameStr = `${index + 1}. ${p.name}`;
-      ctx.fillText(nameStr.length > 28 ? nameStr.substring(0, 28) + '...' : nameStr, 80, y);
-      
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '700 20px Inter, system-ui, sans-serif';
-      ctx.fillText(`DISPATCH: ${pDispatch} / ${pTarget}`, 80, y + 32);
-
-      const barY = y - 12;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.roundRect(barX, barY, barWidth, barHeight, 12);
+    if (isLegacyCard) {
+      // Nml ACH Box (Right)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.roundRect(760, 500, 240, 160, 30);
       ctx.fill();
+      ctx.fillStyle = nmlAchvPercent >= adherenceThreshold ? '#10b981' : '#ef4444';
+      ctx.font = '900 50px Inter, system-ui, sans-serif';
+      ctx.fillText(`${nmlAchvPercent.toFixed(1)}%`, 880, 580);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '800 24px Inter, system-ui, sans-serif';
+      ctx.fillText('NML ACH', 880, 625);
+    }
 
-      const isAdherent = pAchv >= adherenceThreshold;
-      const fillColor = isAdherent ? '#10b981' : '#ef4444';
-      
-      const fillWidth = Math.min((pAchv / 100) * barWidth, barWidth);
-      if (fillWidth > 0) {
+    // --- RENDER PARTS LIST ---
+    ctx.textAlign = 'left';
+    const listStartY = 760;
+    const listEndY = 1800;
+    const barX = 580;
+    const barWidth = 300;
+
+    if (isLegacyCard) {
+      // Unchanged: fixed 16-item list, top-to-bottom in Item Master order.
+      let y = listStartY;
+      const rowHeight = 65;
+      const barHeight = 40;
+
+      parts.slice(0, 16).forEach((p, index) => {
+        const pTarget = getCustomerSchedule(p, activeCustomer);
+        const pDispatch = filteredSales.filter(s => s.partId === p.id).reduce((sum, s) => sum + s.quantity, 0);
+        const pAchv = (pDispatch / (pTarget || 1)) * 100;
+
         ctx.beginPath();
-        ctx.fillStyle = fillColor;
-        const visibleFillWidth = (pAchv > 0 && fillWidth < 12) ? 12 : fillWidth;
-        ctx.roundRect(barX, barY, visibleFillWidth, barHeight, 12);
-        ctx.fill();
-      }
 
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.font = '900 25px Inter, system-ui, sans-serif';
-      ctx.fillText(`${pAchv.toFixed(0)}%`, barX + barWidth + 60, barY + 28);
-      
-      ctx.textAlign = 'left';
-      y += rowHeight;
-    });
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '800 26px Inter, system-ui, sans-serif';
+        const nameStr = `${index + 1}. ${p.name}`;
+        ctx.fillText(nameStr.length > 28 ? nameStr.substring(0, 28) + '...' : nameStr, 80, y);
+
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '700 20px Inter, system-ui, sans-serif';
+        ctx.fillText(`DISPATCH: ${pDispatch} / ${pTarget}`, 80, y + 32);
+
+        const barY = y - 12;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+        ctx.roundRect(barX, barY, barWidth, barHeight, 12);
+        ctx.fill();
+
+        const isAdherent = pAchv >= adherenceThreshold;
+        const fillColor = isAdherent ? '#10b981' : '#ef4444';
+
+        const fillWidth = Math.min((pAchv / 100) * barWidth, barWidth);
+        if (fillWidth > 0) {
+          ctx.beginPath();
+          ctx.fillStyle = fillColor;
+          const visibleFillWidth = (pAchv > 0 && fillWidth < 12) ? 12 : fillWidth;
+          ctx.roundRect(barX, barY, visibleFillWidth, barHeight, 12);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.font = '900 25px Inter, system-ui, sans-serif';
+        ctx.fillText(`${pAchv.toFixed(0)}%`, barX + barWidth + 60, barY + 28);
+
+        ctx.textAlign = 'left';
+        y += rowHeight;
+      });
+    } else {
+      // Generic card: this customer's own Item Master list (any count),
+      // SAP code shown instead of Part Name. Same per-row bar/% styling as
+      // the legacy card, with row height/font size scaled to fit however
+      // many items this customer actually has.
+      const customerParts = parts.filter(p =>
+        p.mappedCustomers?.some(c => normalizeCustomerName(c) === normalizeCustomerName(activeCustomer))
+      );
+
+      if (customerParts.length > 0) {
+        const availableHeight = listEndY - listStartY;
+        const rowHeight = Math.max(30, Math.min(65, availableHeight / customerParts.length));
+        const scale = rowHeight / 65;
+        const barHeight = 40 * scale;
+
+        let y = listStartY;
+        customerParts.forEach((p, index) => {
+          const pTarget = getCustomerSchedule(p, activeCustomer);
+          const pDispatch = filteredSales.filter(s => s.partId === p.id).reduce((sum, s) => sum + s.quantity, 0);
+          const pAchv = (pDispatch / (pTarget || 1)) * 100;
+
+          ctx.beginPath();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = `800 ${Math.round(26 * scale)}px Inter, system-ui, sans-serif`;
+          const codeStr = `${index + 1}. ${p.sapCode || p.name}`;
+          ctx.fillText(codeStr.length > 28 ? codeStr.substring(0, 28) + '...' : codeStr, 80, y);
+
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = `700 ${Math.round(20 * scale)}px Inter, system-ui, sans-serif`;
+          ctx.fillText(`DISPATCH: ${pDispatch} / ${pTarget}`, 80, y + 32 * scale);
+
+          const barY = y - 12 * scale;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+          ctx.roundRect(barX, barY, barWidth, barHeight, 12);
+          ctx.fill();
+
+          const isAdherent = pAchv >= adherenceThreshold;
+          const fillColor = isAdherent ? '#10b981' : '#ef4444';
+
+          const fillWidth = Math.min((pAchv / 100) * barWidth, barWidth);
+          if (fillWidth > 0) {
+            ctx.beginPath();
+            ctx.fillStyle = fillColor;
+            const visibleFillWidth = (pAchv > 0 && fillWidth < 12) ? 12 : fillWidth;
+            ctx.roundRect(barX, barY, visibleFillWidth, barHeight, 12);
+            ctx.fill();
+          }
+
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.font = `900 ${Math.round(25 * scale)}px Inter, system-ui, sans-serif`;
+          ctx.fillText(`${pAchv.toFixed(0)}%`, barX + barWidth + 60, barY + 28 * scale);
+
+          ctx.textAlign = 'left';
+          y += rowHeight;
+        });
+      }
+    }
 
     // 5. Footer Section
     ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
