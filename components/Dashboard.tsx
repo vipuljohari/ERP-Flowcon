@@ -845,17 +845,17 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
           onClick={() => setShowPreviewModal(false)}
         >
           <div
-            className="bg-white rounded-[2.5rem] shadow-2xl max-w-md w-full p-8 border border-slate-100 animate-in zoom-in-95 duration-200 flex flex-col items-center gap-4 text-left"
+            className="bg-slate-900 rounded-[2.5rem] shadow-2xl w-full max-w-2xl p-6 sm:p-8 border border-slate-800 animate-in zoom-in-95 duration-200 flex flex-col items-center gap-4 text-left"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex justify-between items-center w-full">
-              <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">Achievement Report Ready</h3>
-              <button onClick={() => setShowPreviewModal(false)} className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center hover:bg-slate-200 transition-colors">✕</button>
+              <h3 className="text-sm font-black text-white uppercase tracking-widest">Achievement Report Ready</h3>
+              <button onClick={() => setShowPreviewModal(false)} className="w-10 h-10 bg-slate-800 rounded-2xl flex items-center justify-center hover:bg-slate-700 text-slate-300 transition-colors">✕</button>
             </div>
             <img
               src={previewUrl}
               alt="Achievement Report"
-              className="w-full max-h-[65vh] object-contain rounded-2xl border border-slate-100 shadow-sm"
+              className="max-h-[80vh] w-auto max-w-full object-contain rounded-2xl border border-slate-800 shadow-lg"
             />
             <p className="text-[11px] text-slate-400 font-bold text-center leading-relaxed">
               Right-click the image above to Copy or Save it, then share it wherever you like.
