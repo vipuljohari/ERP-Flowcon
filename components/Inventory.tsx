@@ -35,12 +35,14 @@ interface InventoryProps {
   onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
 }
 
-// An inwardLogs entry tagged this way is a SYNTHETIC quantity delta injected
-// purely to nudge a stored Opening Balance during an audit correction —
-// never a real physical receipt. Excluded from "how much actually came in
-// this month" totals so an audit correction is never double-counted as if
-// goods had arrived. (Legacy entries only — the current Opening Balance
-// audit flow no longer writes these at all; see commitOpeningBalance below.)
+// An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
+// RM Opening Balance adjusted after a physical stock count) — a real stock
+// change, but never a physical receipt. Excluded from "how much actually
+// came in this month" totals so a correction is never double-counted as if
+// goods had arrived. Both commitOpeningBalance and commitRMOpeningBalance
+// below write these; the Opening Balance VALUE itself, though, is always
+// read from the stored override maps (localPartOpeningBalances /
+// localRMOpeningBalances) — never re-derived from this remarks text.
 const isAuditDeltaRemark = (remarks?: string) =>
   !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
 
@@ -369,15 +371,23 @@ const Inventory: React.FC<InventoryProps> = ({
     }
   };
 
-  // Item-wise Opening Balance is now a STORED, month-anchored value — the
-  // same mechanism as commitRMOpeningBalance below, not a synthetic
-  // inwardLogs entry. Locking a value here writes a month-keyed override
-  // into localPartOpeningBalances; App.tsx's resolvedPartOpeningBalances
-  // then carries it forward automatically to later months until it's
-  // audited again. This deliberately does NOT call onAddInward — the old
-  // design hid the override inside an inwardLogs entry's remarks text,
-  // which meant a legacy-data restore could silently reintroduce a stale
-  // one and corrupt the current month's Opening Balance.
+  // Item-wise Opening Balance is a STORED, month-anchored value — the same
+  // mechanism as commitRMOpeningBalance below. Locking a value here writes
+  // a month-keyed override into localPartOpeningBalances; App.tsx's
+  // resolvedPartOpeningBalances then carries it forward automatically to
+  // later months until it's audited again. That override map is, and
+  // remains, the ONLY place the actual Opening Balance value is ever read
+  // from — a past bug came from an older design that instead re-derived
+  // the value by parsing it back out of an inwardLogs entry's remarks
+  // text, which a legacy-data restore could silently reintroduce as a
+  // stale value. That derivation path no longer exists anywhere in this
+  // codebase, so it's now safe to ALSO log a tagged onAddInward entry
+  // purely as a visible audit trail (mirroring commitRMOpeningBalance
+  // below) — it updates live stock the same way a real receipt would (so
+  // the correction is reflected everywhere stock is shown, not just in
+  // next month's Opening Balance) and is picked up by the "Opening
+  // inventory correction" audit view in RM Inward Report, but it is never
+  // read back to determine what the Opening Balance override *is*.
   const commitOpeningBalance = (partId: string, currentOpening: number) => {
     const newValStr = localOpeningBalances[partId];
     if (newValStr === undefined) return;
@@ -398,6 +408,8 @@ const Inventory: React.FC<InventoryProps> = ({
     const part = parts.find(p => p.id === partId);
     const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
     const monthDisplay = selectedDate.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+    const actionTimestamp = new Date().toISOString();
+    const remark = `[OPENING_BALANCE_SET:${newVal}|PREV:${currentOpening}] Item Opening Balance set to ${newVal} Pcs from Previous ${currentOpening} Pcs (${deltaStr} Pcs) for ${part?.mappedCustomers?.join(', ') || 'Customer'} (${part?.size || 'Item'}) [${monthDisplay}]`;
 
     if (window.confirm(`Audit Action: Adjust Item Opening Balance for ${monthDisplay}?\n\nItem: ${part?.name || 'Item'}\nTarget Balance: ${newVal} Pcs\nPrevious Balance: ${currentOpening} Pcs\nCorrection: ${deltaStr} Pcs\n\nThis locks Opening Balance at ${newVal} Pcs for ${monthDisplay}. It will carry forward automatically to future months unless audited again.`)) {
       if (propSetPartOpeningBalances) {
@@ -408,6 +420,16 @@ const Inventory: React.FC<InventoryProps> = ({
           }
           return updated;
         });
+      }
+
+      if (partId && onAddInward) {
+        onAddInward(
+          partId,
+          delta,
+          "ADMIN_AUDIT",
+          remark,
+          actionTimestamp
+        );
       }
 
       const next = {...localOpeningBalances};
