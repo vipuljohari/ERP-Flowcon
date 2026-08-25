@@ -37,6 +37,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
   const [isSharing, setIsSharing] = useState(false);
   const [show1PMAlert, setShow1PMAlert] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [showShortageModal, setShowShortageModal] = useState(false);
   const [expandedInvoices, setExpandedInvoices] = useState<Record<string, boolean>>({});
 
@@ -483,42 +484,18 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
     })()
   };
 
-  const handleShareToWhatsApp = async (blob: Blob) => {
-    try {
-      const safeDate = selectedDate.toISOString().split('T')[0];
-      const fileName = `Performance_${activeCustomer.substring(0, 10).replace(/\s/g, '_')}_${safeDate}.jpg`;
-      const file = new File([blob], fileName, { type: 'image/jpeg' });
-      
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-      const newPreview = URL.createObjectURL(blob);
-      setPreviewUrl(newPreview);
-
-      const shareData = {
-        files: [file],
-        title: 'Achievement Report',
-        text: `📊 Performance Report for ${activeCustomer} as of ${selectedDate.toLocaleDateString('en-GB')} - ${stats.overallAchievement.toFixed(1)}% Achievement.`
-      };
-
-      if (navigator.canShare && navigator.canShare(shareData)) {
-        await navigator.share(shareData);
-        localStorage.setItem('last_shared_report_date', new Date().toDateString());
-        setShow1PMAlert(false);
-      } else {
-        throw new Error('Native share unavailable');
-      }
-    } catch (err) {
-      const downloadUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `Performance_Report_${activeCustomer}_${selectedDate.toISOString().split('T')[0]}.jpg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      alert("Report Ready! Downloaded to device. Please share manually.");
-    } finally {
-      setTriggerReport(false);
-      setIsSharing(false);
-    }
+  // No native share sheet and no auto-download — just render the generated
+  // report as a large, right-click-able image so the admin can Copy Image
+  // or Save Image As themselves, whichever they need for that moment.
+  const handleReportGenerated = (blob: Blob) => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    const newPreview = URL.createObjectURL(blob);
+    setPreviewUrl(newPreview);
+    setShowPreviewModal(true);
+    localStorage.setItem('last_shared_report_date', new Date().toDateString());
+    setShow1PMAlert(false);
+    setTriggerReport(false);
+    setIsSharing(false);
   };
 
   const currentMonthYear = useMemo(() => {
@@ -531,8 +508,8 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         parts={parts} 
         sales={sales} 
         activeCustomer={activeCustomer} 
-        trigger={triggerReport} 
-        onImageGenerated={handleShareToWhatsApp} 
+        trigger={triggerReport}
+        onImageGenerated={handleReportGenerated}
         reportDate={selectedDate}
       />
 
@@ -560,16 +537,20 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         <div className="flex flex-col md:flex-row items-stretch md:items-center gap-4 text-left">
           <div className="flex items-center gap-3 text-left">
             {previewUrl && (
-              <div className="w-12 h-12 rounded-xl overflow-hidden border-2 border-indigo-500 shadow-lg animate-in zoom-in-50">
+              <button
+                onClick={() => setShowPreviewModal(true)}
+                className="w-12 h-12 rounded-xl overflow-hidden border-2 border-indigo-500 shadow-lg animate-in zoom-in-50"
+                title="Reopen last generated report"
+              >
                 <img src={previewUrl} className="w-full h-full object-cover" alt="Preview" />
-              </div>
+              </button>
             )}
-            <button 
+            <button
               onClick={() => { setIsSharing(true); setTriggerReport(true); }}
               disabled={isSharing}
               className={`px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-xl ${isSharing ? 'bg-slate-100 text-slate-400' : (show1PMAlert ? 'bg-indigo-600 text-white animate-bounce shadow-indigo-200' : 'bg-white border border-slate-200 text-slate-800 hover:bg-slate-50')}`}
             >
-              {isSharing ? 'Syncing...' : (show1PMAlert ? '🔔 Send 1PM Report' : '📲 Share Achievement')}
+              {isSharing ? 'Generating...' : (show1PMAlert ? '🔔 Generate 1PM Report' : '📲 Share Achievement')}
             </button>
           </div>
 
@@ -855,6 +836,33 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
           </div>
         </div>
       </div>
+
+      {/* Achievement Report Preview - generate-only, no auto-share/auto-download.
+          Admin right-clicks the image to Copy Image / Save Image As, whichever they need. */}
+      {showPreviewModal && previewUrl && (
+        <div
+          className="fixed inset-0 bg-slate-950/90 backdrop-blur-xl flex items-center justify-center z-[300] p-4 text-left"
+          onClick={() => setShowPreviewModal(false)}
+        >
+          <div
+            className="bg-white rounded-[2.5rem] shadow-2xl max-w-md w-full p-8 border border-slate-100 animate-in zoom-in-95 duration-200 flex flex-col items-center gap-4 text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center w-full">
+              <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">Achievement Report Ready</h3>
+              <button onClick={() => setShowPreviewModal(false)} className="w-10 h-10 bg-slate-100 rounded-2xl flex items-center justify-center hover:bg-slate-200 transition-colors">✕</button>
+            </div>
+            <img
+              src={previewUrl}
+              alt="Achievement Report"
+              className="w-full max-h-[65vh] object-contain rounded-2xl border border-slate-100 shadow-sm"
+            />
+            <p className="text-[11px] text-slate-400 font-bold text-center leading-relaxed">
+              Right-click the image above to Copy or Save it, then share it wherever you like.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Shortage Alerts Modal - Commitment Focused */}
       {showShortageModal && (
