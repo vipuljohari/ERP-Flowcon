@@ -13,7 +13,7 @@
 // error this was built to fix. Keeping the actual logic here (instead of
 // duplicated in server.ts and four separate api/*.ts files) means the
 // local-dev server and the production functions can never drift apart.
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import admin from "firebase-admin";
 
 // A minimal, structurally-compatible request/response shape that both
@@ -173,6 +173,162 @@ export async function handleChat(req: MinimalRequest, res: MinimalResponse) {
   } catch (error: any) {
     console.error("API Chat Error:", error);
     res.status(500).json({ error: error?.message || "Failed to process chat demand." });
+  }
+}
+
+// Reads a photo of an RM invoice and extracts the fields the RM Cross-Bill
+// Check form for that invoice type needs, so Admin can review/correct
+// instead of re-typing every field by hand. docType selects which of the
+// two invoice types (and which form) this is for:
+//   - "manufacturer": the RM manufacturer's invoice (e.g. Tube Investments)
+//     -> feeds the "+ Manufacturer Invoice" form.
+//   - "customer": the customer's own cross-invoice reselling that RM back
+//     (e.g. SIAC-SKH) -> feeds the "+ Customer Invoice" form. This
+//     deliberately does NOT try to guess which outstanding manufacturer
+//     invoice it matches — that's the actual judgment this whole screen
+//     exists to support, so it always stays a manual pick in the form.
+// Deliberately returns only the FIRST line item either way — these
+// invoices are one-line-item-per-invoice in practice, and extracting a
+// whole table reliably is a materially harder problem than this needs to
+// solve yet. The client always shows the extracted values in the normal
+// form fields for review before Save — this never writes anything on its
+// own.
+export async function handleExtractInvoice(req: MinimalRequest, res: MinimalResponse) {
+  try {
+    const ai = getGenAI();
+    if (!ai) {
+      res.status(503).json({ error: "Gemini API key is not configured. Please add GEMINI_API_KEY under Settings > Secrets." });
+      return;
+    }
+
+    const { imageBase64, mimeType, docType } = req.body || {};
+    if (!imageBase64 || !mimeType) {
+      res.status(400).json({ error: "Missing imageBase64 or mimeType." });
+      return;
+    }
+    const isCustomer = docType === "customer";
+
+    const prompt = isCustomer ? `
+      This is a photo of a Customer Cross-Invoice: a GST tax invoice your
+      OWN customer (e.g. SIAC-SKH India Cabs Mfg Pvt Ltd) issued to you,
+      reselling raw material back to you at their own markup.
+
+      Read the invoice and extract these exact fields:
+      - customerName: the SELLER company's name, from the letterhead at the
+        top of the invoice — this is your own customer's name, NOT your
+        own company's name (do not extract "Flowcon" or similar here).
+      - invoiceNo: the Invoice No field.
+      - date: the Invoice Date, formatted as YYYY-MM-DD.
+      - quantityMtr: the invoiced quantity in meters, as a plain number.
+      - rate: the rate, as a plain number.
+      - itemValue: the item value BEFORE tax (Item Value / Total Item
+        Value), as a plain number.
+
+      If the invoice has more than one line item, extract only the FIRST
+      one. If a field genuinely can't be read, use "" for text fields or 0
+      for number fields — never guess a value that isn't legible.
+    ` : `
+      This is a photo of a Raw Material manufacturer's GST tax invoice (e.g.
+      from Tube Investments of India Ltd or a similar steel tube/sheet
+      supplier), sent to a manufacturing customer.
+
+      Read the invoice and extract these exact fields:
+      - manufacturerName: the SELLER company's name, from the letterhead at
+        the top of the invoice — NOT the "Bill to" / "Ship to" customer.
+      - invoiceNo: the Invoice No field.
+      - date: the Invoice Date, formatted as YYYY-MM-DD.
+      - materialName: the material/item description line, exactly as
+        printed (e.g. "STEEL TUBES-ERW/SB-RECTANGLE-90.00 X 50.00 X 2.90 X
+        4950.00-AS ROLLED").
+      - materialCode: the CUSTOMER's own part code for this material —
+        usually printed as "Cust Part No" (or similar) near the item
+        description, often starting with letters like "BOCS" or "RMSS".
+        Prefer this over any separate internal vendor/item code.
+      - quantityPcs: the invoiced quantity, as a plain number (Qty column).
+      - ratePerPc: the rate per piece, as a plain number (Item Rate column).
+      - itemValue: the item value BEFORE tax (Item Value / Total Item
+        Value), as a plain number.
+
+      If the invoice has more than one line item, extract only the FIRST
+      one. If a field genuinely can't be read, use "" for text fields or 0
+      for number fields — never guess a value that isn't legible.
+    `;
+
+    const responseSchema = isCustomer ? {
+      type: Type.OBJECT,
+      properties: {
+        customerName: { type: Type.STRING },
+        invoiceNo: { type: Type.STRING },
+        date: { type: Type.STRING },
+        quantityMtr: { type: Type.NUMBER },
+        rate: { type: Type.NUMBER },
+        itemValue: { type: Type.NUMBER },
+      },
+      required: ["customerName", "invoiceNo", "date", "quantityMtr", "rate", "itemValue"],
+    } : {
+      type: Type.OBJECT,
+      properties: {
+        manufacturerName: { type: Type.STRING },
+        invoiceNo: { type: Type.STRING },
+        date: { type: Type.STRING },
+        materialName: { type: Type.STRING },
+        materialCode: { type: Type.STRING },
+        quantityPcs: { type: Type.NUMBER },
+        ratePerPc: { type: Type.NUMBER },
+        itemValue: { type: Type.NUMBER },
+      },
+      required: ["manufacturerName", "invoiceNo", "date", "materialName", "materialCode", "quantityPcs", "ratePerPc", "itemValue"],
+    };
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            { inlineData: { data: imageBase64, mimeType } },
+          ],
+        },
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema,
+      },
+    });
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(response.text || "{}");
+    } catch {
+      res.status(502).json({ error: "Could not make sense of this photo. Try a clearer, better-lit shot." });
+      return;
+    }
+
+    if (isCustomer) {
+      res.json({
+        customerName: String(parsed.customerName || "").trim(),
+        invoiceNo: String(parsed.invoiceNo || "").trim(),
+        date: String(parsed.date || "").trim(),
+        quantityMtr: Number(parsed.quantityMtr) || 0,
+        rate: Number(parsed.rate) || 0,
+        itemValue: Number(parsed.itemValue) || 0,
+      });
+    } else {
+      res.json({
+        manufacturerName: String(parsed.manufacturerName || "").trim(),
+        invoiceNo: String(parsed.invoiceNo || "").trim(),
+        date: String(parsed.date || "").trim(),
+        materialName: String(parsed.materialName || "").trim(),
+        materialCode: String(parsed.materialCode || "").trim(),
+        quantityPcs: Number(parsed.quantityPcs) || 0,
+        ratePerPc: Number(parsed.ratePerPc) || 0,
+        itemValue: Number(parsed.itemValue) || 0,
+      });
+    }
+  } catch (error: any) {
+    console.error("API Extract Invoice Error:", error);
+    res.status(500).json({ error: error?.message || "Failed to read this invoice photo." });
   }
 }
 

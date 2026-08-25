@@ -13,6 +13,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   dispatch_manual: { label: 'Manual Dispatch Slip', icon: '📝', color: 'amber' },
   tally_import: { label: 'Tally Excel/XML Import', icon: '📊', color: 'emerald' },
   schedule_bulk_import: { label: 'Bulk Customer Schedule Import', icon: '📋', color: 'violet' },
+  rm_cross_bill: { label: 'RM Cross-Bill Invoice Entry', icon: '🧾', color: 'sky' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {
@@ -21,6 +22,7 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   amber: { badge: 'bg-amber-100 text-amber-700 border-amber-200', border: 'border-l-amber-500' },
   emerald: { badge: 'bg-emerald-100 text-emerald-700 border-emerald-200', border: 'border-l-emerald-500' },
   violet: { badge: 'bg-violet-100 text-violet-700 border-violet-200', border: 'border-l-violet-500' },
+  sky: { badge: 'bg-sky-100 text-sky-700 border-sky-200', border: 'border-l-sky-500' },
 };
 
 const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
@@ -56,7 +58,7 @@ const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
             )}
           </div>
           <p className="text-slate-500 font-medium">
-            Every negative Discrepancy Control Entry, RM Inward entry, manual Dispatch Slip, and Tally import — so you can cross-check or cross-question any of them.
+            Every negative Discrepancy Control Entry, RM Inward entry, manual Dispatch Slip, Tally import, and RM Cross-Bill invoice entry — so you can cross-check or cross-question any of them.
           </p>
         </div>
 

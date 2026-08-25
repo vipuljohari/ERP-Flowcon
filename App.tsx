@@ -128,6 +128,11 @@ const MainApp: React.FC = () => {
   // it's the ONLY source of truth for Opening Balance now, set explicitly
   // via the Inventory screen's audit-lock UI, and it carries forward
   // month-to-month like RM's does (see resolvedPartOpeningBalances below).
+  // Inventory.tsx's commitOpeningBalance ALSO still logs a tagged
+  // "[OPENING_BALANCE_SET:...]" inwardLogs entry on every correction (via
+  // onAddInward) — that's just a visible audit-trail record (and nudges
+  // live stock by the correction delta), never read back to determine the
+  // override value itself, so it can't reintroduce the old bug.
   const [localPartOpeningBalances, setLocalPartOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'partOpeningBalances', {});
 
   // Single source of truth for display order across the WHOLE app — the
@@ -1520,6 +1525,7 @@ const MainApp: React.FC = () => {
               setCrossInvoices={setRmCrossInvoices}
               setMaterialLengths={setRmMaterialLengths}
               isAdmin={isAdmin}
+              onCreateAlert={pushAdminAlert}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer } from '../types';
+import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert } from '../types';
+import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 
 const NEW_OPTION = '__new__';
 
@@ -12,6 +13,11 @@ interface RMCrossBillCheckProps {
   setCrossInvoices: (update: RMCustomerCrossInvoice[] | ((prev: RMCustomerCrossInvoice[]) => RMCustomerCrossInvoice[])) => void;
   setMaterialLengths: (update: RMMaterialLength[] | ((prev: RMMaterialLength[]) => RMMaterialLength[])) => void;
   isAdmin?: boolean;
+  // Pushes an entry into the Admin-only Notifications feed, mirroring the
+  // RM Inward pattern — Admin gets a "Verify" prompt for every Manufacturer
+  // or Customer Invoice saved here, whether typed in by hand or auto-filled
+  // from a photo, so they can cross-check it against the source invoice.
+  onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -48,6 +54,43 @@ const parsePieceLengthFromMaterialName = (name: string): number | null => {
   return Number.isFinite(lastNumber) ? lastNumber : null;
 };
 
+// Downscales/re-encodes a photo client-side before it's sent to the
+// extraction endpoint — a full-resolution phone photo can be 5-10MB, well
+// past what's sensible to upload for OCR-style reading and close to (or
+// over) typical serverless body-size limits in production. Re-encoding to
+// JPEG here also sidesteps HEIC (iPhone photos) not being accepted by the
+// vision model directly — if the browser itself can't decode the source
+// file (rare, but possible for some HEIC variants), this rejects with a
+// clear error asking for a JPG/PNG instead, rather than silently failing.
+const MAX_INVOICE_PHOTO_DIMENSION = 1600;
+const readAndCompressInvoicePhoto = (file: File): Promise<{ base64: string; mimeType: string }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, MAX_INVOICE_PHOTO_DIMENSION / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('This browser can\'t process images — try a different device.')); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const base64 = dataUrl.split(',')[1];
+        if (!base64) { reject(new Error('Could not process this photo.')); return; }
+        resolve({ base64, mimeType: 'image/jpeg' });
+      };
+      img.onerror = () => reject(new Error('Could not open this photo — try a JPG or PNG.'));
+      img.src = reader.result as string;
+    };
+    reader.onerror = () => reject(new Error('Could not read this file.'));
+    reader.readAsDataURL(file);
+  });
+};
+
 // Permanent field header above an input/select — unlike a placeholder, this
 // stays visible once the field has a value, so it's always clear what the
 // box is for even after it's filled in.
@@ -61,6 +104,7 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ lab
 const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   manufacturerInvoices, crossInvoices, materialLengths, customers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
+  onCreateAlert,
 }) => {
   const [showMfgForm, setShowMfgForm] = useState(false);
   const [showCrossForm, setShowCrossForm] = useState(false);
@@ -191,6 +235,13 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const [mfgLengthInput, setMfgLengthInput] = useState('');
   const [addingNewManufacturer, setAddingNewManufacturer] = useState(false);
   const [addingNewMaterial, setAddingNewMaterial] = useState(false);
+  const [extractingInvoicePhoto, setExtractingInvoicePhoto] = useState(false);
+  const [invoicePhotoError, setInvoicePhotoError] = useState<string | null>(null);
+  // Whether the CURRENT form's values came from a successful photo read —
+  // noted on the Admin Notifications entry (see submitMfgInvoice) so Admin
+  // knows to double-check an AI-filled entry against the source invoice a
+  // little more carefully than a fully hand-typed one.
+  const [mfgAiExtracted, setMfgAiExtracted] = useState(false);
   const knownLength = materialLengths.find(m => m.materialCode.toUpperCase() === mfgForm.materialCode.toUpperCase().trim());
 
   // Every open of the modal (via the "+ Manufacturer Invoice" button or
@@ -202,6 +253,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setMfgLengthInput('');
     setAddingNewManufacturer(false);
     setAddingNewMaterial(false);
+    setExtractingInvoicePhoto(false);
+    setInvoicePhotoError(null);
+    setMfgAiExtracted(false);
     setShowMfgForm(true);
   };
   const closeMfgForm = () => {
@@ -209,7 +263,62 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setMfgLengthInput('');
     setAddingNewManufacturer(false);
     setAddingNewMaterial(false);
+    setExtractingInvoicePhoto(false);
+    setInvoicePhotoError(null);
+    setMfgAiExtracted(false);
     setShowMfgForm(false);
+  };
+
+  // Upload a photo of the invoice -> Gemini reads it -> pre-fills the form
+  // below for review. Never writes anything directly; submitMfgInvoice
+  // (triggered by the admin's own "Save" click) is still the only path
+  // that saves a record, same as manual entry.
+  const handleInvoicePhotoUpload = async (file: File) => {
+    setInvoicePhotoError(null);
+    setExtractingInvoicePhoto(true);
+    try {
+      const { base64, mimeType } = await readAndCompressInvoicePhoto(file);
+      const extracted = await extractInvoiceFromPhoto(base64, mimeType);
+
+      const extractedManufacturer = extracted.manufacturerName.trim();
+      const matchedManufacturer = knownManufacturerNames.find(
+        n => n.toLowerCase() === extractedManufacturer.toLowerCase()
+      );
+      const resolvedManufacturerName = matchedManufacturer || extractedManufacturer;
+      setAddingNewManufacturer(!matchedManufacturer && !!extractedManufacturer);
+
+      const extractedMaterial = extracted.materialName.trim();
+      const materialsForResolvedManufacturer = resolvedManufacturerName
+        ? manufacturerInvoices.filter(m => m.manufacturerName.trim().toLowerCase() === resolvedManufacturerName.toLowerCase())
+        : [];
+      const matchedMaterial = materialsForResolvedManufacturer.find(
+        m => m.materialName.trim().toLowerCase() === extractedMaterial.toLowerCase()
+      );
+      setAddingNewMaterial(!matchedMaterial && !!extractedMaterial);
+
+      const resolvedCode = matchedMaterial ? matchedMaterial.materialCode : extracted.materialCode.trim();
+      const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === resolvedCode.toUpperCase());
+      const resolvedLength = lengthEntry ? lengthEntry.lengthMm : parsePieceLengthFromMaterialName(extractedMaterial);
+
+      setMfgForm(prev => ({
+        ...prev,
+        manufacturerName: resolvedManufacturerName,
+        customerName: prev.customerName || customers[0]?.name || '',
+        invoiceNo: extracted.invoiceNo.trim(),
+        date: extracted.date.trim(),
+        materialName: extractedMaterial,
+        materialCode: resolvedCode,
+        quantityPcs: extracted.quantityPcs,
+        ratePerPc: extracted.ratePerPc,
+        itemValue: extracted.itemValue,
+      }));
+      setMfgLengthInput(resolvedLength !== null && resolvedLength !== undefined ? String(resolvedLength) : '');
+      setMfgAiExtracted(true);
+    } catch (err: any) {
+      setInvoicePhotoError(err?.message || 'Could not read this photo — enter the details manually below.');
+    } finally {
+      setExtractingInvoicePhoto(false);
+    }
   };
 
   // Manufacturer names seen before, for the dropdown suggestions on the Add
@@ -273,18 +382,77 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         { materialCode: mfgForm.materialCode.trim(), materialName: mfgForm.materialName, lengthMm: parseFloat(mfgLengthInput) || 0, updatedAt: new Date().toISOString() },
       ]);
     }
+    onCreateAlert?.({
+      type: 'rm_cross_bill',
+      invoiceNumber: mfgForm.invoiceNo,
+      customer: mfgForm.customerName,
+      supplier: mfgForm.manufacturerName,
+      quantity: mfgForm.quantityPcs,
+      remarks: `Manufacturer Invoice — ${mfgForm.materialName || 'material'} (${mfgForm.materialCode || 'no code'})${mfgAiExtracted ? ' — auto-filled from photo, please verify against the invoice' : ' — entered manually'}`,
+    });
     setMfgForm({ manufacturerName: mfgForm.manufacturerName, customerName: mfgForm.customerName, invoiceNo: '', date: '', materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0 });
     setMfgLengthInput('');
     setAddingNewMaterial(false);
+    setMfgAiExtracted(false);
     setShowMfgForm(false);
   };
 
   // --- Customer Cross-Invoice form ---
-  const [crossForm, setCrossForm] = useState({
+  const blankCrossForm = () => ({
     customerName: customers[0]?.name || '', invoiceNo: '', date: '', refManufacturerInvoiceId: '',
     quantityMtr: 0, rate: 0, itemValue: 0,
   });
+  const [crossForm, setCrossForm] = useState(blankCrossForm);
+  const [extractingCrossPhoto, setExtractingCrossPhoto] = useState(false);
+  const [crossPhotoError, setCrossPhotoError] = useState<string | null>(null);
+  const [crossAiExtracted, setCrossAiExtracted] = useState(false);
   const selectedMfgInvoice = manufacturerInvoices.find(m => m.id === crossForm.refManufacturerInvoiceId);
+
+  const openFreshCrossForm = () => {
+    setCrossForm(blankCrossForm());
+    setExtractingCrossPhoto(false);
+    setCrossPhotoError(null);
+    setCrossAiExtracted(false);
+    setShowCrossForm(true);
+  };
+  const closeCrossForm = () => {
+    setCrossForm(blankCrossForm());
+    setExtractingCrossPhoto(false);
+    setCrossPhotoError(null);
+    setCrossAiExtracted(false);
+    setShowCrossForm(false);
+  };
+
+  // Same pattern as handleInvoicePhotoUpload above, for the customer's own
+  // cross-invoice instead of the manufacturer's. Deliberately does NOT
+  // touch refManufacturerInvoiceId — which outstanding manufacturer
+  // invoice this matches stays a manual pick, always.
+  const handleCrossInvoicePhotoUpload = async (file: File) => {
+    setCrossPhotoError(null);
+    setExtractingCrossPhoto(true);
+    try {
+      const { base64, mimeType } = await readAndCompressInvoicePhoto(file);
+      const extracted = await extractCustomerInvoiceFromPhoto(base64, mimeType);
+
+      const extractedCustomer = extracted.customerName.trim();
+      const matchedCustomer = customers.find(c => c.name.trim().toLowerCase() === extractedCustomer.toLowerCase());
+
+      setCrossForm(prev => ({
+        ...prev,
+        customerName: matchedCustomer ? matchedCustomer.name : (extractedCustomer || prev.customerName),
+        invoiceNo: extracted.invoiceNo.trim(),
+        date: extracted.date.trim(),
+        quantityMtr: extracted.quantityMtr,
+        rate: extracted.rate,
+        itemValue: extracted.itemValue,
+      }));
+      setCrossAiExtracted(true);
+    } catch (err: any) {
+      setCrossPhotoError(err?.message || 'Could not read this photo — enter the details manually below.');
+    } finally {
+      setExtractingCrossPhoto(false);
+    }
+  };
 
   const submitCrossInvoice = (e: React.FormEvent) => {
     e.preventDefault();
@@ -298,7 +466,15 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       createdAt: new Date().toISOString(),
     }]);
     setManufacturerInvoices(prev => prev.map(m => m.id === selectedMfgInvoice.id ? { ...m, matchedCrossInvoiceId: id } : m));
+    onCreateAlert?.({
+      type: 'rm_cross_bill',
+      invoiceNumber: crossForm.invoiceNo,
+      customer: crossForm.customerName,
+      quantity: crossForm.quantityMtr,
+      remarks: `Customer Invoice — matched to ${selectedMfgInvoice.manufacturerName} invoice ${selectedMfgInvoice.invoiceNo} (${selectedMfgInvoice.materialName})${crossAiExtracted ? ' — auto-filled from photo, please verify against the invoice' : ' — entered manually'}`,
+    });
     setCrossForm({ customerName: crossForm.customerName, invoiceNo: '', date: '', refManufacturerInvoiceId: '', quantityMtr: 0, rate: 0, itemValue: 0 });
+    setCrossAiExtracted(false);
     setShowCrossForm(false);
   };
 
@@ -327,7 +503,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
           <button onClick={openFreshMfgForm} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest">
             + Manufacturer Invoice
           </button>
-          <button onClick={() => setShowCrossForm(true)} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest">
+          <button onClick={openFreshCrossForm} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest">
             + Customer Invoice
           </button>
         </div>
@@ -452,6 +628,42 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-[2rem] shadow-2xl max-w-lg w-full p-8 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-black text-slate-900 mb-4">Add Manufacturer Invoice</h3>
+            <div className="border-2 border-dashed border-indigo-200 bg-indigo-50/40 rounded-2xl p-4 text-center mb-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">Auto-fill from a photo (AI)</p>
+              <div className="flex items-center justify-center gap-3">
+                {/* capture="environment" only means anything to a browser with a camera
+                    (phone/tablet, or a PC with a webcam) — it opens that camera directly
+                    instead of a file browser. On a desktop with no camera it's simply
+                    ignored, so this button is safe to always show; "Upload Photo" next
+                    to it covers the common desktop case explicitly either way. */}
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  id="mfg-invoice-camera"
+                  className="hidden"
+                  disabled={extractingInvoicePhoto}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleInvoicePhotoUpload(f); e.target.value = ''; }}
+                />
+                <label htmlFor="mfg-invoice-camera" className={`inline-flex items-center gap-2 px-4 py-2 bg-white border-2 border-indigo-200 rounded-xl text-xs font-black text-indigo-700 ${extractingInvoicePhoto ? 'cursor-wait opacity-70' : 'cursor-pointer hover:border-indigo-500'}`}>
+                  📷 Use Camera
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  id="mfg-invoice-upload"
+                  className="hidden"
+                  disabled={extractingInvoicePhoto}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleInvoicePhotoUpload(f); e.target.value = ''; }}
+                />
+                <label htmlFor="mfg-invoice-upload" className={`inline-flex items-center gap-2 px-4 py-2 bg-white border-2 border-indigo-200 rounded-xl text-xs font-black text-indigo-700 ${extractingInvoicePhoto ? 'cursor-wait opacity-70' : 'cursor-pointer hover:border-indigo-500'}`}>
+                  📁 Upload Photo
+                </label>
+              </div>
+              {extractingInvoicePhoto && <p className="text-xs font-bold text-indigo-600 mt-3">⏳ Reading invoice photo…</p>}
+              <p className="text-[10px] text-slate-400 mt-2">Reads the invoice and pre-fills the fields below — always review before saving. Only the first line item is read.</p>
+              {invoicePhotoError && <p className="text-[11px] font-bold text-rose-600 mt-2">{invoicePhotoError}</p>}
+            </div>
             <form onSubmit={submitMfgInvoice} className="space-y-3">
               <FormField label="Manufacturer Name">
                 <select
@@ -612,6 +824,37 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-[2rem] shadow-2xl max-w-lg w-full p-8 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-black text-slate-900 mb-4">Add Customer Cross-Invoice</h3>
+            <div className="border-2 border-dashed border-indigo-200 bg-indigo-50/40 rounded-2xl p-4 text-center mb-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">Auto-fill from a photo (AI)</p>
+              <div className="flex items-center justify-center gap-3">
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  id="cross-invoice-camera"
+                  className="hidden"
+                  disabled={extractingCrossPhoto}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCrossInvoicePhotoUpload(f); e.target.value = ''; }}
+                />
+                <label htmlFor="cross-invoice-camera" className={`inline-flex items-center gap-2 px-4 py-2 bg-white border-2 border-indigo-200 rounded-xl text-xs font-black text-indigo-700 ${extractingCrossPhoto ? 'cursor-wait opacity-70' : 'cursor-pointer hover:border-indigo-500'}`}>
+                  📷 Use Camera
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  id="cross-invoice-upload"
+                  className="hidden"
+                  disabled={extractingCrossPhoto}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCrossInvoicePhotoUpload(f); e.target.value = ''; }}
+                />
+                <label htmlFor="cross-invoice-upload" className={`inline-flex items-center gap-2 px-4 py-2 bg-white border-2 border-indigo-200 rounded-xl text-xs font-black text-indigo-700 ${extractingCrossPhoto ? 'cursor-wait opacity-70' : 'cursor-pointer hover:border-indigo-500'}`}>
+                  📁 Upload Photo
+                </label>
+              </div>
+              {extractingCrossPhoto && <p className="text-xs font-bold text-indigo-600 mt-3">⏳ Reading invoice photo…</p>}
+              <p className="text-[10px] text-slate-400 mt-2">Fills in Customer, Invoice No, Date, Qty, Rate and Item Value below — you still pick which manufacturer invoice this matches. Always review before saving.</p>
+              {crossPhotoError && <p className="text-[11px] font-bold text-rose-600 mt-2">{crossPhotoError}</p>}
+            </div>
             <form onSubmit={submitCrossInvoice} className="space-y-3">
               <FormField label="Manufacturer Invoice Being Matched">
                 <select required value={crossForm.refManufacturerInvoiceId}
@@ -665,7 +908,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 </FormField>
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowCrossForm(false)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
+                <button type="button" onClick={closeCrossForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
                 <button type="submit" disabled={!selectedMfgInvoice} className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm disabled:opacity-50">Save & Resolve</button>
               </div>
             </form>

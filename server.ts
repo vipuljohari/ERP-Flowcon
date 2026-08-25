@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
-import { handleInsights, handleChat, handleCreateUser, handleUpdateUser } from "./services/apiHandlers";
+import { handleInsights, handleChat, handleExtractInvoice, handleCreateUser, handleUpdateUser } from "./services/apiHandlers";
 
 // The actual route logic (Gemini calls, Admin-only user management) lives
 // in services/apiHandlers.ts, shared with the Vercel Serverless Functions
@@ -26,11 +26,12 @@ async function startServer() {
     fs.appendFileSync(logFile, `API key checked: ${apiKey ? 'Found' : 'Missing'}\n`);
     fs.appendFileSync(logFile, `Firebase service account checked: ${process.env.FIREBASE_SERVICE_ACCOUNT_KEY ? 'Found' : 'Missing'}\n`);
 
-    // All four routes below just hand off to services/apiHandlers.ts — the
+    // All routes below just hand off to services/apiHandlers.ts — the
     // same functions the Vercel Serverless Functions under /api/** call in
     // production. See the header comment at the top of this file.
     app.post("/api/gemini/insights", (req, res) => handleInsights(req, res));
     app.post("/api/gemini/chat", (req, res) => handleChat(req, res));
+    app.post("/api/gemini/extractInvoice", (req, res) => handleExtractInvoice(req, res));
     app.post("/api/admin/createUser", (req, res) => handleCreateUser(req, res));
     app.post("/api/admin/updateUser", (req, res) => handleUpdateUser(req, res));
 
