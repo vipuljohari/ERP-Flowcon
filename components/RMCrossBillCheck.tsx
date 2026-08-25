@@ -71,6 +71,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const [showMaterialLengths, setShowMaterialLengths] = useState(false);
   const [filterManufacturer, setFilterManufacturer] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
+  const [filterMaterial, setFilterMaterial] = useState('');
 
   const handleBulkFile = (file: File) => {
     setBulkStatus(null);
@@ -150,13 +151,36 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     });
   }, [manufacturerInvoices]);
 
+  // Material Name filter options — scoped to whichever manufacturer is
+  // currently selected in the filter bar (per user request: same "select
+  // manufacturer -> narrow to its materials" behavior as the Add
+  // Manufacturer Invoice form's mfgMaterialsForSelectedManufacturer above,
+  // just applied to the filter bar instead). With no manufacturer filter
+  // selected, this offers every material name on file.
+  const filterMaterialOptions = useMemo(() => {
+    const source = filterManufacturer
+      ? manufacturerInvoices.filter(m => m.manufacturerName === filterManufacturer)
+      : manufacturerInvoices;
+    return Array.from(new Set(source.map(m => m.materialName.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  }, [manufacturerInvoices, filterManufacturer]);
+
+  // If the manufacturer filter changes (or clears) and the currently
+  // selected material no longer belongs to it, drop the stale selection
+  // instead of silently filtering everything out.
+  useEffect(() => {
+    if (filterMaterial && !filterMaterialOptions.includes(filterMaterial)) {
+      setFilterMaterial('');
+    }
+  }, [filterMaterialOptions, filterMaterial]);
+
   const matchesFilters = (m: RMManufacturerInvoice) =>
     (!filterManufacturer || m.manufacturerName === filterManufacturer) &&
-    (!filterMonth || (m.date || '').slice(0, 7) === filterMonth);
+    (!filterMonth || (m.date || '').slice(0, 7) === filterMonth) &&
+    (!filterMaterial || m.materialName === filterMaterial);
 
-  const filteredOutstanding = useMemo(() => outstanding.filter(matchesFilters), [outstanding, filterManufacturer, filterMonth]);
-  const filteredMatched = useMemo(() => matched.filter(matchesFilters), [matched, filterManufacturer, filterMonth]);
-  const filtersActive = Boolean(filterManufacturer || filterMonth);
+  const filteredOutstanding = useMemo(() => outstanding.filter(matchesFilters), [outstanding, filterManufacturer, filterMonth, filterMaterial]);
+  const filteredMatched = useMemo(() => matched.filter(matchesFilters), [matched, filterManufacturer, filterMonth, filterMaterial]);
+  const filtersActive = Boolean(filterManufacturer || filterMonth || filterMaterial);
 
   // --- Manufacturer Invoice form ---
   const blankMfgForm = () => ({
@@ -328,8 +352,15 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             {filterMonthOptions.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </FormField>
+        <FormField label="Material Name">
+          <select value={filterMaterial} onChange={(e) => setFilterMaterial(e.target.value)}
+            className="w-56 border-2 border-slate-200 rounded-xl px-3 py-2 text-sm bg-white">
+            <option value="">All materials</option>
+            {filterMaterialOptions.map(name => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </FormField>
         {filtersActive && (
-          <button type="button" onClick={() => { setFilterManufacturer(''); setFilterMonth(''); }}
+          <button type="button" onClick={() => { setFilterManufacturer(''); setFilterMonth(''); setFilterMaterial(''); }}
             className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 pb-2.5">
             × Clear filters
           </button>
