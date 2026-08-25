@@ -243,7 +243,10 @@ export async function handleExtractInvoice(req: MinimalRequest, res: MinimalResp
       - materialCode: the CUSTOMER's own part code for this material —
         usually printed as "Cust Part No" (or similar) near the item
         description, often starting with letters like "BOCS" or "RMSS".
-        Prefer this over any separate internal vendor/item code.
+        Prefer this over any separate internal vendor/item code. Report
+        just the code itself — drop any trailing period or other
+        punctuation from the source layout that isn't actually part of
+        the code (e.g. "RMSS00000119." -> "RMSS00000119").
       - quantityPcs: the invoiced quantity, as a plain number (Qty column).
       - ratePerPc: the rate per piece, as a plain number (Item Rate column).
       - itemValue: the item value BEFORE tax (Item Value / Total Item
@@ -320,7 +323,7 @@ export async function handleExtractInvoice(req: MinimalRequest, res: MinimalResp
         invoiceNo: String(parsed.invoiceNo || "").trim(),
         date: String(parsed.date || "").trim(),
         materialName: String(parsed.materialName || "").trim(),
-        materialCode: String(parsed.materialCode || "").trim(),
+        materialCode: String(parsed.materialCode || "").trim().replace(/[.\s]+$/, ""),
         quantityPcs: Number(parsed.quantityPcs) || 0,
         ratePerPc: Number(parsed.ratePerPc) || 0,
         itemValue: Number(parsed.itemValue) || 0,

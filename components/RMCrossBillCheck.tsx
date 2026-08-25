@@ -91,6 +91,13 @@ const readAndCompressInvoicePhoto = (file: File): Promise<{ base64: string; mime
   });
 };
 
+// Material codes on a photographed invoice sometimes carry trailing print
+// artifacts (e.g. "RMSS00000119." with a stray period, from the column
+// layout on the source document) that aren't part of the actual code. Used
+// to compare a freshly-read code against what's already on file without
+// that kind of noise causing a real match to be missed.
+const normalizeMaterialCode = (code: string) => code.trim().replace(/[.\s]+$/, '').toUpperCase();
+
 // Permanent field header above an input/select — unlike a placeholder, this
 // stays visible once the field has a value, so it's always clear what the
 // box is for even after it's filled in.
@@ -288,16 +295,31 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       setAddingNewManufacturer(!matchedManufacturer && !!extractedManufacturer);
 
       const extractedMaterial = extracted.materialName.trim();
+      const extractedCode = extracted.materialCode.trim();
       const materialsForResolvedManufacturer = resolvedManufacturerName
         ? manufacturerInvoices.filter(m => m.manufacturerName.trim().toLowerCase() === resolvedManufacturerName.toLowerCase())
         : [];
-      const matchedMaterial = materialsForResolvedManufacturer.find(
-        m => m.materialName.trim().toLowerCase() === extractedMaterial.toLowerCase()
-      );
-      setAddingNewMaterial(!matchedMaterial && !!extractedMaterial);
+      // Match by CODE first — it's a short, structured string a photo reads
+      // far more reliably than the long free-text description, and it's
+      // the field that's actually meant to be a unique lookup key. Only
+      // fall back to matching by name if the code doesn't match anything
+      // already on file (e.g. this genuinely is a brand-new material).
+      const matchedMaterial =
+        (extractedCode && materialsForResolvedManufacturer.find(
+          m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(extractedCode)
+        )) ||
+        materialsForResolvedManufacturer.find(
+          m => m.materialName.trim().toLowerCase() === extractedMaterial.toLowerCase()
+        );
+      setAddingNewMaterial(!matchedMaterial && !!(extractedMaterial || extractedCode));
 
-      const resolvedCode = matchedMaterial ? matchedMaterial.materialCode : extracted.materialCode.trim();
-      const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === resolvedCode.toUpperCase());
+      // On a match, pull Material Name/Code straight from the stored
+      // record rather than the photo's OCR read of them — that's what
+      // keeps an already-known material from ever spawning a near-duplicate
+      // over a stray character the photo happened to pick up.
+      const resolvedMaterialName = matchedMaterial ? matchedMaterial.materialName : extractedMaterial;
+      const resolvedCode = matchedMaterial ? matchedMaterial.materialCode : extractedCode;
+      const lengthEntry = materialLengths.find(m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(resolvedCode));
       const resolvedLength = lengthEntry ? lengthEntry.lengthMm : parsePieceLengthFromMaterialName(extractedMaterial);
 
       setMfgForm(prev => ({
@@ -306,7 +328,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         customerName: prev.customerName || customers[0]?.name || '',
         invoiceNo: extracted.invoiceNo.trim(),
         date: extracted.date.trim(),
-        materialName: extractedMaterial,
+        materialName: resolvedMaterialName,
         materialCode: resolvedCode,
         quantityPcs: extracted.quantityPcs,
         ratePerPc: extracted.ratePerPc,
