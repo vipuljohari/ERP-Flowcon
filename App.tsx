@@ -1231,7 +1231,7 @@ const MainApp: React.FC = () => {
         ))}
       </div>
       <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} pendingAlertsCount={adminAlerts.filter(a => !a.verified).length} />
-      <main className="flex-1 md:ml-64 p-6 md:p-10 relative text-left">
+      <main className="flex-1 md:ml-64 p-6 pt-20 md:p-10 relative text-left">
         <div className="max-w-7xl mx-auto">
           <div className="flex justify-between items-start mb-8 text-left">
             <TimeMachine selectedDate={sD} onDateChange={setSelectedDate} sales={sales} inwardLogs={inwardLogs} />
