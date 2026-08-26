@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { stripUndefinedDeep } from '../services/firestoreSanitize';
 
 /**
  * Like useFirestoreArray, but for a single settings-style document (e.g. a
@@ -36,7 +37,9 @@ export function useFirestoreDoc<T extends Record<string, any>>(
       const prev = dataRef.current;
       const next = typeof update === 'function' ? (update as (p: T) => T)(prev) : update;
       setDataLocal(next);
-      setDoc(doc(db, collectionName, docId), next).catch((err) =>
+      // Same undefined-field guard as useFirestoreArray — see
+      // services/firestoreSanitize.ts.
+      setDoc(doc(db, collectionName, docId), stripUndefinedDeep(next)).catch((err) =>
         console.error(`Firestore doc write failed for ${collectionName}/${docId}:`, err)
       );
     },

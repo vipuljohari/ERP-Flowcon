@@ -33,18 +33,12 @@ import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
 import { TallyService } from './services/tally';
 import { isSheetRM, rmKgPerPart, partsPerRMUnit } from './services/rmYield';
-
-const getLocalISOString = (date: Date = new Date()): string => {
-  const pad = (num: number) => String(num).padStart(2, '0');
-  const y = date.getFullYear();
-  const m = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  const h = pad(date.getHours());
-  const min = pad(date.getMinutes());
-  const s = pad(date.getSeconds());
-  const ms = String(date.getMilliseconds()).padStart(3, '0');
-  return `${y}-${m}-${d}T${h}:${min}:${s}.${ms}`;
-};
+// Clock-corrected timestamp helper — see services/time.ts for why a plain
+// `new Date()` here is no longer trusted directly (a wrong device clock
+// used to be able to produce a dispatch/inward entry dated in a future
+// year, which then sorted as "most recent" forever in the Dashboard's
+// Global Dispatch Feed until caught by hand).
+import { getLocalISOString } from './services/time';
 
 const MainApp: React.FC = () => {
   const { appUser, logout } = useAuth();

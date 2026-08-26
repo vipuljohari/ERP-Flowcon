@@ -2,6 +2,11 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert } from '../types';
 import { CATEGORIES } from '../constants';
 import { isSheetRM, partsPerRMUnit, rmKgPerPart } from '../services/rmYield';
+// Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
+// used to be computed from a raw `new Date()`, so a device with a badly
+// wrong system clock would validate against its OWN wrong idea of "today",
+// letting a wrong-dated entry sail straight through.
+import { getLocalDateStr, correctedNow } from '../services/time';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -142,13 +147,9 @@ const Inventory: React.FC<InventoryProps> = ({
   // Bounded to the current real calendar month, same rule Daily Dispatch's
   // Tally import already enforces (`isDateInPreviousMonth` there) — entries
   // for a closed previous month are blocked everywhere in the app.
-  const todayDateStr = useMemo(() => {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const now = new Date();
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  }, []);
+  const todayDateStr = useMemo(() => getLocalDateStr(), []);
   const minEntryDateStr = useMemo(() => {
-    const now = new Date();
+    const now = correctedNow();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
   }, []);
   const [entryDate, setEntryDate] = useState<string>(todayDateStr);

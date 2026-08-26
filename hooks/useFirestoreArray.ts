@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { collection, onSnapshot, doc, writeBatch } from 'firebase/firestore';
 import { db } from '../services/firebase';
+import { stripUndefinedDeep } from '../services/firestoreSanitize';
 
 /**
  * Keeps a React array in sync with a Firestore collection, live, across every
@@ -63,7 +64,12 @@ export function useFirestoreArray<T>(
         const id = getId(item);
         const prevItem = prev.find((p) => getId(p) === id);
         if (!prevItem || JSON.stringify(prevItem) !== JSON.stringify(item)) {
-          batch.set(doc(db, collectionName, id), item as any);
+          // Strip `undefined` fields right before the write — Firestore
+          // rejects them outright (throws synchronously), which used to
+          // surface as "Something went wrong while posting this entry" on
+          // an otherwise completely valid submission. See
+          // services/firestoreSanitize.ts.
+          batch.set(doc(db, collectionName, id), stripUndefinedDeep(item) as any);
           opCount++;
         }
       });

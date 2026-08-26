@@ -297,6 +297,10 @@ export default defineConfig({
     },
   },
   define: {
-    'process.env.API_KEY': JSON.stringify(process.env.API_KEY || '')
+    'process.env.API_KEY': JSON.stringify(process.env.API_KEY || ''),
+    // Baked in at build time using THIS machine's clock (never the end
+    // user's) — see services/time.ts, which uses it as a sanity anchor
+    // against a viewer's system clock being badly wrong.
+    'process.env.BUILD_TIME': JSON.stringify(new Date().toISOString())
   }
 });

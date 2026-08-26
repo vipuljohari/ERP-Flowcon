@@ -4,18 +4,8 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { Part, Customer, Sale, InwardLog, AdminAlert } from '../types';
 import { TallyService, TallyImportResult, TallyMatchedItem } from '../services/tally';
-
-const getLocalISOString = (date: Date = new Date()): string => {
-  const pad = (num: number) => String(num).padStart(2, '0');
-  const y = date.getFullYear();
-  const m = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  const h = pad(date.getHours());
-  const min = pad(date.getMinutes());
-  const s = pad(date.getSeconds());
-  const ms = String(date.getMilliseconds()).padStart(3, '0');
-  return `${y}-${m}-${d}T${h}:${min}:${s}.${ms}`;
-};
+// Clock-corrected timestamp helpers — see services/time.ts.
+import { getLocalISOString, correctedNow } from '../services/time';
 
 interface DailyDispatchProps {
   parts: Part[];
@@ -88,8 +78,8 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return false;
     
-    const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth(); // 0-11
+    const currentYear = correctedNow().getFullYear();
+    const currentMonth = correctedNow().getMonth(); // 0-11
     
     const dYear = d.getFullYear();
     const dMonth = d.getMonth(); // 0-11
@@ -97,10 +87,10 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
     return (dYear < currentYear) || (dYear === currentYear && dMonth < currentMonth);
   };
 
-  const todayStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const todayStr = correctedNow().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
   const calculateOpeningBalance = (p: Part) => {
-    const now = new Date();
+    const now = correctedNow();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
     const monthLogs = inwardLogs.filter(l => 
       l.partId === p.id && 
@@ -200,7 +190,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
     
     // CRITICAL FIX: Use selectedDate to determine the timestamp.
     // If selectedDate is not "Today", we must use the selectedDate timestamp so it appears in historical logs.
-    const finalTimestamp = isHistorical ? getLocalISOString(selectedDate) : getLocalISOString(new Date());
+    const finalTimestamp = isHistorical ? getLocalISOString(selectedDate) : getLocalISOString();
 
     try {
       onBulkDispatch(
@@ -308,7 +298,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
       return;
     }
 
-    const finalTimestamp = modalDate ? `${modalDate}T12:00:00.000` : (isHistorical ? getLocalISOString(selectedDate) : getLocalISOString(new Date()));
+    const finalTimestamp = modalDate ? `${modalDate}T12:00:00.000` : (isHistorical ? getLocalISOString(selectedDate) : getLocalISOString());
     const finalInvoice = modalInvoice.trim() || undefined;
     const finalCustomer = modalCustomer || activeCustomer;
 
