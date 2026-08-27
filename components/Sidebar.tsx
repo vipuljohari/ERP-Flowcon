@@ -95,9 +95,10 @@ const Sidebar: React.FC<SidebarProps> = ({
     <>
       <div className="mb-8 flex flex-col gap-1 text-left">
         <div className="flex items-center gap-3">
-          <div className={`h-10 px-1.5 bg-white rounded-lg flex items-center justify-center shadow-lg transition-all duration-500 ${isAdmin ? 'shadow-amber-500/20' : 'shadow-indigo-500/20'}`}>
-            <img src="/logo.png" alt={brandName} className="h-full w-auto object-contain" />
-          </div>
+          {/* logo-badge.png already has its own tight white oval baked in
+              behind the mark — no extra box/background wrapper needed (a
+              bg-white div here would just draw a rectangle behind the oval). */}
+          <img src="/logo-badge.png" alt={brandName} className="h-11 w-auto object-contain" />
           <div>
             <h1 className="text-lg font-bold tracking-tight leading-tight">{brandName}</h1>
             {isAdmin && <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest animate-pulse">Admin Active</span>}
@@ -186,9 +187,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
-          <div className="h-8 px-1 bg-white rounded-lg flex items-center justify-center shadow">
-            <img src="/logo.png" alt={brandName} className="h-full w-auto object-contain" />
-          </div>
+          <img src="/logo-badge.png" alt={brandName} className="h-9 w-auto object-contain" />
           <span className="font-bold text-sm tracking-tight">{brandName}</span>
         </div>
 
