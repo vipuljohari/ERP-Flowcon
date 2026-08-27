@@ -164,6 +164,26 @@ const Inventory: React.FC<InventoryProps> = ({
 
   // Local state to track changes in opening balances before saving
   const [localOpeningBalances, setLocalOpeningBalances] = useState<Record<string, string>>({});
+
+  // Opening Balance fields (Item-wise and RM-wise) default to a plain
+  // read-only value for everyone, including Admin. Admin gets a pencil
+  // button next to it; clicking it switches just that row into edit mode
+  // (input + save button). Tracked per part/RM id so rows toggle
+  // independently and nothing is ever "live editable" by default.
+  const [editingOpeningBalIds, setEditingOpeningBalIds] = useState<Record<string, boolean>>({});
+  const startEditOpeningBal = (id: string) => setEditingOpeningBalIds(prev => ({ ...prev, [id]: true }));
+  const cancelEditOpeningBal = (id: string) => {
+    setEditingOpeningBalIds(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setLocalOpeningBalances(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
   const [internalRMOpeningBalances, setInternalRMOpeningBalances] = useState<Record<string, string>>(() => {
     return JSON.parse(localStorage.getItem('autopart_local_rm_opening_balances') || '{}');
   });
@@ -401,6 +421,7 @@ const Inventory: React.FC<InventoryProps> = ({
         const next = {...localOpeningBalances};
         delete next[partId];
         setLocalOpeningBalances(next);
+        cancelEditOpeningBal(partId);
         return;
     };
 
@@ -436,6 +457,11 @@ const Inventory: React.FC<InventoryProps> = ({
       const next = {...localOpeningBalances};
       delete next[partId];
       setLocalOpeningBalances(next);
+      setEditingOpeningBalIds(prev => {
+        const n = { ...prev };
+        delete n[partId];
+        return n;
+      });
     }
   };
 
@@ -480,6 +506,11 @@ const Inventory: React.FC<InventoryProps> = ({
       const next = {...localOpeningBalances};
       delete next[rmId];
       setLocalOpeningBalances(next);
+      setEditingOpeningBalIds(prev => {
+        const n = { ...prev };
+        delete n[rmId];
+        return n;
+      });
     }
   };
 
@@ -848,24 +879,46 @@ const Inventory: React.FC<InventoryProps> = ({
                         </td>
                         <td className="px-8 py-6 text-center">
                           {isAdmin && !readOnly ? (
-                            <div className="flex items-center justify-center gap-2">
-                              <input 
-                                type="number"
-                                className={`w-24 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
-                                  isDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
-                                }`}
-                                value={localVal !== undefined ? localVal : openingBalValue}
-                                onChange={(e) => setLocalOpeningBalances({...localOpeningBalances, [p.id]: e.target.value})}
-                              />
-                              {isDirty && (
-                                <button 
-                                  onClick={() => commitOpeningBalance(p.id, openingBalValue)}
-                                  className="w-10 h-10 bg-amber-500 text-white rounded-xl shadow-lg hover:bg-amber-600 active:scale-90 transition-all flex items-center justify-center text-sm"
+                            editingOpeningBalIds[p.id] ? (
+                              <div className="flex items-center justify-center gap-2">
+                                <input
+                                  type="number"
+                                  autoFocus
+                                  className={`w-24 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
+                                    isDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
+                                  }`}
+                                  value={localVal !== undefined ? localVal : openingBalValue}
+                                  onChange={(e) => setLocalOpeningBalances({...localOpeningBalances, [p.id]: e.target.value})}
+                                />
+                                {isDirty && (
+                                  <button
+                                    onClick={() => commitOpeningBalance(p.id, openingBalValue)}
+                                    className="w-10 h-10 bg-amber-500 text-white rounded-xl shadow-lg hover:bg-amber-600 active:scale-90 transition-all flex items-center justify-center text-sm"
+                                    title="Save"
+                                  >
+                                    💾
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => cancelEditOpeningBal(p.id)}
+                                  className="w-8 h-8 bg-slate-100 text-slate-500 rounded-lg hover:bg-slate-200 active:scale-90 transition-all flex items-center justify-center text-xs"
+                                  title="Cancel"
                                 >
-                                  💾
+                                  ✕
                                 </button>
-                              )}
-                            </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-center gap-2">
+                                <span className="font-black text-slate-800 text-base">{openingBalValue}</span>
+                                <button
+                                  onClick={() => startEditOpeningBal(p.id)}
+                                  className="w-8 h-8 bg-slate-100 text-slate-500 rounded-lg hover:bg-amber-100 hover:text-amber-700 active:scale-90 transition-all flex items-center justify-center text-xs"
+                                  title="Edit Opening Balance"
+                                >
+                                  ✏️
+                                </button>
+                              </div>
+                            )
                           ) : (
                             <span className="font-black text-slate-800 text-base">{openingBalValue}</span>
                           )}
@@ -1362,31 +1415,58 @@ const Inventory: React.FC<InventoryProps> = ({
                     </td>
                     <td className="px-8 py-6 text-center">
                       {isAdmin && !readOnly ? (
-                        <div className="flex flex-col items-center gap-1">
-                          <input 
-                            type="number"
-                            step="1"
-                            className={`w-28 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
-                              isRMDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
-                            }`}
-                            value={localRMVal !== undefined ? localRMVal : openingBalancePipes}
-                            onChange={(e) => setLocalOpeningBalances({...localOpeningBalances, [rm.id]: e.target.value})}
-                          />
-                          <span className="text-[10px] text-indigo-600 font-bold block">
-                            = {((localRMVal !== undefined ? parseFloat(localRMVal) || 0 : openingBalancePipes) * rmStandardMeters).toFixed(1)} m
-                          </span>
-                          <span className="text-[9px] text-slate-400 font-medium">
-                            ({((localRMVal !== undefined ? parseFloat(localRMVal) || 0 : openingBalancePipes) * pipeWeight).toFixed(2)} Kg)
-                          </span>
-                          {isRMDirty && (
-                            <button 
-                              onClick={() => commitRMOpeningBalance(rm.id, openingBalancePipes)}
-                              className="w-20 py-1.5 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 active:scale-95 transition-all text-xs font-bold mt-1"
-                            >
-                              Save 💾
-                            </button>
-                          )}
-                        </div>
+                        editingOpeningBalIds[rm.id] ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <input
+                              type="number"
+                              step="1"
+                              autoFocus
+                              className={`w-28 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
+                                isRMDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
+                              }`}
+                              value={localRMVal !== undefined ? localRMVal : openingBalancePipes}
+                              onChange={(e) => setLocalOpeningBalances({...localOpeningBalances, [rm.id]: e.target.value})}
+                            />
+                            <span className="text-[10px] text-indigo-600 font-bold block">
+                              = {((localRMVal !== undefined ? parseFloat(localRMVal) || 0 : openingBalancePipes) * rmStandardMeters).toFixed(1)} m
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-medium">
+                              ({((localRMVal !== undefined ? parseFloat(localRMVal) || 0 : openingBalancePipes) * pipeWeight).toFixed(2)} Kg)
+                            </span>
+                            <div className="flex items-center gap-1.5 mt-1">
+                              {isRMDirty && (
+                                <button
+                                  onClick={() => commitRMOpeningBalance(rm.id, openingBalancePipes)}
+                                  className="w-20 py-1.5 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 active:scale-95 transition-all text-xs font-bold"
+                                >
+                                  Save 💾
+                                </button>
+                              )}
+                              <button
+                                onClick={() => cancelEditOpeningBal(rm.id)}
+                                className="w-8 h-8 bg-slate-100 text-slate-500 rounded-lg hover:bg-slate-200 active:scale-90 transition-all flex items-center justify-center text-xs"
+                                title="Cancel"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-slate-800 text-sm">{openingBalancePipes} Pipes</span>
+                              <button
+                                onClick={() => startEditOpeningBal(rm.id)}
+                                className="w-7 h-7 bg-slate-100 text-slate-500 rounded-lg hover:bg-amber-100 hover:text-amber-700 active:scale-90 transition-all flex items-center justify-center text-xs"
+                                title="Edit Opening Balance"
+                              >
+                                ✏️
+                              </button>
+                            </div>
+                            <span className="text-[10px] text-indigo-600 font-bold block">{openingBalanceMeters.toFixed(1)} m</span>
+                            <span className="text-[9px] text-slate-400 font-medium">({openingBalanceKg.toFixed(2)} Kg)</span>
+                          </div>
+                        )
                       ) : (
                         <div className="flex flex-col items-center">
                           <span className="font-black text-slate-800 text-sm">{openingBalancePipes} Pipes</span>
@@ -1628,25 +1708,48 @@ const Inventory: React.FC<InventoryProps> = ({
                     </td>
                     <td className="px-8 py-6 text-center border-r border-slate-200/40">
                       {isAdmin && !readOnly ? (
-                        <div className="flex flex-col items-center gap-1">
-                          <input
-                            type="number"
-                            step="0.01"
-                            className={`w-28 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
-                              isRMDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
-                            }`}
-                            value={localRMVal !== undefined ? localRMVal : openingBalanceKg}
-                            onChange={(e) => setLocalOpeningBalances({ ...localOpeningBalances, [rm.id]: e.target.value })}
-                          />
-                          {isRMDirty && (
+                        editingOpeningBalIds[rm.id] ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <input
+                              type="number"
+                              step="0.01"
+                              autoFocus
+                              className={`w-28 text-center border-2 rounded-xl font-black py-2 outline-none transition-all shadow-sm text-slate-900 ${
+                                isRMDirty ? 'bg-amber-100 border-amber-500' : 'bg-amber-50 border-slate-200'
+                              }`}
+                              value={localRMVal !== undefined ? localRMVal : openingBalanceKg}
+                              onChange={(e) => setLocalOpeningBalances({ ...localOpeningBalances, [rm.id]: e.target.value })}
+                            />
+                            <div className="flex items-center gap-1.5 mt-1">
+                              {isRMDirty && (
+                                <button
+                                  onClick={() => commitRMOpeningBalance(rm.id, openingBalanceKg)}
+                                  className="w-20 py-1.5 bg-violet-600 text-white rounded-lg shadow-md hover:bg-violet-700 active:scale-95 transition-all text-xs font-bold"
+                                >
+                                  Save 💾
+                                </button>
+                              )}
+                              <button
+                                onClick={() => cancelEditOpeningBal(rm.id)}
+                                className="w-8 h-8 bg-slate-100 text-slate-500 rounded-lg hover:bg-slate-200 active:scale-90 transition-all flex items-center justify-center text-xs"
+                                title="Cancel"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center gap-2">
+                            <span className="font-black text-sm text-slate-800">{openingBalanceKg.toFixed(2)} Kg</span>
                             <button
-                              onClick={() => commitRMOpeningBalance(rm.id, openingBalanceKg)}
-                              className="w-20 py-1.5 bg-violet-600 text-white rounded-lg shadow-md hover:bg-violet-700 active:scale-95 transition-all text-xs font-bold mt-1"
+                              onClick={() => startEditOpeningBal(rm.id)}
+                              className="w-7 h-7 bg-slate-100 text-slate-500 rounded-lg hover:bg-amber-100 hover:text-amber-700 active:scale-90 transition-all flex items-center justify-center text-xs"
+                              title="Edit Opening Balance"
                             >
-                              Save 💾
+                              ✏️
                             </button>
-                          )}
-                        </div>
+                          </div>
+                        )
                       ) : (
                         <span className="font-black text-sm text-slate-800">{openingBalanceKg.toFixed(2)} Kg</span>
                       )}

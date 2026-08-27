@@ -147,6 +147,24 @@ const MainApp: React.FC = () => {
     [customers]
   );
 
+  // Customers are auto-added to Customer Master straight from Tally import,
+  // before anyone has mapped a single Item Master part to them — useful for
+  // catching new consignees, but it means every "pick a customer" dropdown
+  // across the app was cluttered with names that have nothing to show yet
+  // (0 dispatches, 0 stock, 0 schedule). This is the one filtered list used
+  // by every OPERATIONAL customer dropdown (Dashboard, Inventory, Daily
+  // Dispatch, Sales Log, RM Cross-Bill Check, Schedule). It is deliberately
+  // NOT used by Item Master, RM Master, Customer Master, or Import Issues —
+  // those screens are exactly where Admin needs to see and act on a
+  // not-yet-mapped customer (to map their first item, or to review/fix the
+  // "Needs Review" auto-created entry), so they keep the full list.
+  const customersWithItems = useMemo(() => {
+    const withItems = sortedCustomers.filter(c => sortedParts.some(p => p.mappedCustomers?.includes(c.name)));
+    // Fallback so a fresh/empty Item Master doesn't collapse every
+    // operational dropdown in the app to nothing.
+    return withItems.length > 0 ? withItems : sortedCustomers;
+  }, [sortedCustomers, sortedParts]);
+
   const [activeCustomer, setActiveCustomer] = useState(() => customers[0]?.name || '');
   const [activeModel, setActiveModel] = useState<string>('All');
 
@@ -187,12 +205,12 @@ const MainApp: React.FC = () => {
   // real data arrives. This catches up once the list is actually populated,
   // and also recovers if the previously active customer gets deleted.
   useEffect(() => {
-    if (sortedCustomers.length === 0) return;
-    const stillValid = sortedCustomers.some(c => c.name === activeCustomer);
+    if (customersWithItems.length === 0) return;
+    const stillValid = customersWithItems.some(c => c.name === activeCustomer);
     if (!activeCustomer || !stillValid) {
-      setActiveCustomer(sortedCustomers[0].name);
+      setActiveCustomer(customersWithItems[0].name);
     }
-  }, [sortedCustomers, activeCustomer]);
+  }, [customersWithItems, activeCustomer]);
 
   const partsRef = useRef(parts);
   const salesRef = useRef(sales);
@@ -1255,9 +1273,9 @@ const MainApp: React.FC = () => {
               sales={contextSales} 
               allSales={sales} 
               activeCustomer={activeCustomer} 
-              onCustomerChange={setActiveCustomer} 
-              customers={sortedCustomers} 
-              forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} 
+              onCustomerChange={setActiveCustomer}
+              customers={customersWithItems}
+              forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})}
               selectedDate={sD} 
               rawMaterials={modelFilteredRawMaterials} 
               localRMOpeningBalances={resolvedRMOpeningBalances}
@@ -1283,7 +1301,7 @@ const MainApp: React.FC = () => {
               selectedDateDisplay={sD.toLocaleDateString('en-GB')}
               rawMaterials={modelFilteredRawMaterials}
               rmInwardLogs={contextRmInwardLogs}
-              customers={sortedCustomers}
+              customers={customersWithItems}
               onAddRMInward={handleAddRMInward}
               localRMOpeningBalances={resolvedRMOpeningBalances}
               setLocalRMOpeningBalances={setLocalRMOpeningBalances}
@@ -1321,8 +1339,8 @@ const MainApp: React.FC = () => {
                }
                return p;
              }));
-          }} onCreateAlert={pushAdminAlert} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
-          {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
+          }} onCreateAlert={pushAdminAlert} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
+          {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
              const sale = sales.find(s => s.id === id);
              if (sale) {
                setSales(prev => prev.filter(s => s.id !== id));
@@ -1514,7 +1532,7 @@ const MainApp: React.FC = () => {
               manufacturerInvoices={rmManufacturerInvoices}
               crossInvoices={rmCrossInvoices}
               materialLengths={rmMaterialLengths}
-              customers={sortedCustomers}
+              customers={customersWithItems}
               setManufacturerInvoices={setRmManufacturerInvoices}
               setCrossInvoices={setRmCrossInvoices}
               setMaterialLengths={setRmMaterialLengths}
@@ -1522,7 +1540,7 @@ const MainApp: React.FC = () => {
               onCreateAlert={pushAdminAlert}
             />
           )}
-          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={sortedCustomers} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
+          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
           </ErrorBoundary>
         </div>
       </main>
