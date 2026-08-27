@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { collection, onSnapshot, doc, writeBatch } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { stripUndefinedDeep } from '../services/firestoreSanitize';
+import { enqueueWrites } from '../services/offlineQueue';
 
 /**
  * Keeps a React array in sync with a Firestore collection, live, across every
@@ -60,6 +61,11 @@ export function useFirestoreArray<T>(
       const nextIds = new Set(next.map((n) => getId(n)));
       const batch = writeBatch(db);
       let opCount = 0;
+      // Mirrors exactly what goes into the batch below — so that IF the
+      // commit fails (Firestore quota exhausted, device offline, etc.) we
+      // know precisely which small set of documents to hand to the offline
+      // queue for automatic retry. Never the whole collection — just these.
+      const pendingWrites: { collectionName: string; docId: string; op: 'set' | 'delete'; data?: any }[] = [];
       next.forEach((item) => {
         const id = getId(item);
         const prevItem = prev.find((p) => getId(p) === id);
@@ -69,7 +75,9 @@ export function useFirestoreArray<T>(
           // surface as "Something went wrong while posting this entry" on
           // an otherwise completely valid submission. See
           // services/firestoreSanitize.ts.
-          batch.set(doc(db, collectionName, id), stripUndefinedDeep(item) as any);
+          const sanitized = stripUndefinedDeep(item) as any;
+          batch.set(doc(db, collectionName, id), sanitized);
+          pendingWrites.push({ collectionName, docId: id, op: 'set', data: sanitized });
           opCount++;
         }
       });
@@ -77,11 +85,18 @@ export function useFirestoreArray<T>(
         const id = getId(item);
         if (!nextIds.has(id)) {
           batch.delete(doc(db, collectionName, id));
+          pendingWrites.push({ collectionName, docId: id, op: 'delete' });
           opCount++;
         }
       });
       if (opCount > 0) {
-        batch.commit().catch((err) => console.error(`Firestore write failed for ${collectionName}:`, err));
+        batch.commit().catch((err) => {
+          console.error(`Firestore write failed for ${collectionName}:`, err);
+          // The optimistic update above already shows this on screen — don't
+          // let it silently vanish. Queue exactly what failed so it uploads
+          // automatically as soon as Firestore is reachable again.
+          enqueueWrites(pendingWrites);
+        });
       }
     },
     [collectionName]

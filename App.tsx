@@ -39,6 +39,7 @@ import { isSheetRM, rmKgPerPart, partsPerRMUnit } from './services/rmYield';
 // year, which then sorted as "most recent" forever in the Dashboard's
 // Global Dispatch Feed until caught by hand).
 import { getLocalISOString } from './services/time';
+import { startOfflineQueueAutoFlush, subscribeQueueEvents } from './services/offlineQueue';
 
 const MainApp: React.FC = () => {
   const { appUser, logout } = useAuth();
@@ -94,6 +95,36 @@ const MainApp: React.FC = () => {
       verifiedBy: appUser?.displayName || userName,
     } : a));
   };
+
+  // Safety net for when a save fails outright (Firestore quota exhausted,
+  // no network, etc.) — see services/offlineQueue.ts. Every
+  // useFirestoreArray/useFirestoreDoc write that fails gets queued here
+  // automatically (only the specific entry that failed, nothing else) and
+  // retried in the background; this just surfaces it with the same "Cloud
+  // Sync" toast already used elsewhere, so nobody assumes a failed save
+  // actually went through, and nobody has to wonder whether it eventually
+  // did.
+  useEffect(() => {
+    const stopAutoFlush = startOfflineQueueAutoFlush();
+    const unsubscribe = subscribeQueueEvents((e) => {
+      if (e.type === 'queued') {
+        addNotification(
+          `Couldn't reach the cloud just now — saved on this device instead. ${e.pendingCount} ${e.pendingCount === 1 ? 'entry is' : 'entries are'} waiting to upload automatically.`,
+          'warning'
+        );
+      } else if (e.type === 'flushed') {
+        addNotification(
+          `${e.flushedCount} ${e.flushedCount === 1 ? 'entry that was' : 'entries that were'} waiting have now uploaded to the cloud.`,
+          'success'
+        );
+      }
+    });
+    return () => {
+      stopAutoFlush();
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [parts, setParts] = useFirestoreArray<Part>('parts', INITIAL_PARTS);
   const [sales, setSales] = useFirestoreArray<Sale>('sales');
