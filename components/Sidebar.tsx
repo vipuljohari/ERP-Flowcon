@@ -95,8 +95,8 @@ const Sidebar: React.FC<SidebarProps> = ({
     <>
       <div className="mb-8 flex flex-col gap-1 text-left">
         <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xl shadow-lg transition-all duration-500 ${isAdmin ? 'bg-amber-50 shadow-amber-500/20 rotate-[360deg]' : 'bg-indigo-600 shadow-indigo-500/20'}`}>
-            {isAdmin ? '👑' : 'F'}
+          <div className={`h-10 px-1.5 bg-white rounded-lg flex items-center justify-center shadow-lg transition-all duration-500 ${isAdmin ? 'shadow-amber-500/20' : 'shadow-indigo-500/20'}`}>
+            <img src="/logo.png" alt={brandName} className="h-full w-auto object-contain" />
           </div>
           <div>
             <h1 className="text-lg font-bold tracking-tight leading-tight">{brandName}</h1>
@@ -186,8 +186,8 @@ const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm shadow ${isAdmin ? 'bg-amber-50' : 'bg-indigo-600'}`}>
-            {isAdmin ? '👑' : 'F'}
+          <div className="h-8 px-1 bg-white rounded-lg flex items-center justify-center shadow">
+            <img src="/logo.png" alt={brandName} className="h-full w-auto object-contain" />
           </div>
           <span className="font-bold text-sm tracking-tight">{brandName}</span>
         </div>

@@ -27,9 +27,7 @@ const Login: React.FC = () => {
     <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
       <div className="bg-white rounded-[2rem] shadow-2xl max-w-sm w-full p-10">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-bold mx-auto mb-4">
-            F
-          </div>
+          <img src="/logo.png" alt={brandName} className="h-16 w-auto mx-auto mb-4 object-contain" />
           <h1 className="text-xl font-black text-slate-900 tracking-tight">{brandName}</h1>
           <p className="text-xs text-slate-500 font-medium mt-1">Sign in to continue</p>
         </div>

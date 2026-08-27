@@ -5,7 +5,13 @@
   "description": "Flowcon ERP - inventory, dispatch, and sales management for Flowcon.",
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/761/761480.png",
+      "src": "/logo-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo-icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
@@ -17,13 +23,5 @@
   "orientation": "any",
   "theme_color": "#0f172a",
   "background_color": "#f8fafc",
-  "categories": ["business", "productivity"],
-  "screenshots": [
-    {
-      "src": "https://cdn-icons-png.flaticon.com/512/761/761480.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "form_factor": "wide"
-    }
-  ]
+  "categories": ["business", "productivity"]
 }
