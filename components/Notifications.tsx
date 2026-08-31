@@ -10,6 +10,7 @@ interface NotificationsProps {
 const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: string }> = {
   discrepancy: { label: 'Discrepancy Control Entry (Negative Value)', icon: '⚠️', color: 'rose' },
   rm_inward: { label: 'RM Inward Entry', icon: '📥', color: 'indigo' },
+  item_inward: { label: 'Item Material Entry', icon: '📦', color: 'teal' },
   dispatch_manual: { label: 'Manual Dispatch Slip', icon: '📝', color: 'amber' },
   tally_import: { label: 'Tally Excel/XML Import', icon: '📊', color: 'emerald' },
   schedule_bulk_import: { label: 'Bulk Customer Schedule Import', icon: '📋', color: 'violet' },
@@ -23,6 +24,7 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   emerald: { badge: 'bg-emerald-100 text-emerald-700 border-emerald-200', border: 'border-l-emerald-500' },
   violet: { badge: 'bg-violet-100 text-violet-700 border-violet-200', border: 'border-l-violet-500' },
   sky: { badge: 'bg-sky-100 text-sky-700 border-sky-200', border: 'border-l-sky-500' },
+  teal: { badge: 'bg-teal-100 text-teal-700 border-teal-200', border: 'border-l-teal-500' },
 };
 
 const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {

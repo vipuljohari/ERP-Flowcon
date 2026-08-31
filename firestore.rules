@@ -112,19 +112,21 @@ service cloud.firestore {
     }
 
     // RM Cross-Bill Check — manufacturer invoices, customer cross-invoices,
-    // and the material length lookup, all owned by Accounts (purchase-side
-    // reconciliation, same ownership as Customer Master / Sales).
+    // and the material length lookup. Originally Accounts-only (purchase-side
+    // reconciliation, same ownership as Customer Master / Sales); Store also
+    // enters these directly from the physical invoice, so Store can write
+    // here too. Still locked out for every other role.
     match /rmManufacturerInvoices/{docId} {
       allow read: if isActive();
-      allow write: if isAdmin() || myRole() == 'accounts';
+      allow write: if isAdmin() || myRole() == 'accounts' || myRole() == 'store';
     }
     match /rmCustomerCrossInvoices/{docId} {
       allow read: if isActive();
-      allow write: if isAdmin() || myRole() == 'accounts';
+      allow write: if isAdmin() || myRole() == 'accounts' || myRole() == 'store';
     }
     match /rmMaterialLengths/{docId} {
       allow read: if isActive();
-      allow write: if isAdmin() || myRole() == 'accounts';
+      allow write: if isAdmin() || myRole() == 'accounts' || myRole() == 'store';
     }
 
     match /archives/{archiveId} {

@@ -115,6 +115,13 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
 }) => {
   const [showMfgForm, setShowMfgForm] = useState(false);
   const [showCrossForm, setShowCrossForm] = useState(false);
+  // Hard-block guards: a repeat submit of the same invoice number (for the
+  // same manufacturer / customer) is refused outright rather than silently
+  // creating a duplicate record + duplicate admin alert. This is what
+  // protects against a store user re-clicking "Save" for the same invoice
+  // when a slow/dropped connection makes it look like nothing happened.
+  const [mfgDuplicateError, setMfgDuplicateError] = useState<string | null>(null);
+  const [crossDuplicateError, setCrossDuplicateError] = useState<string | null>(null);
   const [markupThreshold, setMarkupThreshold] = useState<string>('');
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkFile, setBulkFile] = useState<{ name: string; data: any } | null>(null);
@@ -263,6 +270,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
     setMfgAiExtracted(false);
+    setMfgDuplicateError(null);
     setShowMfgForm(true);
   };
   const closeMfgForm = () => {
@@ -273,6 +281,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
     setMfgAiExtracted(false);
+    setMfgDuplicateError(null);
     setShowMfgForm(false);
   };
 
@@ -396,6 +405,20 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
 
   const submitMfgInvoice = (e: React.FormEvent) => {
     e.preventDefault();
+    // Hard block: same invoice number already on file for this manufacturer.
+    // Scoped to manufacturer (not global) since two different manufacturers
+    // can legitimately reuse the same invoice numbering.
+    const invoiceNoTrim = mfgForm.invoiceNo.trim().toLowerCase();
+    const manufacturerTrim = mfgForm.manufacturerName.trim().toLowerCase();
+    const isDuplicate = manufacturerInvoices.some(m =>
+      m.invoiceNo.trim().toLowerCase() === invoiceNoTrim &&
+      m.manufacturerName.trim().toLowerCase() === manufacturerTrim
+    );
+    if (isDuplicate) {
+      setMfgDuplicateError(`Invoice "${mfgForm.invoiceNo}" is already on file for ${mfgForm.manufacturerName} — not saving it again. If this really is a second, separate invoice, use a different invoice number.`);
+      return;
+    }
+    setMfgDuplicateError(null);
     const id = genId();
     setManufacturerInvoices(prev => [...prev, { id, ...mfgForm, createdAt: new Date().toISOString() }]);
     if (!knownLength && mfgLengthInput) {
@@ -435,6 +458,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingCrossPhoto(false);
     setCrossPhotoError(null);
     setCrossAiExtracted(false);
+    setCrossDuplicateError(null);
     setShowCrossForm(true);
   };
   const closeCrossForm = () => {
@@ -442,6 +466,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingCrossPhoto(false);
     setCrossPhotoError(null);
     setCrossAiExtracted(false);
+    setCrossDuplicateError(null);
     setShowCrossForm(false);
   };
 
@@ -479,6 +504,18 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const submitCrossInvoice = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMfgInvoice) return;
+    // Hard block: same invoice number already on file for this customer.
+    const invoiceNoTrim = crossForm.invoiceNo.trim().toLowerCase();
+    const customerTrim = crossForm.customerName.trim().toLowerCase();
+    const isDuplicate = crossInvoices.some(c =>
+      c.invoiceNo.trim().toLowerCase() === invoiceNoTrim &&
+      c.customerName.trim().toLowerCase() === customerTrim
+    );
+    if (isDuplicate) {
+      setCrossDuplicateError(`Invoice "${crossForm.invoiceNo}" is already on file for ${crossForm.customerName} — not saving it again. If this really is a second, separate invoice, use a different invoice number.`);
+      return;
+    }
+    setCrossDuplicateError(null);
     const id = genId();
     setCrossInvoices(prev => [...prev, {
       id, customerName: crossForm.customerName, invoiceNo: crossForm.invoiceNo, date: crossForm.date,
@@ -734,7 +771,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <FormField label="Invoice No">
                   <input required placeholder="Invoice No" value={mfgForm.invoiceNo}
-                    onChange={(e) => setMfgForm({ ...mfgForm, invoiceNo: e.target.value })}
+                    onChange={(e) => { setMfgForm({ ...mfgForm, invoiceNo: e.target.value }); setMfgDuplicateError(null); }}
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
                 <FormField label="Date">
@@ -832,6 +869,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
               </div>
+              {mfgDuplicateError && (
+                <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-200 rounded-xl px-3 py-2">{mfgDuplicateError}</p>
+              )}
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={closeMfgForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
                 <button type="submit" className="flex-[2] py-3 bg-slate-900 text-white rounded-xl font-bold text-sm">Save</button>
@@ -903,7 +943,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <div className="grid grid-cols-2 gap-3">
                 <FormField label="Invoice No">
                   <input required placeholder="Invoice No" value={crossForm.invoiceNo}
-                    onChange={(e) => setCrossForm({ ...crossForm, invoiceNo: e.target.value })}
+                    onChange={(e) => { setCrossForm({ ...crossForm, invoiceNo: e.target.value }); setCrossDuplicateError(null); }}
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
                 <FormField label="Date">
@@ -929,6 +969,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
               </div>
+              {crossDuplicateError && (
+                <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-200 rounded-xl px-3 py-2">{crossDuplicateError}</p>
+              )}
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={closeCrossForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
                 <button type="submit" disabled={!selectedMfgInvoice} className="flex-[2] py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm disabled:opacity-50">Save & Resolve</button>

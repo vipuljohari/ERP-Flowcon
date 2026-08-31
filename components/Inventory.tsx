@@ -328,19 +328,32 @@ const Inventory: React.FC<InventoryProps> = ({
       if (inventoryMode === 'item' && selectedPart) {
         const qty = parseInt(addQty);
         onAddInward(selectedPart.id, qty, supplier.trim(), qty < 0 ? remarks.trim() : undefined, finalTimestamp, invoiceNumber.trim() || undefined);
-        // Discrepancy Control Entry (negative value) — alert Admin with full
-        // detail so they can cross-check/cross-question it. Positive Item
-        // Material Entries are routine and do not alert.
-        if (qty < 0 && onCreateAlert) {
-          onCreateAlert({
-            type: 'discrepancy',
-            partId: selectedPart.id,
-            partName: selectedPart.name,
-            sapCode: selectedPart.sapCode,
-            quantity: qty,
-            remarks: remarks.trim(),
-            responsibleName: supplier.trim(),
-          });
+        if (onCreateAlert) {
+          if (qty < 0) {
+            // Discrepancy Control Entry (negative value) — alert Admin with
+            // full detail so they can cross-check/cross-question it.
+            onCreateAlert({
+              type: 'discrepancy',
+              partId: selectedPart.id,
+              partName: selectedPart.name,
+              sapCode: selectedPart.sapCode,
+              quantity: qty,
+              remarks: remarks.trim(),
+              responsibleName: supplier.trim(),
+            });
+          } else {
+            // Every Item Material Entry — regardless of role — is logged
+            // for Admin, same as RM Inward below.
+            onCreateAlert({
+              type: 'item_inward',
+              partId: selectedPart.id,
+              partName: selectedPart.name,
+              sapCode: selectedPart.sapCode,
+              quantity: qty,
+              supplier: supplier.trim(),
+              invoiceNumber: invoiceNumber.trim() || undefined,
+            });
+          }
         }
       } else if (inventoryMode === 'rm' && selectedRM && onAddRMInward) {
         const qty = parseInt(addQty);
