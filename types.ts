@@ -113,6 +113,7 @@ export interface RMManufacturerInvoice {
   quantityPcs: number;
   ratePerPc: number;
   itemValue: number;
+  totalWeightKg?: number; // Kg — mandatory on the Add Manufacturer Invoice form going forward; optional here only so invoices saved before this field existed still type-check
   matchedCrossInvoiceId?: string; // set once a corresponding customer invoice is entered
   createdAt: string;
 }

@@ -241,14 +241,34 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const filtersActive = Boolean(filterManufacturer || filterMonth || filterMaterial);
 
   // --- Manufacturer Invoice form ---
+  // One real invoice often clubs together several different materials
+  // (e.g. RMSS00000118 and RMSS00000119 on the same invoice no.). The
+  // header fields below (manufacturer, customer, invoice no, date) apply
+  // to the whole invoice; each material gets its own line item via
+  // mfgLineItems, added/removed with the "+ Add Another Material" /
+  // remove controls in the modal — all saved together as separate
+  // RMManufacturerInvoice records sharing the same invoice no. and date.
   const blankMfgForm = () => ({
     manufacturerName: '', customerName: customers[0]?.name || '', invoiceNo: '', date: '',
-    materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0,
+  });
+  interface MfgLineItem {
+    key: string;
+    materialName: string;
+    materialCode: string;
+    quantityPcs: number;
+    ratePerPc: number;
+    itemValue: number;
+    totalWeightKg: number;
+    addingNewMaterial: boolean;
+    mfgLengthInput: string;
+  }
+  const blankMfgLineItem = (): MfgLineItem => ({
+    key: genId(), materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0, totalWeightKg: 0,
+    addingNewMaterial: false, mfgLengthInput: '',
   });
   const [mfgForm, setMfgForm] = useState(blankMfgForm);
-  const [mfgLengthInput, setMfgLengthInput] = useState('');
+  const [mfgLineItems, setMfgLineItems] = useState<MfgLineItem[]>([blankMfgLineItem()]);
   const [addingNewManufacturer, setAddingNewManufacturer] = useState(false);
-  const [addingNewMaterial, setAddingNewMaterial] = useState(false);
   const [extractingInvoicePhoto, setExtractingInvoicePhoto] = useState(false);
   const [invoicePhotoError, setInvoicePhotoError] = useState<string | null>(null);
   // Whether the CURRENT form's values came from a successful photo read —
@@ -256,7 +276,12 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   // knows to double-check an AI-filled entry against the source invoice a
   // little more carefully than a fully hand-typed one.
   const [mfgAiExtracted, setMfgAiExtracted] = useState(false);
-  const knownLength = materialLengths.find(m => m.materialCode.toUpperCase() === mfgForm.materialCode.toUpperCase().trim());
+
+  const updateMfgLineItem = (idx: number, patch: Partial<MfgLineItem>) => {
+    setMfgLineItems(prev => prev.map((item, i) => i === idx ? { ...item, ...patch } : item));
+  };
+  const addMfgLineItem = () => setMfgLineItems(prev => [...prev, blankMfgLineItem()]);
+  const removeMfgLineItem = (idx: number) => setMfgLineItems(prev => prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev);
 
   // Every open of the modal (via the "+ Manufacturer Invoice" button or
   // Cancel) should start completely fresh — nothing carried over from a
@@ -264,9 +289,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   // New" entry.
   const openFreshMfgForm = () => {
     setMfgForm(blankMfgForm());
-    setMfgLengthInput('');
+    setMfgLineItems([blankMfgLineItem()]);
     setAddingNewManufacturer(false);
-    setAddingNewMaterial(false);
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
     setMfgAiExtracted(false);
@@ -275,9 +299,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   };
   const closeMfgForm = () => {
     setMfgForm(blankMfgForm());
-    setMfgLengthInput('');
+    setMfgLineItems([blankMfgLineItem()]);
     setAddingNewManufacturer(false);
-    setAddingNewMaterial(false);
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
     setMfgAiExtracted(false);
@@ -320,7 +343,6 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         materialsForResolvedManufacturer.find(
           m => m.materialName.trim().toLowerCase() === extractedMaterial.toLowerCase()
         );
-      setAddingNewMaterial(!matchedMaterial && !!(extractedMaterial || extractedCode));
 
       // On a match, pull Material Name/Code straight from the stored
       // record rather than the photo's OCR read of them — that's what
@@ -337,13 +359,21 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         customerName: prev.customerName || customers[0]?.name || '',
         invoiceNo: extracted.invoiceNo.trim(),
         date: extracted.date.trim(),
+      }));
+      // Only the first line item is read from a photo (see the note next
+      // to Upload Photo below) — it fills line 1; any additional materials
+      // on this invoice are added by hand via "+ Add Another Material".
+      setMfgLineItems([{
+        key: genId(),
         materialName: resolvedMaterialName,
         materialCode: resolvedCode,
         quantityPcs: extracted.quantityPcs,
         ratePerPc: extracted.ratePerPc,
         itemValue: extracted.itemValue,
-      }));
-      setMfgLengthInput(resolvedLength !== null && resolvedLength !== undefined ? String(resolvedLength) : '');
+        totalWeightKg: 0,
+        addingNewMaterial: !matchedMaterial && !!(extractedMaterial || extractedCode),
+        mfgLengthInput: resolvedLength !== null && resolvedLength !== undefined ? String(resolvedLength) : '',
+      }]);
       setMfgAiExtracted(true);
     } catch (err: any) {
       setInvoicePhotoError(err?.message || 'Could not read this photo — enter the details manually below.');
@@ -390,56 +420,108 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     [mfgMaterialsForSelectedManufacturer]
   );
 
-  // When adding a brand-new material, pre-fill the piece length from the
-  // material name as you type it (see parsePieceLengthFromMaterialName)
-  // so it's a starting point, not a blank box — still fully editable.
-  // Existing materials skip this entirely: their length comes straight
-  // from the recorded value and is locked (see the Material Name select
-  // below), never re-guessed from the name.
-  useEffect(() => {
-    if (!addingNewMaterial) return;
-    if (mfgLengthInput) return;
-    const parsed = parsePieceLengthFromMaterialName(mfgForm.materialName);
-    if (parsed !== null) setMfgLengthInput(String(parsed));
-  }, [addingNewMaterial, mfgForm.materialName, mfgLengthInput]);
-
   const submitMfgInvoice = (e: React.FormEvent) => {
     e.preventDefault();
-    // Hard block: same invoice number already on file for this manufacturer.
-    // Scoped to manufacturer (not global) since two different manufacturers
-    // can legitimately reuse the same invoice numbering.
+    // Hard block: this exact material already has an entry under this
+    // invoice number for this manufacturer. Scoped to manufacturer (not
+    // global) since two different manufacturers can legitimately reuse the
+    // same invoice numbering — and scoped to material code (not just
+    // invoice+manufacturer) because one real invoice often clubs together
+    // several different materials (e.g. RMSS00000118 and RMSS00000119 on
+    // the same invoice no.), each of which is its own separate line here.
+    // Only re-entering the SAME material against the SAME invoice twice
+    // counts as a duplicate — checked both against what's already saved
+    // AND against the other lines in this same submission.
     const invoiceNoTrim = mfgForm.invoiceNo.trim().toLowerCase();
     const manufacturerTrim = mfgForm.manufacturerName.trim().toLowerCase();
-    const isDuplicate = manufacturerInvoices.some(m =>
-      m.invoiceNo.trim().toLowerCase() === invoiceNoTrim &&
-      m.manufacturerName.trim().toLowerCase() === manufacturerTrim
-    );
-    if (isDuplicate) {
-      setMfgDuplicateError(`Invoice "${mfgForm.invoiceNo}" is already on file for ${mfgForm.manufacturerName} — not saving it again. If this really is a second, separate invoice, use a different invoice number.`);
-      return;
+    const seenCodesThisSubmission = new Set<string>();
+    for (const item of mfgLineItems) {
+      const materialCodeTrim = item.materialCode.trim().toLowerCase();
+      const alreadyOnFile = manufacturerInvoices.some(m =>
+        m.invoiceNo.trim().toLowerCase() === invoiceNoTrim &&
+        m.manufacturerName.trim().toLowerCase() === manufacturerTrim &&
+        m.materialCode.trim().toLowerCase() === materialCodeTrim
+      );
+      if (alreadyOnFile || seenCodesThisSubmission.has(materialCodeTrim)) {
+        setMfgDuplicateError(`Invoice "${mfgForm.invoiceNo}" from ${mfgForm.manufacturerName} already has an entry for material "${item.materialCode}" — not saving it again. If this invoice also covers a different material, that's fine — just save it as its own line.`);
+        return;
+      }
+      seenCodesThisSubmission.add(materialCodeTrim);
     }
     setMfgDuplicateError(null);
-    const id = genId();
-    setManufacturerInvoices(prev => [...prev, { id, ...mfgForm, createdAt: new Date().toISOString() }]);
-    if (!knownLength && mfgLengthInput) {
-      setMaterialLengths(prev => [
-        ...prev.filter(m => m.materialCode.toUpperCase() !== mfgForm.materialCode.toUpperCase().trim()),
-        { materialCode: mfgForm.materialCode.trim(), materialName: mfgForm.materialName, lengthMm: parseFloat(mfgLengthInput) || 0, updatedAt: new Date().toISOString() },
-      ]);
+
+    const newInvoices = mfgLineItems.map(item => ({
+      id: genId(),
+      manufacturerName: mfgForm.manufacturerName,
+      customerName: mfgForm.customerName,
+      invoiceNo: mfgForm.invoiceNo,
+      date: mfgForm.date,
+      materialName: item.materialName,
+      materialCode: item.materialCode,
+      quantityPcs: item.quantityPcs,
+      ratePerPc: item.ratePerPc,
+      itemValue: item.itemValue,
+      totalWeightKg: item.totalWeightKg,
+      createdAt: new Date().toISOString(),
+    }));
+    setManufacturerInvoices(prev => [...prev, ...newInvoices]);
+
+    // Persist a newly-entered piece length for any material that doesn't
+    // already have one recorded — one per line item, same as before.
+    const newLengths = mfgLineItems.filter(item =>
+      item.mfgLengthInput &&
+      !materialLengths.some(m => m.materialCode.toUpperCase() === item.materialCode.toUpperCase().trim())
+    );
+    if (newLengths.length > 0) {
+      setMaterialLengths(prev => {
+        let next = prev;
+        for (const item of newLengths) {
+          next = [
+            ...next.filter(m => m.materialCode.toUpperCase() !== item.materialCode.toUpperCase().trim()),
+            { materialCode: item.materialCode.trim(), materialName: item.materialName, lengthMm: parseFloat(item.mfgLengthInput) || 0, updatedAt: new Date().toISOString() },
+          ];
+        }
+        return next;
+      });
     }
+
+    const totalQty = mfgLineItems.reduce((sum, item) => sum + (item.quantityPcs || 0), 0);
+    const aiSuffix = mfgAiExtracted
+      ? (mfgLineItems.length > 1 ? ' — first line auto-filled from photo, please verify against the invoice' : ' — auto-filled from photo, please verify against the invoice')
+      : ' — entered manually';
     onCreateAlert?.({
       type: 'rm_cross_bill',
       invoiceNumber: mfgForm.invoiceNo,
       customer: mfgForm.customerName,
       supplier: mfgForm.manufacturerName,
-      quantity: mfgForm.quantityPcs,
-      remarks: `Manufacturer Invoice — ${mfgForm.materialName || 'material'} (${mfgForm.materialCode || 'no code'})${mfgAiExtracted ? ' — auto-filled from photo, please verify against the invoice' : ' — entered manually'}`,
+      quantity: totalQty,
+      itemCount: mfgLineItems.length,
+      remarks: mfgLineItems.length === 1
+        ? `Manufacturer Invoice — ${mfgLineItems[0].materialName || 'material'} (${mfgLineItems[0].materialCode || 'no code'}) — Total Weight ${mfgLineItems[0].totalWeightKg || 0} Kg${aiSuffix}`
+        : `Manufacturer Invoice — ${mfgLineItems.length} materials: ${mfgLineItems.map(i => `${i.materialCode || 'no code'} (${i.quantityPcs} Pcs, ${i.totalWeightKg || 0} Kg)`).join(', ')}${aiSuffix}`,
     });
-    setMfgForm({ manufacturerName: mfgForm.manufacturerName, customerName: mfgForm.customerName, invoiceNo: '', date: '', materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0 });
-    setMfgLengthInput('');
-    setAddingNewMaterial(false);
+
+    setMfgForm(blankMfgForm());
+    setMfgLineItems([blankMfgLineItem()]);
+    setAddingNewManufacturer(false);
     setMfgAiExtracted(false);
     setShowMfgForm(false);
+  };
+
+  // Admin-only cleanup for a wrongly/duplicate-entered Manufacturer Invoice
+  // (e.g. one entered before the duplicate-invoice-number check above
+  // existed). If it already has a matched Customer Cross-Invoice, that gets
+  // removed too, since a match against a deleted invoice is meaningless.
+  const deleteMfgInvoice = (inv: RMManufacturerInvoice) => {
+    const hasMatch = !!inv.matchedCrossInvoiceId;
+    const confirmMsg = hasMatch
+      ? `Delete this Manufacturer Invoice AND its matched Customer Invoice? This cannot be undone.\n\n${inv.manufacturerName} — Invoice ${inv.invoiceNo}`
+      : `Delete this Manufacturer Invoice entry? This cannot be undone.\n\n${inv.manufacturerName} — Invoice ${inv.invoiceNo}`;
+    if (!window.confirm(confirmMsg)) return;
+    setManufacturerInvoices(prev => prev.filter(m => m.id !== inv.id));
+    if (hasMatch) {
+      setCrossInvoices(prev => prev.filter(c => c.id !== inv.matchedCrossInvoiceId));
+    }
   };
 
   // --- Customer Cross-Invoice form ---
@@ -504,15 +586,22 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const submitCrossInvoice = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedMfgInvoice) return;
-    // Hard block: same invoice number already on file for this customer.
+    // Hard block: this exact Manufacturer Invoice already has a matching
+    // Customer Invoice on file. Scoped to the specific manufacturer invoice
+    // being matched (not just invoice number + customer) for the same
+    // reason as the Manufacturer Invoice check above — one customer
+    // invoice number can legitimately cover several different materials,
+    // each matched to a different Manufacturer Invoice line, in separate
+    // entries here.
     const invoiceNoTrim = crossForm.invoiceNo.trim().toLowerCase();
     const customerTrim = crossForm.customerName.trim().toLowerCase();
     const isDuplicate = crossInvoices.some(c =>
       c.invoiceNo.trim().toLowerCase() === invoiceNoTrim &&
-      c.customerName.trim().toLowerCase() === customerTrim
+      c.customerName.trim().toLowerCase() === customerTrim &&
+      c.refManufacturerInvoiceId === crossForm.refManufacturerInvoiceId
     );
     if (isDuplicate) {
-      setCrossDuplicateError(`Invoice "${crossForm.invoiceNo}" is already on file for ${crossForm.customerName} — not saving it again. If this really is a second, separate invoice, use a different invoice number.`);
+      setCrossDuplicateError(`Invoice "${crossForm.invoiceNo}" from ${crossForm.customerName} is already matched against this same Manufacturer Invoice — not saving it again. If this invoice also covers a different material, match it against that Manufacturer Invoice instead and save it as its own entry.`);
       return;
     }
     setCrossDuplicateError(null);
@@ -620,9 +709,17 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <div key={inv.id} className={`border rounded-2xl px-5 py-4 flex justify-between items-center ${band.color}`}>
                 <div>
                   <p className="font-bold text-slate-900 text-sm">{inv.materialName} <span className="text-xs text-slate-400 font-mono ml-1">{inv.materialCode}</span></p>
-                  <p className="text-xs mt-1">{inv.manufacturerName} → {inv.customerName} • Invoice {inv.invoiceNo} • {new Date(inv.date).toLocaleDateString('en-GB')} • {inv.quantityPcs} Pcs • ₹{(inv.itemValue ?? 0).toLocaleString('en-IN')}</p>
+                  <p className="text-xs mt-1">{inv.manufacturerName} → {inv.customerName} • Invoice {inv.invoiceNo} • {new Date(inv.date).toLocaleDateString('en-GB')} • {inv.quantityPcs} Pcs{inv.totalWeightKg ? ` • ${inv.totalWeightKg} Kg` : ''} • ₹{(inv.itemValue ?? 0).toLocaleString('en-IN')}</p>
                 </div>
-                <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border">{band.label} · {days}d</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border">{band.label} · {days}d</span>
+                  {isAdmin && (
+                    <button type="button" onClick={() => deleteMfgInvoice(inv)} title="Delete this invoice entry"
+                      className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg p-1.5 text-sm leading-none">
+                      🗑
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -655,9 +752,17 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <div key={inv.id} className={`border rounded-2xl px-5 py-4 ${overThreshold ? 'border-rose-300 bg-rose-50/50' : 'border-slate-100 bg-white'}`}>
                 <div className="flex justify-between items-start">
                   <p className="font-bold text-slate-900 text-sm">{inv.materialName} <span className="text-xs text-slate-400 font-mono ml-1">{inv.materialCode}</span></p>
-                  <span className={`text-xs font-black px-2 py-1 rounded-lg ${overThreshold ? 'bg-rose-600 text-white' : markupPct < 0 ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-700'}`}>
-                    {markupPct >= 0 ? '+' : ''}{markupPct.toFixed(2)}% markup
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-black px-2 py-1 rounded-lg ${overThreshold ? 'bg-rose-600 text-white' : markupPct < 0 ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-700'}`}>
+                      {markupPct >= 0 ? '+' : ''}{markupPct.toFixed(2)}% markup
+                    </span>
+                    {isAdmin && (
+                      <button type="button" onClick={() => deleteMfgInvoice(inv)} title="Delete this matched pair"
+                        className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg p-1.5 text-sm leading-none">
+                        🗑
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3 text-xs">
                   <div className="bg-slate-50 rounded-xl px-3 py-2">
@@ -732,15 +837,14 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     const v = e.target.value;
                     // Manufacturer changed — the material list below is
                     // scoped to whichever manufacturer is selected, so
-                    // whatever material was picked no longer applies.
-                    setAddingNewMaterial(false);
-                    setMfgLengthInput('');
+                    // whatever material line(s) were picked no longer apply.
+                    setMfgLineItems([blankMfgLineItem()]);
                     if (v === NEW_OPTION) {
                       setAddingNewManufacturer(true);
-                      setMfgForm({ ...mfgForm, manufacturerName: '', materialName: '', materialCode: '' });
+                      setMfgForm({ ...mfgForm, manufacturerName: '' });
                     } else {
                       setAddingNewManufacturer(false);
-                      setMfgForm({ ...mfgForm, manufacturerName: v, materialName: '', materialCode: '' });
+                      setMfgForm({ ...mfgForm, manufacturerName: v });
                     }
                   }}
                   className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
@@ -780,95 +884,121 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
               </div>
-              <FormField label="Material Name">
-                <select
-                  required={!addingNewMaterial}
-                  value={addingNewMaterial ? NEW_OPTION : mfgForm.materialName}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === NEW_OPTION) {
-                      setAddingNewMaterial(true);
-                      setMfgForm({ ...mfgForm, materialName: '', materialCode: '' });
-                      setMfgLengthInput('');
-                    } else {
-                      setAddingNewMaterial(false);
-                      const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName === v);
-                      const code = match ? match.materialCode : '';
-                      const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === code.toUpperCase());
-                      // No formally recorded length for this code? Fall back
-                      // to parsing it straight out of the material name
-                      // (e.g. "...60x30x3x4250-AS ROLLED" -> 4250) rather
-                      // than showing "Not recorded" when it's plainly right
-                      // there in the name. submitMfgInvoice will persist
-                      // this as the recorded length going forward.
-                      const resolvedLength = lengthEntry ? lengthEntry.lengthMm : parsePieceLengthFromMaterialName(v);
-                      setMfgForm({ ...mfgForm, materialName: v, materialCode: code });
-                      setMfgLengthInput(resolvedLength !== null ? String(resolvedLength) : '');
-                    }
-                  }}
-                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
-                >
-                  <option value="">Select material</option>
-                  {mfgMaterialNameOptions.map(name => <option key={name} value={name}>{name}</option>)}
-                  <option value={NEW_OPTION}>+ Add New Material</option>
-                </select>
-              </FormField>
-              {addingNewMaterial ? (
-                <>
+              {mfgLineItems.map((item, idx) => (
+                <div key={item.key} className="border-2 border-slate-100 rounded-2xl p-4 space-y-3 relative">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Material {idx + 1}</p>
+                    {mfgLineItems.length > 1 && (
+                      <button type="button" onClick={() => removeMfgLineItem(idx)}
+                        className="text-[10px] font-black uppercase tracking-widest text-rose-400 hover:text-rose-600">
+                        ✕ Remove
+                      </button>
+                    )}
+                  </div>
                   <FormField label="Material Name">
-                    <input required autoFocus placeholder="e.g. ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" value={mfgForm.materialName}
-                      onChange={(e) => setMfgForm({ ...mfgForm, materialName: e.target.value })}
-                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                    <select
+                      required={!item.addingNewMaterial}
+                      value={item.addingNewMaterial ? NEW_OPTION : item.materialName}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === NEW_OPTION) {
+                          updateMfgLineItem(idx, { addingNewMaterial: true, materialName: '', materialCode: '', mfgLengthInput: '' });
+                        } else {
+                          const match = mfgMaterialsForSelectedManufacturer.find(m => m.materialName === v);
+                          const code = match ? match.materialCode : '';
+                          const lengthEntry = materialLengths.find(m => m.materialCode.toUpperCase() === code.toUpperCase());
+                          // No formally recorded length for this code? Fall back
+                          // to parsing it straight out of the material name
+                          // (e.g. "...60x30x3x4250-AS ROLLED" -> 4250) rather
+                          // than showing "Not recorded" when it's plainly right
+                          // there in the name. submitMfgInvoice will persist
+                          // this as the recorded length going forward.
+                          const resolvedLength = lengthEntry ? lengthEntry.lengthMm : parsePieceLengthFromMaterialName(v);
+                          updateMfgLineItem(idx, { addingNewMaterial: false, materialName: v, materialCode: code, mfgLengthInput: resolvedLength !== null ? String(resolvedLength) : '' });
+                        }
+                      }}
+                      className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+                    >
+                      <option value="">Select material</option>
+                      {mfgMaterialNameOptions.map(name => <option key={name} value={name}>{name}</option>)}
+                      <option value={NEW_OPTION}>+ Add New Material</option>
+                    </select>
                   </FormField>
-                  <FormField label="Material Code">
-                    <input required placeholder="Material code" value={mfgForm.materialCode}
-                      onChange={(e) => setMfgForm({ ...mfgForm, materialCode: e.target.value })}
-                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
-                  </FormField>
-                  <FormField label="Piece Length (mm)">
-                    <input type="number" placeholder="Piece length in mm (for the Pcs→Meter check)" value={mfgLengthInput}
-                      onChange={(e) => setMfgLengthInput(e.target.value)}
-                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
-                    <p className="text-[10px] text-slate-400 mt-1 px-1">
-                      {parsePieceLengthFromMaterialName(mfgForm.materialName) !== null
-                        ? 'Auto-detected from the material name — check it\'s right, then it\'s reused (locked) on every future invoice for this material.'
-                        : 'New material — enter once, then it\'s reused (locked) on every future invoice for this material.'}
-                    </p>
-                  </FormField>
-                  <button type="button" onClick={() => { setAddingNewMaterial(false); setMfgForm({ ...mfgForm, materialName: '', materialCode: '' }); setMfgLengthInput(''); }}
-                    className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 px-1 -mt-2">
-                    ‹ Back to list
-                  </button>
-                </>
-              ) : mfgForm.materialName && (
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField label="Material Code">
-                    <input disabled value={mfgForm.materialCode} placeholder="—"
-                      className="w-full border-2 border-slate-100 bg-slate-50 text-slate-500 rounded-xl px-3 py-2 text-sm cursor-not-allowed" />
-                  </FormField>
-                  <FormField label="Piece Length (mm)">
-                    <input disabled value={mfgLengthInput} placeholder="Not recorded"
-                      className="w-full border-2 border-slate-100 bg-slate-50 text-slate-500 rounded-xl px-3 py-2 text-sm cursor-not-allowed" />
+                  {item.addingNewMaterial ? (
+                    <>
+                      <FormField label="Material Name">
+                        <input required autoFocus placeholder="e.g. ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" value={item.materialName}
+                          onChange={(e) => {
+                            const name = e.target.value;
+                            const patch: Partial<MfgLineItem> = { materialName: name };
+                            if (!item.mfgLengthInput) {
+                              const parsed = parsePieceLengthFromMaterialName(name);
+                              if (parsed !== null) patch.mfgLengthInput = String(parsed);
+                            }
+                            updateMfgLineItem(idx, patch);
+                          }}
+                          className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                      </FormField>
+                      <FormField label="Material Code">
+                        <input required placeholder="Material code" value={item.materialCode}
+                          onChange={(e) => updateMfgLineItem(idx, { materialCode: e.target.value })}
+                          className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                      </FormField>
+                      <FormField label="Piece Length (mm)">
+                        <input type="number" placeholder="Piece length in mm (for the Pcs→Meter check)" value={item.mfgLengthInput}
+                          onChange={(e) => updateMfgLineItem(idx, { mfgLengthInput: e.target.value })}
+                          className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
+                        <p className="text-[10px] text-slate-400 mt-1 px-1">
+                          {parsePieceLengthFromMaterialName(item.materialName) !== null
+                            ? 'Auto-detected from the material name — check it\'s right, then it\'s reused (locked) on every future invoice for this material.'
+                            : 'New material — enter once, then it\'s reused (locked) on every future invoice for this material.'}
+                        </p>
+                      </FormField>
+                      <button type="button" onClick={() => updateMfgLineItem(idx, { addingNewMaterial: false, materialName: '', materialCode: '', mfgLengthInput: '' })}
+                        className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 px-1 -mt-2">
+                        ‹ Back to list
+                      </button>
+                    </>
+                  ) : item.materialName && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Material Code">
+                        <input disabled value={item.materialCode} placeholder="—"
+                          className="w-full border-2 border-slate-100 bg-slate-50 text-slate-500 rounded-xl px-3 py-2 text-sm cursor-not-allowed" />
+                      </FormField>
+                      <FormField label="Piece Length (mm)">
+                        <input disabled value={item.mfgLengthInput} placeholder="Not recorded"
+                          className="w-full border-2 border-slate-100 bg-slate-50 text-slate-500 rounded-xl px-3 py-2 text-sm cursor-not-allowed" />
+                      </FormField>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-3 gap-3">
+                    <FormField label="Qty (Pcs)">
+                      <input required type="number" placeholder="Qty (Pcs)" value={item.quantityPcs || ''}
+                        onChange={(e) => updateMfgLineItem(idx, { quantityPcs: parseFloat(e.target.value) || 0 })}
+                        className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                    </FormField>
+                    <FormField label="Rate / Pc">
+                      <input required type="number" step="0.01" placeholder="Rate/Pc" value={item.ratePerPc || ''}
+                        onChange={(e) => updateMfgLineItem(idx, { ratePerPc: parseFloat(e.target.value) || 0 })}
+                        className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                    </FormField>
+                    <FormField label="Item Value">
+                      <input required type="number" step="0.01" placeholder="Item Value" value={item.itemValue || ''}
+                        onChange={(e) => updateMfgLineItem(idx, { itemValue: parseFloat(e.target.value) || 0 })}
+                        className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                    </FormField>
+                  </div>
+                  <FormField label="Total Weight">
+                    <input required type="number" step="0.01" min="0.01" placeholder="Enter weight in Kgs" value={item.totalWeightKg || ''}
+                      onChange={(e) => updateMfgLineItem(idx, { totalWeightKg: parseFloat(e.target.value) || 0 })}
+                      className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                   </FormField>
                 </div>
-              )}
-              <div className="grid grid-cols-3 gap-3">
-                <FormField label="Qty (Pcs)">
-                  <input required type="number" placeholder="Qty (Pcs)" value={mfgForm.quantityPcs || ''}
-                    onChange={(e) => setMfgForm({ ...mfgForm, quantityPcs: parseFloat(e.target.value) || 0 })}
-                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                </FormField>
-                <FormField label="Rate / Pc">
-                  <input required type="number" step="0.01" placeholder="Rate/Pc" value={mfgForm.ratePerPc || ''}
-                    onChange={(e) => setMfgForm({ ...mfgForm, ratePerPc: parseFloat(e.target.value) || 0 })}
-                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                </FormField>
-                <FormField label="Item Value">
-                  <input required type="number" step="0.01" placeholder="Item Value" value={mfgForm.itemValue || ''}
-                    onChange={(e) => setMfgForm({ ...mfgForm, itemValue: parseFloat(e.target.value) || 0 })}
-                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                </FormField>
-              </div>
+              ))}
+              <button type="button" onClick={addMfgLineItem}
+                className="w-full py-2.5 border-2 border-dashed border-indigo-200 text-indigo-600 rounded-xl font-bold text-xs hover:border-indigo-400 hover:bg-indigo-50/40">
+                + Add Another Material
+              </button>
               {mfgDuplicateError && (
                 <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-200 rounded-xl px-3 py-2">{mfgDuplicateError}</p>
               )}
