@@ -96,6 +96,20 @@ const MainApp: React.FC = () => {
     } : a));
   };
 
+  // Dismisses/sets aside a notification with a required reason — for a
+  // stray or duplicate alert (e.g. one whose underlying entry never
+  // actually saved) where there's nothing real to verify. Distinct from
+  // Verify, which implies the underlying data was checked and is correct.
+  const flagAdminAlert = (id: string, remark: string) => {
+    setAdminAlerts(prev => prev.map(a => a.id === id ? {
+      ...a,
+      flagged: true,
+      flaggedAt: getLocalISOString(),
+      flaggedBy: appUser?.displayName || userName,
+      flagRemark: remark,
+    } : a));
+  };
+
   // Safety net for when a save fails outright (Firestore quota exhausted,
   // no network, etc.) — see services/offlineQueue.ts. Every
   // useFirestoreArray/useFirestoreDoc write that fails gets queued here
@@ -1544,7 +1558,7 @@ const MainApp: React.FC = () => {
               }} 
             />
           )}
-          {isAdmin && currentView === 'notifications' && <Notifications alerts={adminAlerts} onVerify={verifyAdminAlert} />}
+          {isAdmin && currentView === 'notifications' && <Notifications alerts={adminAlerts} onVerify={verifyAdminAlert} onFlag={flagAdminAlert} />}
           {isAdmin && currentView === 'user_master' && <UserMaster />}
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}

@@ -5,6 +5,7 @@ import { AdminAlert, AdminAlertType } from '../types';
 interface NotificationsProps {
   alerts: AdminAlert[];
   onVerify: (id: string) => void;
+  onFlag: (id: string, remark: string) => void;
 }
 
 const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: string }> = {
@@ -27,9 +28,13 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   teal: { badge: 'bg-teal-100 text-teal-700 border-teal-200', border: 'border-l-teal-500' },
 };
 
-const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
+const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify, onFlag }) => {
   const [filterType, setFilterType] = useState<'all' | AdminAlertType>('all');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'verified'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'verified' | 'flagged'>('all');
+  // Which alert's remark box is currently open, and what's typed into it —
+  // one at a time, keyed by alert id so multiple cards never fight over it.
+  const [flaggingId, setFlaggingId] = useState<string | null>(null);
+  const [flagRemarkInput, setFlagRemarkInput] = useState('');
 
   const sorted = useMemo(
     () => [...alerts].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
@@ -39,13 +44,25 @@ const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
   const filtered = useMemo(() => {
     return sorted.filter(a => {
       if (filterType !== 'all' && a.type !== filterType) return false;
-      if (filterStatus === 'pending' && a.verified) return false;
+      if (filterStatus === 'pending' && (a.verified || a.flagged)) return false;
       if (filterStatus === 'verified' && !a.verified) return false;
+      if (filterStatus === 'flagged' && !a.flagged) return false;
       return true;
     });
   }, [sorted, filterType, filterStatus]);
 
-  const pendingCount = alerts.filter(a => !a.verified).length;
+  // Flagged counts as handled, same as Verified — it just means Admin
+  // decided this needs no further action, not that it was confirmed correct.
+  const pendingCount = alerts.filter(a => !a.verified && !a.flagged).length;
+
+  const startFlagging = (id: string) => { setFlaggingId(id); setFlagRemarkInput(''); };
+  const cancelFlagging = () => { setFlaggingId(null); setFlagRemarkInput(''); };
+  const submitFlag = (id: string) => {
+    if (!flagRemarkInput.trim()) return;
+    onFlag(id, flagRemarkInput.trim());
+    setFlaggingId(null);
+    setFlagRemarkInput('');
+  };
 
   return (
     <div className="space-y-8 text-left">
@@ -88,6 +105,7 @@ const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
               <option value="all">All</option>
               <option value="pending">Pending Review</option>
               <option value="verified">Verified</option>
+              <option value="flagged">Flagged</option>
             </select>
           </div>
         </div>
@@ -98,7 +116,7 @@ const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
           const meta = TYPE_META[a.type];
           const c = colorClasses[meta.color];
           return (
-            <div key={a.id} className={`bg-white rounded-[1.75rem] shadow-sm border border-l-4 ${c.border} border-slate-100 p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 ${a.verified ? 'opacity-70' : ''}`}>
+            <div key={a.id} className={`bg-white rounded-[1.75rem] shadow-sm border border-l-4 ${c.border} border-slate-100 p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 ${(a.verified || a.flagged) ? 'opacity-70' : ''}`}>
               <div className="flex-1 space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border ${c.badge}`}>
@@ -107,6 +125,11 @@ const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
                   {a.verified && (
                     <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border bg-emerald-100 text-emerald-700 border-emerald-200">
                       ✓ Verified
+                    </span>
+                  )}
+                  {a.flagged && (
+                    <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border bg-orange-100 text-orange-700 border-orange-200">
+                      🚩 Flagged
                     </span>
                   )}
                   <span className="text-[10px] font-bold text-slate-400">
@@ -182,15 +205,61 @@ const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify }) => {
                     Verified by {a.verifiedBy} on {a.verifiedAt ? new Date(a.verifiedAt).toLocaleString('en-GB') : ''}
                   </p>
                 )}
+
+                {a.flagged && (
+                  <div className="bg-orange-50 border border-orange-100 rounded-xl px-4 py-2 mt-1">
+                    <p className="text-[9px] font-black text-orange-400 uppercase tracking-widest mb-0.5">Flag Remark</p>
+                    <p className="text-xs font-bold text-orange-800 italic">"{a.flagRemark}"</p>
+                    <p className="text-[10px] font-bold text-orange-500 mt-1">
+                      Flagged by {a.flaggedBy} on {a.flaggedAt ? new Date(a.flaggedAt).toLocaleString('en-GB') : ''}
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {!a.verified && (
-                <button
-                  onClick={() => onVerify(a.id)}
-                  className="shrink-0 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black uppercase text-[11px] tracking-widest shadow-md active:scale-95 transition-all"
-                >
-                  ✓ Verify
-                </button>
+              {!a.verified && !a.flagged && (
+                flaggingId === a.id ? (
+                  <div className="shrink-0 w-full md:w-72 space-y-2">
+                    <textarea
+                      autoFocus
+                      required
+                      placeholder="Why are you setting this aside? e.g. duplicate of an entry already saved"
+                      className="w-full px-4 py-3 bg-orange-50/40 border-2 border-orange-200 rounded-xl outline-none text-xs font-bold text-slate-800 min-h-[70px] shadow-inner"
+                      value={flagRemarkInput}
+                      onChange={(e) => setFlagRemarkInput(e.target.value)}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={cancelFlagging}
+                        className="flex-1 px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => submitFlag(a.id)}
+                        disabled={!flagRemarkInput.trim()}
+                        className="flex-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md active:scale-95 transition-all"
+                      >
+                        🚩 Save Flag
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="shrink-0 flex gap-2">
+                    <button
+                      onClick={() => startFlagging(a.id)}
+                      className="px-6 py-3 border-2 border-orange-200 text-orange-600 hover:bg-orange-50 rounded-xl font-black uppercase text-[11px] tracking-widest active:scale-95 transition-all"
+                    >
+                      🚩 Flag
+                    </button>
+                    <button
+                      onClick={() => onVerify(a.id)}
+                      className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black uppercase text-[11px] tracking-widest shadow-md active:scale-95 transition-all"
+                    >
+                      ✓ Verify
+                    </button>
+                  </div>
+                )
               )}
             </div>
           );

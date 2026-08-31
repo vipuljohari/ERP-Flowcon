@@ -245,6 +245,10 @@ export interface AdminAlert {
   verified?: boolean; // Admin has reviewed and confirmed this entry is correct
   verifiedAt?: string;
   verifiedBy?: string;
+  flagged?: boolean; // Admin has dismissed/set this alert aside (e.g. a known duplicate, or nothing to act on) — a resolution distinct from Verify, which implies the underlying data was checked and is correct
+  flaggedAt?: string;
+  flaggedBy?: string;
+  flagRemark?: string; // why it was flagged, e.g. "duplicate of invoice already saved"
 }
 
 export interface InventoryStats {
