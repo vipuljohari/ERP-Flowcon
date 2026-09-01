@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert } from '../types';
+import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 
 const NEW_OPTION = '__new__';
@@ -9,6 +9,22 @@ interface RMCrossBillCheckProps {
   crossInvoices: RMCustomerCrossInvoice[];
   materialLengths: RMMaterialLength[];
   customers: Customer[];
+  // Read-only here — used only to check whether anything has actually been
+  // logged into RM stock against a given invoice number (see the Weight &
+  // Stock Reconciliation section). Deliberately matched by invoice number
+  // alone, NOT by material/RM identity — many RM deliveries arrive for a
+  // material that doesn't have an RM Master / Item Master entry yet, so
+  // there's often no reliable link to a specific RawMaterial to check
+  // against. Invoice number is the one thing guaranteed to exist on both
+  // sides.
+  rmInwardLogs: RMInwardLog[];
+  // Mirrored hourly from Tally's own Purchase vouchers by the Tally
+  // Connector script on the 24x7 server (see import-tally.js) — never
+  // written by the app. Lets this screen automatically show whether a
+  // Manufacturer Invoice typed in by hand from the paper invoice/photo
+  // has actually been booked in Tally yet, and for what amount, instead
+  // of relying on Admin to remember and tick a checkbox.
+  tallyPurchaseVouchers: RMPurchaseVoucher[];
   setManufacturerInvoices: (update: RMManufacturerInvoice[] | ((prev: RMManufacturerInvoice[]) => RMManufacturerInvoice[])) => void;
   setCrossInvoices: (update: RMCustomerCrossInvoice[] | ((prev: RMCustomerCrossInvoice[]) => RMCustomerCrossInvoice[])) => void;
   setMaterialLengths: (update: RMMaterialLength[] | ((prev: RMMaterialLength[]) => RMMaterialLength[])) => void;
@@ -108,8 +124,43 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ lab
   </div>
 );
 
+// Loose name matching for the Tally auto-match below — same tiered idea as
+// the Tally Connector's own findMatchingCustomer (exact, then substring
+// either direction), since "Tube Investments of India Ltd" typed by Store
+// and "TUBE INVESTMENTS OF INDIA LTD" as Tally's ledger name are the same
+// supplier but never byte-identical.
+const namesLooselyMatch = (a: string, b: string): boolean => {
+  const A = (a || '').toUpperCase().trim();
+  const B = (b || '').toUpperCase().trim();
+  if (!A || !B) return false;
+  if (A === B || A.includes(B) || B.includes(A)) return true;
+  const cleanA = A.replace(/[^A-Z0-9]/g, '');
+  const cleanB = B.replace(/[^A-Z0-9]/g, '');
+  return cleanA.length >= 3 && cleanB.length >= 3 && (cleanA.includes(cleanB) || cleanB.includes(cleanA));
+};
+
+// Invoice numbers rarely come out byte-identical between what Store typed
+// from the paper invoice and what Tally's REFERENCE field holds (a prefix
+// like "TI/" added or dropped, a leading zero, etc.) — compares only the
+// letters/digits, and accepts one being a trailing match of the other, with
+// a minimum overlap length so short numbers can't false-match each other.
+const invoiceNumbersLooselyMatch = (a: string, b: string): boolean => {
+  const cleanA = (a || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const cleanB = (b || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!cleanA || !cleanB) return false;
+  if (cleanA === cleanB) return true;
+  const minLen = Math.min(cleanA.length, cleanB.length);
+  return minLen >= 4 && (cleanA.endsWith(cleanB) || cleanB.endsWith(cleanA));
+};
+
+// A Tally-vs-app booked-value gap smaller than this is just rounding
+// (per-line rate x qty rounding across several materials on one invoice),
+// not something worth flagging as a mismatch to check before paying.
+const VALUE_MISMATCH_TOLERANCE_RS = 5;
+
 const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
-  manufacturerInvoices, crossInvoices, materialLengths, customers,
+  manufacturerInvoices, crossInvoices, materialLengths, customers, rmInwardLogs,
+  tallyPurchaseVouchers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
   onCreateAlert,
 }) => {
@@ -240,16 +291,122 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const filteredMatched = useMemo(() => matched.filter(matchesFilters), [matched, filterManufacturer, filterMonth, filterMaterial]);
   const filtersActive = Boolean(filterManufacturer || filterMonth || filterMaterial);
 
+  // --- Weight & Stock Reconciliation ---
+  // Groups the (possibly many) RMManufacturerInvoice line items that share
+  // one invoice no. + manufacturer back into a single "shipment" — one
+  // vehicle, one Dharam Kanta weighment — and checks it against whatever's
+  // been logged into RM stock under that same invoice number. Matched by
+  // invoice number ONLY, deliberately not by material/RM identity: many RM
+  // deliveries arrive for a material that has no RM Master / Item Master
+  // entry yet, so there's often nothing reliable to link to on that side.
+  const shipments = useMemo(() => {
+    const groups = new Map<string, RMManufacturerInvoice[]>();
+    manufacturerInvoices.forEach(inv => {
+      const key = `${inv.invoiceNo.trim().toLowerCase()}::${inv.manufacturerName.trim().toLowerCase()}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(inv);
+    });
+    return Array.from(groups.entries()).map(([key, items]) => {
+      const first = items[0];
+      const invoiceNoNorm = first.invoiceNo.trim().toLowerCase();
+      const matchingInwardLogs = rmInwardLogs.filter(l => (l.invoiceNumber || '').trim().toLowerCase() === invoiceNoNorm);
+      const totalWeightKg = first.totalWeightKg || 0;
+      const actualWeightKg = first.actualWeightKg || 0;
+      const hasWeights = totalWeightKg > 0 && actualWeightKg > 0;
+
+      // Automatic Tally match — see the tallyPurchaseVouchers prop comment.
+      // Matched purely by supplier name + invoice number (loosely, since
+      // formatting rarely lines up byte-for-byte between what Store typed
+      // and Tally's own ledger/Reference text), never by material — same
+      // "invoice number is the one thing guaranteed to exist on both
+      // sides" reasoning as the RM stock check above.
+      const appTotalValue = Math.round(items.reduce((sum, li) => sum + (li.itemValue || 0), 0) * 100) / 100;
+      const tallyMatch = tallyPurchaseVouchers.find(pv =>
+        !pv.isDeleted &&
+        invoiceNumbersLooselyMatch(pv.invoiceNumber, first.invoiceNo) &&
+        namesLooselyMatch(pv.supplierName, first.manufacturerName)
+      );
+      const tallyValueMismatch = !!tallyMatch && Math.abs(tallyMatch.totalValue - appTotalValue) > VALUE_MISMATCH_TOLERANCE_RS;
+
+      return {
+        key,
+        invoiceNo: first.invoiceNo,
+        manufacturerName: first.manufacturerName,
+        date: first.date,
+        lineItems: items,
+        totalWeightKg,
+        actualWeightKg,
+        hasWeights,
+        variance: hasWeights ? actualWeightKg - totalWeightKg : 0,
+        weightFlagged: !!first.weightFlagged,
+        debitNoteAmount: first.debitNoteAmount,
+        debitNoteRemark: first.debitNoteRemark,
+        tallyBooked: !!first.tallyBooked,
+        tallyVoucherNo: first.tallyVoucherNo || '',
+        matchingInwardCount: matchingInwardLogs.length,
+        appTotalValue,
+        tallyMatch,
+        tallyValueMismatch,
+        // Effective booked status feeding the "booked with an open flag"
+        // check below — an automatic Tally match counts the same as the
+        // manual checkbox, since either way the supplier has been paid.
+        effectiveTallyBooked: !!first.tallyBooked || !!tallyMatch,
+      };
+    }).sort((a, b) => b.date.localeCompare(a.date));
+  }, [manufacturerInvoices, rmInwardLogs, tallyPurchaseVouchers]);
+
+  // Every RMManufacturerInvoice line sharing an invoice no. + manufacturer
+  // represents the same physical shipment, so a Tally-booking or debit-note
+  // update applies to all of them at once — keeps them from ever showing
+  // different values for what is really one shipment-level fact.
+  const updateShipmentInvoices = (invoiceNo: string, manufacturerName: string, patch: Partial<RMManufacturerInvoice>) => {
+    const invoiceNoNorm = invoiceNo.trim().toLowerCase();
+    const manufacturerNorm = manufacturerName.trim().toLowerCase();
+    setManufacturerInvoices(prev => prev.map(inv =>
+      inv.invoiceNo.trim().toLowerCase() === invoiceNoNorm && inv.manufacturerName.trim().toLowerCase() === manufacturerNorm
+        ? { ...inv, ...patch }
+        : inv
+    ));
+  };
+
+  const [debitNoteFormKey, setDebitNoteFormKey] = useState<string | null>(null);
+  const [debitNoteAmountInput, setDebitNoteAmountInput] = useState('');
+  const [debitNoteRemarkInput, setDebitNoteRemarkInput] = useState('');
+
+  const openDebitNoteForm = (s: { key: string }) => {
+    setDebitNoteFormKey(s.key);
+    setDebitNoteAmountInput('');
+    setDebitNoteRemarkInput('');
+  };
+  const cancelDebitNoteForm = () => setDebitNoteFormKey(null);
+  const saveDebitNote = (s: { invoiceNo: string; manufacturerName: string }) => {
+    updateShipmentInvoices(s.invoiceNo, s.manufacturerName, {
+      debitNoteAmount: parseFloat(debitNoteAmountInput) || 0,
+      debitNoteRemark: debitNoteRemarkInput.trim(),
+      debitNoteAt: new Date().toISOString(),
+      debitNoteBy: 'Admin',
+    });
+    setDebitNoteFormKey(null);
+  };
+
   // --- Manufacturer Invoice form ---
   // One real invoice often clubs together several different materials
   // (e.g. RMSS00000118 and RMSS00000119 on the same invoice no.). The
-  // header fields below (manufacturer, customer, invoice no, date) apply
-  // to the whole invoice; each material gets its own line item via
-  // mfgLineItems, added/removed with the "+ Add Another Material" /
-  // remove controls in the modal — all saved together as separate
-  // RMManufacturerInvoice records sharing the same invoice no. and date.
+  // header fields below (manufacturer, customer, invoice no, date, total
+  // weight, actual weight) apply to the WHOLE invoice — one vehicle, one
+  // Dharam Kanta weighment, regardless of how many materials are on it —
+  // while each material gets its own line item via mfgLineItems, added/
+  // removed with the "+ Add Another Material" / remove controls in the
+  // modal. All saved together as separate RMManufacturerInvoice records
+  // sharing the same invoice no., date, and both weight fields.
+  //
+  // Any invoice whose Dharam Kanta actual weight differs from the billed
+  // Total Weight by this much or more gets auto-flagged for Admin — see
+  // submitMfgInvoice.
+  const WEIGHT_VARIANCE_FLAG_KG = 50;
   const blankMfgForm = () => ({
     manufacturerName: '', customerName: customers[0]?.name || '', invoiceNo: '', date: '',
+    totalWeightKg: 0, actualWeightKg: 0,
   });
   interface MfgLineItem {
     key: string;
@@ -258,12 +415,11 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     quantityPcs: number;
     ratePerPc: number;
     itemValue: number;
-    totalWeightKg: number;
     addingNewMaterial: boolean;
     mfgLengthInput: string;
   }
   const blankMfgLineItem = (): MfgLineItem => ({
-    key: genId(), materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0, totalWeightKg: 0,
+    key: genId(), materialName: '', materialCode: '', quantityPcs: 0, ratePerPc: 0, itemValue: 0,
     addingNewMaterial: false, mfgLengthInput: '',
   });
   const [mfgForm, setMfgForm] = useState(blankMfgForm);
@@ -370,7 +526,6 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         quantityPcs: extracted.quantityPcs,
         ratePerPc: extracted.ratePerPc,
         itemValue: extracted.itemValue,
-        totalWeightKg: 0,
         addingNewMaterial: !matchedMaterial && !!(extractedMaterial || extractedCode),
         mfgLengthInput: resolvedLength !== null && resolvedLength !== undefined ? String(resolvedLength) : '',
       }]);
@@ -450,6 +605,15 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     }
     setMfgDuplicateError(null);
 
+    // Weight variance is a whole-invoice thing (one vehicle, one Dharam
+    // Kanta weighment) — computed once here and stamped onto every line
+    // item's record, same as the invoice no./date/weights themselves.
+    const totalWeightKg = mfgForm.totalWeightKg || 0;
+    const actualWeightKg = mfgForm.actualWeightKg || 0;
+    const bothWeightsEntered = totalWeightKg > 0 && actualWeightKg > 0;
+    const weightVarianceKg = bothWeightsEntered ? actualWeightKg - totalWeightKg : 0;
+    const weightFlagged = bothWeightsEntered && Math.abs(weightVarianceKg) >= WEIGHT_VARIANCE_FLAG_KG;
+
     const newInvoices = mfgLineItems.map(item => ({
       id: genId(),
       manufacturerName: mfgForm.manufacturerName,
@@ -461,7 +625,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       quantityPcs: item.quantityPcs,
       ratePerPc: item.ratePerPc,
       itemValue: item.itemValue,
-      totalWeightKg: item.totalWeightKg,
+      totalWeightKg,
+      actualWeightKg,
+      weightFlagged,
       createdAt: new Date().toISOString(),
     }));
     setManufacturerInvoices(prev => [...prev, ...newInvoices]);
@@ -489,6 +655,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     const aiSuffix = mfgAiExtracted
       ? (mfgLineItems.length > 1 ? ' — first line auto-filled from photo, please verify against the invoice' : ' — auto-filled from photo, please verify against the invoice')
       : ' — entered manually';
+    const materialsSummary = mfgLineItems.length === 1
+      ? `${mfgLineItems[0].materialName || 'material'} (${mfgLineItems[0].materialCode || 'no code'})`
+      : `${mfgLineItems.length} materials: ${mfgLineItems.map(i => `${i.materialCode || 'no code'} (${i.quantityPcs} Pcs)`).join(', ')}`;
     onCreateAlert?.({
       type: 'rm_cross_bill',
       invoiceNumber: mfgForm.invoiceNo,
@@ -496,10 +665,25 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       supplier: mfgForm.manufacturerName,
       quantity: totalQty,
       itemCount: mfgLineItems.length,
-      remarks: mfgLineItems.length === 1
-        ? `Manufacturer Invoice — ${mfgLineItems[0].materialName || 'material'} (${mfgLineItems[0].materialCode || 'no code'}) — Total Weight ${mfgLineItems[0].totalWeightKg || 0} Kg${aiSuffix}`
-        : `Manufacturer Invoice — ${mfgLineItems.length} materials: ${mfgLineItems.map(i => `${i.materialCode || 'no code'} (${i.quantityPcs} Pcs, ${i.totalWeightKg || 0} Kg)`).join(', ')}${aiSuffix}`,
+      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg${aiSuffix}`,
     });
+
+    // Separate, high-visibility alert when the Dharam Kanta actual weight
+    // is off from the invoice's billed weight by WEIGHT_VARIANCE_FLAG_KG
+    // or more — this is the "don't overpay the RM supplier" check, kept as
+    // its own alert type so it's never confused with the routine "invoice
+    // entered" notification above.
+    if (weightFlagged) {
+      onCreateAlert?.({
+        type: 'rm_weight_mismatch',
+        invoiceNumber: mfgForm.invoiceNo,
+        customer: mfgForm.customerName,
+        supplier: mfgForm.manufacturerName,
+        quantity: totalQty,
+        itemCount: mfgLineItems.length,
+        remarks: `${materialsSummary} — Invoice billed ${totalWeightKg} Kg, Dharam Kanta actual ${actualWeightKg} Kg — ${weightVarianceKg > 0 ? 'received MORE than billed by' : 'received LESS than billed by'} ${Math.abs(weightVarianceKg).toFixed(1)} Kg. Review for a supplier debit note.`,
+      });
+    }
 
     setMfgForm(blankMfgForm());
     setMfgLineItems([blankMfgLineItem()]);
@@ -787,6 +971,110 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         </div>
       </div>
 
+      {/* Weight & Stock Reconciliation */}
+      <div className="mt-10">
+        <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest mb-1">⚖️ Weight & Stock Reconciliation ({shipments.length})</h3>
+        <p className="text-xs text-slate-400 mb-3">One row per invoice — the Dharam Kanta weight against what was billed, whether anything's been logged into RM stock against this invoice number yet, and whether Tally has actually booked it (checked automatically every hour against Tally's own Purchase data, for the same amount). This is the check that stops you paying a supplier for more than what actually arrived.</p>
+        {shipments.length === 0 && (
+          <div className="bg-slate-50 text-slate-400 text-sm font-bold rounded-2xl px-6 py-6 text-center">
+            No Manufacturer Invoices on file yet.
+          </div>
+        )}
+        <div className="space-y-2">
+          {shipments.map(s => {
+            const noStockYet = s.matchingInwardCount === 0;
+            const bookedWithOpenIssue = s.effectiveTallyBooked && ((s.weightFlagged && !s.debitNoteAmount) || noStockYet);
+            return (
+              <div key={s.key} className={`border rounded-2xl px-5 py-4 ${s.weightFlagged ? 'border-orange-300 bg-orange-50/40' : 'border-slate-100 bg-white'}`}>
+                <div className="flex justify-between items-start flex-wrap gap-2">
+                  <div>
+                    <p className="font-bold text-slate-900 text-sm">{s.manufacturerName}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Invoice {s.invoiceNo} • {new Date(s.date).toLocaleDateString('en-GB')} • {s.lineItems.length} material{s.lineItems.length > 1 ? 's' : ''}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {s.hasWeights ? (
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${s.weightFlagged ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                        {s.weightFlagged ? `⚖️ ${s.variance > 0 ? '+' : ''}${s.variance.toFixed(1)} Kg` : 'Weight OK'}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border bg-slate-50 text-slate-400 border-slate-200">No weights recorded</span>
+                    )}
+                    <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${noStockYet ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                      {noStockYet ? 'Not yet in stock' : `${s.matchingInwardCount} stock entr${s.matchingInwardCount === 1 ? 'y' : 'ies'} logged`}
+                    </span>
+                  </div>
+                </div>
+                {s.hasWeights && (
+                  <p className="text-xs text-slate-600 mt-2">Billed {s.totalWeightKg} Kg • Dharam Kanta {s.actualWeightKg} Kg</p>
+                )}
+                {s.debitNoteAmount ? (
+                  <p className="text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5 mt-2 inline-block">
+                    💸 Debit note recorded: ₹{s.debitNoteAmount.toLocaleString('en-IN')}{s.debitNoteRemark ? ` — ${s.debitNoteRemark}` : ''}
+                  </p>
+                ) : debitNoteFormKey === s.key ? (
+                  <div className="mt-2 border-2 border-orange-200 bg-orange-50/40 rounded-xl p-3 space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="number" step="0.01" placeholder="Debit amount (₹)" value={debitNoteAmountInput}
+                        onChange={(e) => setDebitNoteAmountInput(e.target.value)}
+                        className="border-2 border-orange-200 rounded-lg px-2 py-1.5 text-xs" />
+                      <input type="text" placeholder="Remark (optional)" value={debitNoteRemarkInput}
+                        onChange={(e) => setDebitNoteRemarkInput(e.target.value)}
+                        className="border-2 border-orange-200 rounded-lg px-2 py-1.5 text-xs" />
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={cancelDebitNoteForm} className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 px-2">Cancel</button>
+                      <button type="button" onClick={() => saveDebitNote(s)} className="text-[10px] font-black uppercase tracking-widest text-white bg-orange-600 hover:bg-orange-700 rounded-lg px-3 py-1.5">Save Debit Note</button>
+                    </div>
+                  </div>
+                ) : s.weightFlagged && isAdmin && (
+                  <button type="button" onClick={() => openDebitNoteForm(s)}
+                    className="text-[10px] font-black uppercase tracking-widest text-orange-600 hover:text-orange-800 mt-2">
+                    + Record Debit Note
+                  </button>
+                )}
+                <div className="mt-3 pt-3 border-t border-slate-100">
+                  {s.tallyMatch ? (
+                    // Auto-detected — synced hourly from Tally's own Purchase
+                    // vouchers by the Tally Connector script. This is the
+                    // "does what I entered match what got booked" check.
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${s.tallyValueMismatch ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                        {s.tallyValueMismatch ? '⚠ Booked in Tally — amount differs' : '✅ Confirmed in Tally'}
+                      </span>
+                      <span className="text-xs text-slate-600">
+                        Tally: ₹{s.tallyMatch.totalValue.toLocaleString('en-IN')} (Vch #{s.tallyMatch.tallyVoucherNumber || s.tallyMatch.invoiceNumber})
+                        {s.tallyValueMismatch && <> · You entered: ₹{s.appTotalValue.toLocaleString('en-IN')}</>}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border bg-slate-50 text-slate-400 border-slate-200">Not yet seen in Tally</span>
+                      {isAdmin ? (
+                        <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600">
+                          <input type="checkbox" checked={s.tallyBooked}
+                            onChange={(e) => updateShipmentInvoices(s.invoiceNo, s.manufacturerName, { tallyBooked: e.target.checked, tallyBookedAt: e.target.checked ? new Date().toISOString() : undefined })} />
+                          Mark booked manually
+                        </label>
+                      ) : s.tallyBooked && (
+                        <span className="text-xs font-bold text-slate-500">✓ Marked booked manually</span>
+                      )}
+                      {s.tallyBooked && isAdmin && (
+                        <input type="text" placeholder="Voucher No." value={s.tallyVoucherNo}
+                          onChange={(e) => updateShipmentInvoices(s.invoiceNo, s.manufacturerName, { tallyVoucherNo: e.target.value })}
+                          className="border border-slate-200 rounded-lg px-2 py-1 text-xs w-32" />
+                      )}
+                    </div>
+                  )}
+                  {bookedWithOpenIssue && (
+                    <p className="text-[10px] font-black uppercase tracking-widest text-rose-600 mt-2">⚠ Booked with an open flag — check before paying</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Manufacturer Invoice modal */}
       {showMfgForm && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
@@ -884,6 +1172,32 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
               </div>
+              {/* One vehicle, one Dharam Kanta weighment — these two cover
+                  the whole invoice, not any one material line below. */}
+              <div className="grid grid-cols-2 gap-3">
+                <FormField label="Total Weight (Invoice)">
+                  <input required type="number" step="0.01" min="0.01" placeholder="Enter weight in Kgs" value={mfgForm.totalWeightKg || ''}
+                    onChange={(e) => setMfgForm({ ...mfgForm, totalWeightKg: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <FormField label="Actual Weight (Dharam Kanta)">
+                  <input required type="number" step="0.01" min="0.01" placeholder="Enter weighbridge weight in Kgs" value={mfgForm.actualWeightKg || ''}
+                    onChange={(e) => setMfgForm({ ...mfgForm, actualWeightKg: parseFloat(e.target.value) || 0 })}
+                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+              </div>
+              {mfgForm.totalWeightKg > 0 && mfgForm.actualWeightKg > 0 && (() => {
+                const variance = mfgForm.actualWeightKg - mfgForm.totalWeightKg;
+                const flagged = Math.abs(variance) >= WEIGHT_VARIANCE_FLAG_KG;
+                return (
+                  <p className={`text-[11px] font-bold rounded-xl px-3 py-2 border-2 ${flagged ? 'text-orange-700 bg-orange-50 border-orange-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200'}`}>
+                    {flagged ? '⚖️ ' : '✓ '}
+                    {variance === 0
+                      ? 'Weights match exactly.'
+                      : `${variance > 0 ? 'Received MORE than billed by' : 'Received LESS than billed by'} ${Math.abs(variance).toFixed(1)} Kg${flagged ? ` — this is ${WEIGHT_VARIANCE_FLAG_KG} Kg or more, so it will be flagged to Admin for review on Save.` : '.'}`}
+                  </p>
+                );
+              })()}
               {mfgLineItems.map((item, idx) => (
                 <div key={item.key} className="border-2 border-slate-100 rounded-2xl p-4 space-y-3 relative">
                   <div className="flex items-center justify-between">
@@ -988,11 +1302,6 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                         className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                     </FormField>
                   </div>
-                  <FormField label="Total Weight">
-                    <input required type="number" step="0.01" min="0.01" placeholder="Enter weight in Kgs" value={item.totalWeightKg || ''}
-                      onChange={(e) => updateMfgLineItem(idx, { totalWeightKg: parseFloat(e.target.value) || 0 })}
-                      className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                  </FormField>
                 </div>
               ))}
               <button type="button" onClick={addMfgLineItem}

@@ -16,6 +16,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   tally_import: { label: 'Tally Excel/XML Import', icon: '📊', color: 'emerald' },
   schedule_bulk_import: { label: 'Bulk Customer Schedule Import', icon: '📋', color: 'violet' },
   rm_cross_bill: { label: 'RM Cross-Bill Invoice Entry', icon: '🧾', color: 'sky' },
+  rm_weight_mismatch: { label: 'RM Weight Mismatch (vs Dharam Kanta)', icon: '⚖️', color: 'orange' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {
@@ -26,6 +27,7 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   violet: { badge: 'bg-violet-100 text-violet-700 border-violet-200', border: 'border-l-violet-500' },
   sky: { badge: 'bg-sky-100 text-sky-700 border-sky-200', border: 'border-l-sky-500' },
   teal: { badge: 'bg-teal-100 text-teal-700 border-teal-200', border: 'border-l-teal-500' },
+  orange: { badge: 'bg-orange-100 text-orange-700 border-orange-200', border: 'border-l-orange-500' },
 };
 
 const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify, onFlag }) => {

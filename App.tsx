@@ -27,7 +27,7 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, AdminAlert, canAccessView } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, canAccessView } from './types';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
@@ -150,6 +150,9 @@ const MainApp: React.FC = () => {
   const [rmManufacturerInvoices, setRmManufacturerInvoices] = useFirestoreArray<RMManufacturerInvoice>('rmManufacturerInvoices');
   const [rmCrossInvoices, setRmCrossInvoices] = useFirestoreArray<RMCustomerCrossInvoice>('rmCustomerCrossInvoices');
   const [rmMaterialLengths, setRmMaterialLengths] = useFirestoreArray<RMMaterialLength>('rmMaterialLengths', [], (m) => m.materialCode);
+  // Written only by the Tally Connector script on the 24x7 server (Admin
+  // SDK, hourly) — never by the app, so the setter is never used here.
+  const [tallyPurchaseVouchers] = useFirestoreArray<RMPurchaseVoucher>('rmPurchaseVouchers');
   // Admin-only Notifications feed — persisted so an alert raised from any
   // login (Store, PPC, Accounts) is visible to Admin on any other
   // device/session. Never written to by the fully-automatic Tally sync;
@@ -1578,6 +1581,8 @@ const MainApp: React.FC = () => {
               crossInvoices={rmCrossInvoices}
               materialLengths={rmMaterialLengths}
               customers={customersWithItems}
+              rmInwardLogs={rmInwardLogs}
+              tallyPurchaseVouchers={tallyPurchaseVouchers}
               setManufacturerInvoices={setRmManufacturerInvoices}
               setCrossInvoices={setRmCrossInvoices}
               setMaterialLengths={setRmMaterialLengths}

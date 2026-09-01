@@ -113,9 +113,58 @@ export interface RMManufacturerInvoice {
   quantityPcs: number;
   ratePerPc: number;
   itemValue: number;
-  totalWeightKg?: number; // Kg — mandatory on the Add Manufacturer Invoice form going forward; optional here only so invoices saved before this field existed still type-check
+  // The next 5 fields describe the WHOLE physical shipment (one vehicle,
+  // one Dharam Kanta weighment), not this one material line — every
+  // RMManufacturerInvoice row saved together under the same invoice no.
+  // carries the SAME values here, same as manufacturerName/invoiceNo/date
+  // already do. totalWeightKg — mandatory on the Add Manufacturer Invoice
+  // form going forward; optional here only so invoices saved before this
+  // field existed still type-check.
+  totalWeightKg?: number; // Kg — the invoice's own billed/printed weight
+  actualWeightKg?: number; // Kg — the Dharam Kanta (weighbridge) actual net weight for this vehicle, entered once received
+  // Set automatically when |actualWeightKg - totalWeightKg| >= the flag
+  // threshold (see WEIGHT_VARIANCE_FLAG_KG in RMCrossBillCheck.tsx) at the
+  // moment actualWeightKg is saved. A manually-recorded debit note (below)
+  // can exist independently of this — e.g. if Admin decides not to debit
+  // a small flagged variance, or debits one that didn't auto-flag.
+  weightFlagged?: boolean;
+  debitNoteAmount?: number; // ₹ agreed with the supplier for a short/over-weight delivery
+  debitNoteRemark?: string;
+  debitNoteAt?: string;
+  debitNoteBy?: string;
+  // Simple accounts checklist — whether this invoice has been entered in
+  // Tally yet, so Admin can see at a glance what's still pending, and spot
+  // anything booked while a weight flag is still unresolved.
+  tallyBooked?: boolean;
+  tallyVoucherNo?: string;
+  tallyBookedAt?: string;
   matchedCrossInvoiceId?: string; // set once a corresponding customer invoice is entered
   createdAt: string;
+}
+
+// Mirrored automatically every hour from Tally's own Purchase vouchers by
+// the Tally Connector script running on the 24x7 server (import-tally.js)
+// — never written by the app itself. Lets RM Cross-Bill Check show, for
+// each Manufacturer Invoice Store typed in from the paper invoice/photo,
+// whether it has actually been booked in Tally yet and for how much —
+// without Admin having to check and tick a box by hand.
+export interface RMPurchaseVoucherItem {
+  stockItemName: string; // Tally's own item/description text for this line
+  quantity: number;
+  rate: number;
+  value: number; // quantity * rate, rounded to paise
+}
+
+export interface RMPurchaseVoucher {
+  id: string;
+  supplierName: string; // Tally's party ledger name for this voucher
+  invoiceNumber: string; // the supplier's own invoice no. (Tally's REFERENCE / "Supplier Invoice No." field) — falls back to Tally's internal voucher number if that was left blank
+  tallyVoucherNumber?: string; // Tally's own internal voucher number, kept for display
+  date: string; // ISO
+  items: RMPurchaseVoucherItem[];
+  totalValue: number;
+  isDeleted?: boolean; // cancelled in Tally after having been synced once
+  lastSyncedAt: string;
 }
 
 export interface RMCustomerCrossInvoice {
@@ -222,7 +271,7 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill';
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch';
 
 export interface AdminAlert {
   id: string;
