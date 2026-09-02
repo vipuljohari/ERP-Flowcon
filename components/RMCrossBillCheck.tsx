@@ -652,6 +652,14 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     }
 
     const totalQty = mfgLineItems.reduce((sum, item) => sum + (item.quantityPcs || 0), 0);
+    // Sum of every line item's own Item Value — same figure Admin's Tally
+    // auto-match compares against later (see the `appTotalValue` calc in
+    // the shipments useMemo above), shown here too so Admin can see it the
+    // moment the invoice is entered, not only later in the reconciliation
+    // view. Formatted in the Indian numbering system (lakh/crore grouping),
+    // same convention already used elsewhere on this screen for ₹ amounts.
+    const totalBillValue = mfgLineItems.reduce((sum, item) => sum + (item.itemValue || 0), 0);
+    const totalBillValueFormatted = totalBillValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const aiSuffix = mfgAiExtracted
       ? (mfgLineItems.length > 1 ? ' — first line auto-filled from photo, please verify against the invoice' : ' — auto-filled from photo, please verify against the invoice')
       : ' — entered manually';
@@ -665,7 +673,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       supplier: mfgForm.manufacturerName,
       quantity: totalQty,
       itemCount: mfgLineItems.length,
-      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg${aiSuffix}`,
+      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg — Total Bill Value ₹${totalBillValueFormatted}${aiSuffix}`,
     });
 
     // Separate, high-visibility alert when the Dharam Kanta actual weight
