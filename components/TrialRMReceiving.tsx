@@ -117,6 +117,10 @@ const TrialRMReceiving: React.FC = () => {
   // Invoice header fields — shared across the whole bill, entered once, for BOTH modes.
   const [supplier, setSupplier] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
+  // Some invoices are booked in Unit 1's Tally and the material sent on to this unit by
+  // an internal challan — the invoice number typed above won't be found in this unit's
+  // own Tally, so this flag tells Accounts to look it up in Unit 1's Tally instead.
+  const [bookedInUnit1, setBookedInUnit1] = useState(false);
   const [date, setDate] = useState('');
   const [weightKg, setWeightKg] = useState('');
   const [billValue, setBillValue] = useState('');
@@ -150,7 +154,7 @@ const TrialRMReceiving: React.FC = () => {
     setEntryForItem(item);
     setEntryMode(null);
     setStep(1);
-    setSupplier(''); setInvoiceNo(''); setDate(''); setWeightKg(''); setBillValue('');
+    setSupplier(''); setInvoiceNo(''); setBookedInUnit1(false); setDate(''); setWeightKg(''); setBillValue('');
     setLines([makeLine(item)]);
     setFinishedLines([makeFinishedLine(item)]);
   };
@@ -265,7 +269,7 @@ const TrialRMReceiving: React.FC = () => {
       if (it) parts.push(`${it.name} +${qty} Pcs`);
     });
     setItems(prev => prev.map(it => (stockDeltas[it.id] ? { ...it, stock: it.stock + stockDeltas[it.id] } : it)));
-    addLog('receipt', `Finished Pieces Receipt — Invoice ${invoiceNo || 'n/a'} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. Received: ${parts.join('; ')}.`);
+    addLog('receipt', `Finished Pieces Receipt — Invoice ${invoiceNo || 'n/a'}${bookedInUnit1 ? ' (booked in Unit 1 Tally)' : ''} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. Received: ${parts.join('; ')}.`);
     closeEntry();
   };
 
@@ -296,7 +300,7 @@ const TrialRMReceiving: React.FC = () => {
     });
 
     setItems(prev => prev.map(it => (stockDeltas[it.id] ? { ...it, stock: it.stock + stockDeltas[it.id] } : it)));
-    addLog('receipt', `Longer Pipe Receipt — Invoice ${invoiceNo || 'n/a'} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. ${lineSummaries.join(' | ')}`);
+    addLog('receipt', `Longer Pipe Receipt — Invoice ${invoiceNo || 'n/a'}${bookedInUnit1 ? ' (booked in Unit 1 Tally)' : ''} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. ${lineSummaries.join(' | ')}`);
     closeEntry();
   };
 
@@ -480,6 +484,10 @@ const TrialRMReceiving: React.FC = () => {
                   <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 </div>
+                <label className="flex items-start gap-2 text-xs font-bold text-slate-600 -mt-1 px-1">
+                  <input type="checkbox" checked={bookedInUnit1} onChange={(e) => setBookedInUnit1(e.target.checked)} className="mt-0.5" />
+                  <span>Invoice booked in Unit 1 — this invoice number won't be found in this unit's own Tally; Accounts should look it up in Unit 1's Tally instead.</span>
+                </label>
                 <FormField label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 <div className="grid grid-cols-2 gap-3">
                   <FormField label="Total Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
@@ -538,6 +546,10 @@ const TrialRMReceiving: React.FC = () => {
                   <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 </div>
+                <label className="flex items-start gap-2 text-xs font-bold text-slate-600 -mt-1 px-1">
+                  <input type="checkbox" checked={bookedInUnit1} onChange={(e) => setBookedInUnit1(e.target.checked)} className="mt-0.5" />
+                  <span>Invoice booked in Unit 1 — this invoice number won't be found in this unit's own Tally; Accounts should look it up in Unit 1's Tally instead.</span>
+                </label>
                 <FormField label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 <div className="grid grid-cols-2 gap-3">
                   <FormField label="Total Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
