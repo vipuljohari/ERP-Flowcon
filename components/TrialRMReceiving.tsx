@@ -64,7 +64,60 @@ interface Line {
   barsPerItem: Record<string, string>;
   pcsPerItem: Record<string, string>;
   itemSearch: string;
+  // true when this line's Spec/Material and Bar Length came from a picked RM Cross-Bill
+  // invoice's material catalog — both are locked/non-editable in that case, exactly like
+  // the real Add Manufacturer Invoice screen locks Piece Length once a material is chosen.
+  lockedFromInvoice: boolean;
 }
+
+// RM Cross-Bill Check already ties each Material Code to a fixed Piece Length (locked on
+// that screen once a material is chosen) — this mirrors that catalog so a picked invoice's
+// Bar Length can be pulled in reliably, not just its Bars Received/Qty. `spec` here is the
+// bridge to this screen's own RM-spec grouping (see distinctSpecs below).
+const MATERIAL_CATALOG: Record<string, { materialName: string; lengthMm: number; spec: string }> = {
+  'RMSS00000118': { materialName: 'STEELS TUBES-CDW-70.30x50x30x3.2x3600- UNANNEALED', lengthMm: 3600, spec: '70x50x30x3.2 Butterfly' },
+  'RMSS00000205': { materialName: 'ERW STEEL TUBES-REC-SBR-25x25x2x4950- AS ROLLED', lengthMm: 4950, spec: '25x25x2 MS Tube' },
+};
+
+interface MfgInvoiceLine {
+  materialCode: string;
+  materialName: string;
+  quantityPcs: number;
+  ratePerPc: number;
+}
+
+// A sample RM Cross-Bill "Manufacturer Invoice" — booked on that screen first, per Vipul's
+// description of A-POST's real flow (TI supplier → RM Cross-Bill linking → then Inventory's
+// Material Entry). `usedForMaterialEntry` simulates the real app hiding an invoice here once
+// its physical stock entry is done, so the same invoice can't be pulled in twice.
+interface MfgInvoice {
+  id: string;
+  manufacturerName: string;
+  customerName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg: number;
+  materials: MfgInvoiceLine[];
+  usedForMaterialEntry: boolean;
+}
+
+const SEED_MFG_INVOICES: MfgInvoice[] = [
+  {
+    id: 'inv1', manufacturerName: 'Tube Investments of India Ltd', customerName: 'SIAC-SKH INDIA CABS Mfg. Pvt. Ltd. Palwal',
+    invoiceNo: 'TI/2691', date: '2026-08-28', totalWeightKg: 10300,
+    materials: [{ materialCode: 'RMSS00000118', materialName: MATERIAL_CATALOG['RMSS00000118'].materialName, quantityPcs: 200, ratePerPc: 850 }],
+    usedForMaterialEntry: false,
+  },
+  {
+    id: 'inv2', manufacturerName: 'Tube Investments of India Ltd', customerName: 'SIAC-SKH INDIA CABS Mfg. Pvt. Ltd. Palwal',
+    invoiceNo: 'TI/2705', date: '2026-09-01', totalWeightKg: 8500,
+    materials: [
+      { materialCode: 'RMSS00000118', materialName: MATERIAL_CATALOG['RMSS00000118'].materialName, quantityPcs: 120, ratePerPc: 850 },
+      { materialCode: 'RMSS00000205', materialName: MATERIAL_CATALOG['RMSS00000205'].materialName, quantityPcs: 80, ratePerPc: 310 },
+    ],
+    usedForMaterialEntry: false,
+  },
+];
 
 // One item + qty within a Finished Pieces invoice — e.g. 3 different CTL parts
 // arriving pre-cut on the same bill, each its own line under one invoice header.
@@ -97,6 +150,7 @@ const inrFmt = (n: number) => n.toLocaleString('en-IN', { minimumFractionDigits:
 const TrialRMReceiving: React.FC = () => {
   const [items, setItems] = useState<TrialItem[]>(SEED_ITEMS);
   const [log, setLog] = useState<ActivityEntry[]>([]);
+  const [mfgInvoices, setMfgInvoices] = useState<MfgInvoice[]>(SEED_MFG_INVOICES);
 
   const addLog = (kind: ActivityEntry['kind'], message: string) => {
     setLog(prev => [{ id: genId(), timestamp: nowStr(), kind, message }, ...prev]);
@@ -106,6 +160,7 @@ const TrialRMReceiving: React.FC = () => {
     if (!window.confirm('Reset the trial back to its starting sample data? This clears the activity log too.')) return;
     setItems(SEED_ITEMS);
     setLog([]);
+    setMfgInvoices(SEED_MFG_INVOICES);
     setEntryForItem(null);
   };
 
@@ -131,6 +186,9 @@ const TrialRMReceiving: React.FC = () => {
 
   // Longer-pipe-only: one or more bar-length lines under the invoice header above.
   const [lines, setLines] = useState<Line[]>([]);
+  // Set when the current Longer Pipe entry was pulled from an existing RM Cross-Bill
+  // invoice below — used to mark that invoice "used" (hidden from the picker) on Save.
+  const [linkedInvoiceId, setLinkedInvoiceId] = useState<string | null>(null);
 
   const makeLine = (seedItem?: TrialItem): Line => ({
     id: genId(),
@@ -142,6 +200,7 @@ const TrialRMReceiving: React.FC = () => {
     barsPerItem: {},
     pcsPerItem: {},
     itemSearch: '',
+    lockedFromInvoice: false,
   });
 
   const makeFinishedLine = (seedItem?: TrialItem): FinishedLine => ({
@@ -157,6 +216,40 @@ const TrialRMReceiving: React.FC = () => {
     setSupplier(''); setInvoiceNo(''); setBookedInUnit1(false); setDate(''); setWeightKg(''); setBillValue('');
     setLines([makeLine(item)]);
     setFinishedLines([makeFinishedLine(item)]);
+    setLinkedInvoiceId(null);
+  };
+
+  // Only invoices that have not yet had a Material Entry done against them are offered —
+  // in the real app this would also exclude invoices booked before this feature went live.
+  const availableMfgInvoices = mfgInvoices.filter(inv => !inv.usedForMaterialEntry);
+
+  const pullFromInvoice = (inv: MfgInvoice) => {
+    const hasExistingData = lines.some(l => l.lengthMm || l.barsReceived || l.checkedItemIds.length > 0);
+    if (hasExistingData && !window.confirm(`Replace the current line(s) with Invoice ${inv.invoiceNo}'s materials?`)) return;
+
+    setSupplier(inv.manufacturerName);
+    setInvoiceNo(inv.invoiceNo);
+    setDate(inv.date);
+    setWeightKg(String(inv.totalWeightKg));
+    setBillValue(String(inv.materials.reduce((s, m) => s + m.quantityPcs * m.ratePerPc, 0)));
+    setLinkedInvoiceId(inv.id);
+    setLines(inv.materials.map(m => {
+      const cat = MATERIAL_CATALOG[m.materialCode];
+      const spec = cat?.spec || '';
+      const preCheck = entryForItem && spec === entryForItem.spec ? [entryForItem.id, ...entryForItem.siblingIds] : [];
+      return {
+        id: genId(),
+        spec,
+        lengthMm: cat ? String(cat.lengthMm) : '',
+        lockedFromInvoice: !!cat,
+        barsReceived: String(m.quantityPcs),
+        assignMode: 'byBars',
+        checkedItemIds: preCheck,
+        barsPerItem: {},
+        pcsPerItem: {},
+        itemSearch: '',
+      };
+    }));
   };
 
   const closeEntry = () => {
@@ -300,7 +393,10 @@ const TrialRMReceiving: React.FC = () => {
     });
 
     setItems(prev => prev.map(it => (stockDeltas[it.id] ? { ...it, stock: it.stock + stockDeltas[it.id] } : it)));
-    addLog('receipt', `Longer Pipe Receipt — Invoice ${invoiceNo || 'n/a'}${bookedInUnit1 ? ' (booked in Unit 1 Tally)' : ''} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. ${lineSummaries.join(' | ')}`);
+    if (linkedInvoiceId) {
+      setMfgInvoices(prev => prev.map(inv => (inv.id === linkedInvoiceId ? { ...inv, usedForMaterialEntry: true } : inv)));
+    }
+    addLog('receipt', `Longer Pipe Receipt — Invoice ${invoiceNo || 'n/a'}${bookedInUnit1 ? ' (booked in Unit 1 Tally)' : ''} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}${linkedInvoiceId ? ' — linked to RM Cross-Bill Invoice' : ''}. ${lineSummaries.join(' | ')}`);
     closeEntry();
   };
 
@@ -541,7 +637,29 @@ const TrialRMReceiving: React.FC = () => {
 
             {entryMode === 'longer' && step === 1 && (
               <div className="mt-4 space-y-3">
-                <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here.</p>
+                {availableMfgInvoices.length > 0 && (
+                  <div className="border-2 border-indigo-100 bg-indigo-50/50 rounded-2xl p-4 space-y-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">Pull from an existing RM Cross-Bill Invoice</p>
+                    <p className="text-[11px] text-indigo-600/80">Fills in the invoice details and one line per material below — only Bars Received and the item assignment still need your input. In the real app, only invoices booked after this feature goes live would show up here.</p>
+                    <div className="space-y-2">
+                      {availableMfgInvoices.map(inv => (
+                        <div key={inv.id} className="flex items-center justify-between gap-3 bg-white border border-indigo-100 rounded-xl px-3 py-2">
+                          <div>
+                            <p className="text-xs font-bold text-slate-800">{inv.manufacturerName} — {inv.invoiceNo}</p>
+                            <p className="text-[10px] text-slate-400">{inv.materials.map(m => `${m.materialName} (${m.quantityPcs} Pcs)`).join(' · ')}</p>
+                          </div>
+                          <button onClick={() => pullFromInvoice(inv)} className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg font-black uppercase tracking-widest shrink-0">
+                            Use This Invoice
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    {linkedInvoiceId && (
+                      <p className="text-[11px] font-bold text-emerald-700">✓ Pulled Invoice {mfgInvoices.find(i => i.id === linkedInvoiceId)?.invoiceNo} — fields below are filled in; review and continue.</p>
+                    )}
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-400">{availableMfgInvoices.length > 0 ? 'Or enter these details manually:' : 'These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here.'}</p>
                 <div className="grid grid-cols-2 gap-3">
                   <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
@@ -578,20 +696,31 @@ const TrialRMReceiving: React.FC = () => {
                       </div>
 
                       <FormField label="Spec / Material (RM Group)">
-                        <select value={line.spec} onChange={(e) => setLineSpec(line.id, e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
-                          <option value="">Select spec…</option>
-                          {distinctSpecs.map(s => <option key={s} value={s}>{s}</option>)}
-                        </select>
+                        {line.lockedFromInvoice ? (
+                          <input disabled value={line.spec} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
+                        ) : (
+                          <select value={line.spec} onChange={(e) => setLineSpec(line.id, e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                            <option value="">Select spec…</option>
+                            {distinctSpecs.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        )}
                       </FormField>
                       <p className="text-[11px] text-slate-400 -mt-2">Only items that share this exact RM spec are shown below — a bar of one spec physically can't be cut into a different spec's item, so switching this drops any items you'd already checked that no longer belong.</p>
                       <div className="grid grid-cols-2 gap-3">
                         <FormField label="Bar Length (mm)">
-                          <input type="number" value={line.lengthMm} onChange={(e) => patchLine(line.id, l => ({ ...l, lengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                          {line.lockedFromInvoice ? (
+                            <input disabled value={line.lengthMm} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
+                          ) : (
+                            <input type="number" value={line.lengthMm} onChange={(e) => patchLine(line.id, l => ({ ...l, lengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                          )}
                         </FormField>
                         <FormField label="Bars Received">
                           <input type="number" value={line.barsReceived} onChange={(e) => patchLine(line.id, l => ({ ...l, barsReceived: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                         </FormField>
                       </div>
+                      {line.lockedFromInvoice && (
+                        <p className="text-[11px] text-slate-400 -mt-2">Spec and Bar Length are locked — pulled from RM Cross-Bill's material catalog for this material code, same as that screen locks Piece Length.</p>
+                      )}
                       <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
                         <span className="text-slate-500">Bars available: {lc.barsReceivedNum}</span>
                         {line.assignMode === 'byBars' ? (
