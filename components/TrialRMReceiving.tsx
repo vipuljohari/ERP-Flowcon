@@ -14,6 +14,14 @@ import React, { useMemo, useState } from 'react';
 // assignment + sibling-item stock-borrowing workflow against realistic
 // sample data before any of it touches the live app, per Vipul's request
 // (2-Sept-2026) for a trial before implementing this in production.
+//
+// A "Longer Pipe" receipt is invoice-first: Supplier/Invoice/Date/Total
+// Weight/Total Bill Value are entered once for the whole bill, and one or
+// more "lines" sit underneath it — each line is its own bar length + bars
+// received + item assignment. This covers a single invoice covering
+// several items at different bar lengths (e.g. Upper Tube on one length,
+// Rear+Lower Tube sharing a different length, all on one bill) without
+// re-entering the invoice totals per item.
 // ============================================================
 
 interface TrialItem {
@@ -31,16 +39,32 @@ interface TrialCustomer {
   name: string;
 }
 
-interface AssignmentRow {
-  itemId: string;
-  bars: number;
-}
-
 interface ActivityEntry {
   id: string;
   timestamp: string;
   kind: 'receipt' | 'dispatch' | 'auto_transfer' | 'discrepancy';
   message: string;
+}
+
+// One bar-length group within a Longer Pipe invoice. Two ways to assign it to items:
+//  - 'byBars': the normal case — dedicate whole bars to each item.
+//  - 'byPieces': the misplanning/shortage case — only one (or very few) bars came in and
+//    they must be shared across several non-sibling items, so pieces are entered per item
+//    directly instead of whole bars, and whatever length is left over is logged as one
+//    unattributed scrap figure (not credited to any single item).
+type LineAssignMode = 'byBars' | 'byPieces';
+
+interface Line {
+  id: string;
+  spec: string;
+  lengthMm: string;
+  barsReceived: string;
+  assignMode: LineAssignMode;
+  customerId: string;
+  checkedItemIds: string[];
+  barsPerItem: Record<string, string>;
+  pcsPerItem: Record<string, string>;
+  itemSearch: string;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -89,7 +113,7 @@ const TrialRMReceiving: React.FC = () => {
   const [entryMode, setEntryMode] = useState<'pieces' | 'longer' | null>(null);
   const [step, setStep] = useState<1 | 2>(1);
 
-  // Shared header fields (both modes)
+  // Invoice header fields — shared across the whole bill, entered once, for BOTH modes.
   const [supplier, setSupplier] = useState('');
   const [invoiceNo, setInvoiceNo] = useState('');
   const [date, setDate] = useState('');
@@ -99,25 +123,21 @@ const TrialRMReceiving: React.FC = () => {
   // Finished-pieces-only field
   const [piecesQty, setPiecesQty] = useState('');
 
-  // Longer-pipe-only fields
-  const [spec, setSpec] = useState('');
-  const [lengthMm, setLengthMm] = useState('');
-  const [barsReceived, setBarsReceived] = useState('');
+  // Longer-pipe-only: one or more bar-length lines under the invoice header above.
+  const [lines, setLines] = useState<Line[]>([]);
 
-  // Assignment step
-  const [customerId, setCustomerId] = useState('');
-  const [checkedItemIds, setCheckedItemIds] = useState<string[]>([]);
-  const [barsPerItem, setBarsPerItem] = useState<Record<string, string>>({});
-  const [itemSearch, setItemSearch] = useState('');
-
-  // Two ways to assign a Longer Pipe receipt to items:
-  //  - 'byBars': the normal case — dedicate whole bars to each item (existing flow above).
-  //  - 'byPieces': the misplanning/shortage case — only one (or very few) bars came in and
-  //    they must be shared across several non-sibling items, so you enter pieces per item
-  //    directly instead of whole bars, and whatever length is left over is logged as one
-  //    unattributed scrap figure (not credited to any single item), per Vipul's confirmation.
-  const [assignMode, setAssignMode] = useState<'byBars' | 'byPieces'>('byBars');
-  const [pcsPerItem, setPcsPerItem] = useState<Record<string, string>>({});
+  const makeLine = (seedItem?: TrialItem): Line => ({
+    id: genId(),
+    spec: seedItem?.spec || '',
+    lengthMm: '',
+    barsReceived: '',
+    assignMode: 'byBars',
+    customerId: customers[0]?.id || '',
+    checkedItemIds: seedItem ? [seedItem.id, ...seedItem.siblingIds] : [],
+    barsPerItem: {},
+    pcsPerItem: {},
+    itemSearch: '',
+  });
 
   const openEntry = (item: TrialItem) => {
     setEntryForItem(item);
@@ -125,13 +145,7 @@ const TrialRMReceiving: React.FC = () => {
     setStep(1);
     setSupplier(''); setInvoiceNo(''); setDate(''); setWeightKg(''); setBillValue('');
     setPiecesQty('');
-    setSpec(item.spec); setLengthMm(''); setBarsReceived('');
-    setCustomerId(customers[0]?.id || '');
-    setCheckedItemIds([item.id, ...item.siblingIds]);
-    setBarsPerItem({});
-    setAssignMode('byBars');
-    setPcsPerItem({});
-    setItemSearch('');
+    setLines([makeLine(item)]);
   };
 
   const closeEntry = () => {
@@ -139,49 +153,68 @@ const TrialRMReceiving: React.FC = () => {
     setEntryMode(null);
   };
 
-  const barsReceivedNum = parseFloat(barsReceived) || 0;
-  const lengthMmNum = parseFloat(lengthMm) || 0;
-
-  // Live pcs + scrap per checked item, given its own item length.
-  const computedByItem = useMemo(() => {
-    const map: Record<string, { bars: number; pcs: number; scrapMmPerBar: number }> = {};
-    checkedItemIds.forEach(id => {
-      const it = items.find(i => i.id === id);
-      if (!it) return;
-      const bars = parseFloat(barsPerItem[id] || '') || 0;
-      const pcsPerBar = it.itemLengthMm > 0 ? Math.floor(lengthMmNum / it.itemLengthMm) : 0;
-      const scrapMmPerBar = it.itemLengthMm > 0 ? Math.max(0, lengthMmNum - pcsPerBar * it.itemLengthMm) : 0;
-      map[id] = { bars, pcs: pcsPerBar * bars, scrapMmPerBar };
-    });
-    return map;
-  }, [checkedItemIds, barsPerItem, items, lengthMmNum]);
-
-  const barsAllotted = Object.values(computedByItem).reduce((sum, c) => sum + c.bars, 0);
-  const barsRemaining = barsReceivedNum - barsAllotted;
-  const overAllotted = barsRemaining < -0.0001;
-
-  // "Split by Pieces" mode: total length available across all bars received, vs. total
-  // length actually consumed by the pieces entered for each item. Whatever's left over
-  // (usually less than one item-length, but could be more if very few pieces are entered)
-  // is one unattributed scrap figure — it's not physically possible to say which item's
-  // "share" of a jointly-cut bar the leftover belongs to.
-  const totalAvailableMm = barsReceivedNum * lengthMmNum;
-  const totalConsumedMm = checkedItemIds.reduce((sum, id) => {
-    const it = items.find(i => i.id === id);
-    const pcs = parseFloat(pcsPerItem[id] || '') || 0;
-    return sum + (it ? pcs * it.itemLengthMm : 0);
-  }, 0);
-  const unattributedScrapMm = totalAvailableMm - totalConsumedMm;
-  const overAllottedPieces = unattributedScrapMm < -0.0001;
-  const pcsAllottedTotal = checkedItemIds.reduce((sum, id) => sum + (parseFloat(pcsPerItem[id] || '') || 0), 0);
-
-  const searchableItems = items.filter(it =>
-    it.name.toLowerCase().includes(itemSearch.toLowerCase()) || it.sapCode.toLowerCase().includes(itemSearch.toLowerCase())
-  );
-
-  const toggleItemChecked = (id: string) => {
-    setCheckedItemIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const patchLine = (lineId: string, updater: (l: Line) => Line) => {
+    setLines(prev => prev.map(l => (l.id === lineId ? updater(l) : l)));
   };
+
+  const addLine = () => setLines(prev => [...prev, makeLine()]);
+  const removeLine = (lineId: string) => setLines(prev => (prev.length > 1 ? prev.filter(l => l.id !== lineId) : prev));
+
+  // Live per-line computation: pcs/scrap for 'byBars', consumed-length/unattributed-scrap
+  // for 'byPieces'. Recomputed from the lines array + items whenever either changes.
+  const lineComputations = useMemo(() => {
+    return lines.map(line => {
+      const barsReceivedNum = parseFloat(line.barsReceived) || 0;
+      const lengthMmNum = parseFloat(line.lengthMm) || 0;
+
+      if (line.assignMode === 'byBars') {
+        const byItem: Record<string, { bars: number; pcs: number; scrapMmPerBar: number }> = {};
+        line.checkedItemIds.forEach(id => {
+          const it = items.find(i => i.id === id);
+          if (!it) return;
+          const bars = parseFloat(line.barsPerItem[id] || '') || 0;
+          const pcsPerBar = it.itemLengthMm > 0 ? Math.floor(lengthMmNum / it.itemLengthMm) : 0;
+          const scrapMmPerBar = it.itemLengthMm > 0 ? Math.max(0, lengthMmNum - pcsPerBar * it.itemLengthMm) : 0;
+          byItem[id] = { bars, pcs: pcsPerBar * bars, scrapMmPerBar };
+        });
+        const barsAllotted = Object.values(byItem).reduce((s, c) => s + c.bars, 0);
+        const barsRemaining = barsReceivedNum - barsAllotted;
+        return {
+          mode: 'byBars' as const,
+          line, barsReceivedNum, lengthMmNum, byItem, barsAllotted, barsRemaining,
+          overAllotted: barsRemaining < -0.0001,
+        };
+      }
+
+      const totalAvailableMm = barsReceivedNum * lengthMmNum;
+      const pcsByItem: Record<string, number> = {};
+      let totalConsumedMm = 0;
+      line.checkedItemIds.forEach(id => {
+        const it = items.find(i => i.id === id);
+        const pcs = parseFloat(line.pcsPerItem[id] || '') || 0;
+        pcsByItem[id] = pcs;
+        totalConsumedMm += it ? pcs * it.itemLengthMm : 0;
+      });
+      const unattributedScrapMm = totalAvailableMm - totalConsumedMm;
+      const pcsAllottedTotal = Object.values(pcsByItem).reduce((s, p) => s + p, 0);
+      return {
+        mode: 'byPieces' as const,
+        line, barsReceivedNum, lengthMmNum, pcsByItem, totalAvailableMm, totalConsumedMm,
+        unattributedScrapMm, overAllottedPieces: unattributedScrapMm < -0.0001, pcsAllottedTotal,
+      };
+    });
+  }, [lines, items]);
+
+  const isLineValid = (lc: typeof lineComputations[number]) => {
+    if (lc.lengthMmNum <= 0 || lc.barsReceivedNum <= 0) return false;
+    if (lc.mode === 'byBars') return !lc.overAllotted && lc.barsAllotted > 0;
+    return !lc.overAllottedPieces && lc.pcsAllottedTotal > 0;
+  };
+  const allLinesValid = lineComputations.length > 0 && lineComputations.every(isLineValid);
+
+  const searchItems = (search: string) => items.filter(it =>
+    it.name.toLowerCase().includes(search.toLowerCase()) || it.sapCode.toLowerCase().includes(search.toLowerCase())
+  );
 
   const saveFinishedPieces = () => {
     if (!entryForItem) return;
@@ -193,31 +226,33 @@ const TrialRMReceiving: React.FC = () => {
   };
 
   const saveLongerPipe = () => {
-    if (assignMode === 'byBars') {
-      if (barsRemaining < -0.0001 || barsAllotted <= 0) return;
-      const parts: string[] = [];
-      setItems(prev => prev.map(it => {
-        const c = computedByItem[it.id];
-        if (!c || c.pcs <= 0) return it;
-        parts.push(`${it.name} +${c.pcs} Pcs (${c.bars} bar${c.bars === 1 ? '' : 's'} × floor(${lengthMmNum}/${it.itemLengthMm}), scrap ${c.scrapMmPerBar}mm/bar)`);
-        return { ...it, stock: it.stock + c.pcs };
-      }));
-      addLog('receipt', `Longer Pipe Receipt — ${spec}, ${barsReceivedNum} bars × ${lengthMmNum}mm from ${supplier || 'supplier'}, Invoice ${invoiceNo || 'n/a'}${weightKg ? `, ${weightKg} Kg` : ''}${billValue ? `, Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. Assigned: ${parts.join('; ')}.${barsRemaining > 0.0001 ? ` (${barsRemaining} bar(s) left unassigned — can be allotted later.)` : ''}`);
-      closeEntry();
-      return;
-    }
+    if (!allLinesValid) return;
+    const stockDeltas: Record<string, number> = {};
+    const lineSummaries: string[] = [];
 
-    // assignMode === 'byPieces' — the misplanning/shortage case: one shared pool of bars,
-    // split into pieces across several items directly, with one unattributed scrap figure.
-    if (overAllottedPieces || pcsAllottedTotal <= 0) return;
-    const parts: string[] = [];
-    setItems(prev => prev.map(it => {
-      const pcs = parseFloat(pcsPerItem[it.id] || '') || 0;
-      if (!checkedItemIds.includes(it.id) || pcs <= 0) return it;
-      parts.push(`${it.name} +${pcs} Pcs`);
-      return { ...it, stock: it.stock + pcs };
-    }));
-    addLog('receipt', `Longer Pipe Receipt (split across items — shortage/misplanning) — ${spec}, ${barsReceivedNum} bar${barsReceivedNum === 1 ? '' : 's'} × ${lengthMmNum}mm from ${supplier || 'supplier'}, Invoice ${invoiceNo || 'n/a'}${weightKg ? `, ${weightKg} Kg` : ''}${billValue ? `, Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. Assigned: ${parts.join('; ')}. Unattributed scrap: ${unattributedScrapMm}mm (shared across the ${parts.length} item(s) above, not credited to any single one).`);
+    lineComputations.forEach(lc => {
+      const parts: string[] = [];
+      if (lc.mode === 'byBars') {
+        Object.entries(lc.byItem).forEach(([id, c]) => {
+          if (c.pcs <= 0) return;
+          stockDeltas[id] = (stockDeltas[id] || 0) + c.pcs;
+          const it = items.find(i => i.id === id)!;
+          parts.push(`${it.name} +${c.pcs} Pcs (${c.bars} bar${c.bars === 1 ? '' : 's'} × floor(${lc.lengthMmNum}/${it.itemLengthMm}), scrap ${c.scrapMmPerBar}mm/bar)`);
+        });
+        lineSummaries.push(`${lc.line.spec || 'Line'} — ${lc.barsReceivedNum} bar${lc.barsReceivedNum === 1 ? '' : 's'} × ${lc.lengthMmNum}mm: ${parts.join('; ')}${lc.barsRemaining > 0.0001 ? ` (${lc.barsRemaining} bar(s) left unassigned)` : ''}`);
+      } else {
+        Object.entries(lc.pcsByItem).forEach(([id, pcs]) => {
+          if (pcs <= 0) return;
+          stockDeltas[id] = (stockDeltas[id] || 0) + pcs;
+          const it = items.find(i => i.id === id)!;
+          parts.push(`${it.name} +${pcs} Pcs`);
+        });
+        lineSummaries.push(`${lc.line.spec || 'Line'} (split by pieces — shortage) — ${lc.barsReceivedNum} bar${lc.barsReceivedNum === 1 ? '' : 's'} × ${lc.lengthMmNum}mm: ${parts.join('; ')}. Unattributed scrap: ${lc.unattributedScrapMm}mm (shared, not credited to any single item).`);
+      }
+    });
+
+    setItems(prev => prev.map(it => (stockDeltas[it.id] ? { ...it, stock: it.stock + stockDeltas[it.id] } : it)));
+    addLog('receipt', `Longer Pipe Receipt — Invoice ${invoiceNo || 'n/a'} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. ${lineSummaries.join(' | ')}`);
     closeEntry();
   };
 
@@ -279,7 +314,7 @@ const TrialRMReceiving: React.FC = () => {
         <div>
           <h2 className="text-xl font-black text-slate-900">RM Receiving — Trial</h2>
           <p className="text-xs text-slate-500 font-medium mt-1 max-w-2xl">
-            Sample items below: A-POST LH/RH are marked as siblings (interchangeable RM/CTL form); Upper/Rear/Lower Tube share one RM spec but different CTL lengths, so they stay independent.
+            Sample items below: A-POST LH/RH are marked as siblings (interchangeable RM/CTL form); Upper/Rear/Lower Tube share one RM spec but different CTL lengths, so they stay independent. One invoice can cover several items at different bar lengths (e.g. Upper on one length, Rear+Lower on another) — Total Weight and Total Bill Value are entered once for the whole bill.
           </p>
         </div>
         <button onClick={resetAll} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl text-xs font-black uppercase tracking-widest hover:border-rose-400 hover:text-rose-600 shrink-0">
@@ -387,7 +422,7 @@ const TrialRMReceiving: React.FC = () => {
                   </button>
                   <button onClick={() => setEntryMode('longer')} className="border-2 border-slate-200 hover:border-indigo-500 rounded-2xl p-4 text-left">
                     <p className="text-sm font-black text-slate-800">Longer Pipe</p>
-                    <p className="text-[11px] text-slate-400 mt-1">Needs cutting — enter the raw bars, then assign to item(s).</p>
+                    <p className="text-[11px] text-slate-400 mt-1">Needs cutting — enter the invoice, then one or more bar-length lines.</p>
                   </button>
                 </div>
                 <button onClick={closeEntry} className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 mt-4">Cancel</button>
@@ -419,132 +454,155 @@ const TrialRMReceiving: React.FC = () => {
 
             {entryMode === 'longer' && step === 1 && (
               <div className="mt-4 space-y-3">
+                <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here.</p>
                 <div className="grid grid-cols-2 gap-3">
                   <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 </div>
                 <FormField label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-                <FormField label="Spec / Material"><input value={spec} onChange={(e) => setSpec(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 <div className="grid grid-cols-2 gap-3">
-                  <FormField label="Bar Length (mm)"><input type="number" value={lengthMm} onChange={(e) => setLengthMm(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-                  <FormField label="Bars Received"><input type="number" value={barsReceived} onChange={(e) => setBarsReceived(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField label="Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+                  <FormField label="Total Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Total Bill Value (₹)"><input type="number" value={billValue} onChange={(e) => setBillValue(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 </div>
                 <div className="flex gap-2 pt-2">
                   <button onClick={() => setEntryMode(null)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-                  <button onClick={() => setStep(2)} disabled={lengthMmNum <= 0 || barsReceivedNum <= 0} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
-                    Next: Assign to Item(s) ›
+                  <button onClick={() => setStep(2)} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+                    Next: Add Bar-Length Line(s) ›
                   </button>
                 </div>
               </div>
             )}
 
             {entryMode === 'longer' && step === 2 && (
-              <div className="mt-4 space-y-3">
-                <FormField label="Cross-Invoicing Customer">
-                  <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
-                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </FormField>
-
-                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
-                  <span className="text-slate-500">Bars available: {barsReceivedNum}</span>
-                  {assignMode === 'byBars' ? (
-                    <span className={overAllotted ? 'text-rose-600' : 'text-slate-700'}>
-                      Remaining to allot: {barsRemaining}
-                    </span>
-                  ) : (
-                    <span className={overAllottedPieces ? 'text-rose-600' : 'text-slate-700'}>
-                      Length remaining: {unattributedScrapMm}mm
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
-                  <button
-                    onClick={() => setAssignMode('byBars')}
-                    className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${assignMode === 'byBars' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
-                  >
-                    Whole Bars per Item
-                  </button>
-                  <button
-                    onClick={() => setAssignMode('byPieces')}
-                    className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${assignMode === 'byPieces' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
-                  >
-                    Split by Pieces (Shortage)
-                  </button>
-                </div>
-                {assignMode === 'byPieces' && (
-                  <p className="text-[11px] text-slate-400 -mt-1">Use this when very few bars came in and have to be shared across items due to a planning/RM shortage. Enter pieces directly per item — whatever length is left over is logged as one shared, unattributed scrap figure rather than credited to any single item.</p>
-                )}
-
-                <FormField label="Search items">
-                  <input value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder="Search by name or SAP code…" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                </FormField>
-
-                <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
-                  {searchableItems.map(it => {
-                    const checked = checkedItemIds.includes(it.id);
-                    const c = computedByItem[it.id];
-                    return (
-                      <div key={it.id} className={`p-3 ${checked ? 'bg-indigo-50/40' : ''}`}>
-                        <label className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                          <input type="checkbox" checked={checked} onChange={() => toggleItemChecked(it.id)} />
-                          {it.name} <span className="text-[10px] text-slate-400 font-mono">({it.itemLengthMm}mm)</span>
-                          {entryForItem.siblingIds.includes(it.id) && (
-                            <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 border border-sky-200">Sibling — pre-checked</span>
-                          )}
-                        </label>
-                        {checked && assignMode === 'byBars' && (
-                          <div className="mt-2 flex items-center gap-3 pl-6">
-                            <input
-                              type="number"
-                              placeholder="Bars"
-                              value={barsPerItem[it.id] || ''}
-                              onChange={(e) => setBarsPerItem(prev => ({ ...prev, [it.id]: e.target.value }))}
-                              className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
-                            />
-                            <span className="text-[11px] text-slate-500">
-                              = {c ? c.pcs : 0} Pcs (floor({lengthMmNum || 0}÷{it.itemLengthMm})) · scrap {c ? c.scrapMmPerBar : 0}mm/bar
-                            </span>
-                          </div>
-                        )}
-                        {checked && assignMode === 'byPieces' && (
-                          <div className="mt-2 flex items-center gap-3 pl-6">
-                            <input
-                              type="number"
-                              placeholder="Pcs"
-                              value={pcsPerItem[it.id] || ''}
-                              onChange={(e) => setPcsPerItem(prev => ({ ...prev, [it.id]: e.target.value }))}
-                              className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
-                            />
-                            <span className="text-[11px] text-slate-500">
-                              = {((parseFloat(pcsPerItem[it.id] || '') || 0) * it.itemLengthMm)}mm consumed
-                            </span>
-                          </div>
+              <div className="mt-4 space-y-4">
+                {lines.map((line, idx) => {
+                  const lc = lineComputations[idx];
+                  return (
+                    <div key={line.id} className="border-2 border-slate-100 rounded-2xl p-4 space-y-3">
+                      <div className="flex justify-between items-center">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Line {idx + 1}</p>
+                        {lines.length > 1 && (
+                          <button onClick={() => removeLine(line.id)} className="text-[10px] font-black uppercase tracking-widest text-rose-500 hover:text-rose-700">Remove</button>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
 
-                {assignMode === 'byBars' && overAllotted && (
-                  <p className="text-[11px] font-bold text-rose-600">⚠ You've assigned more bars than were received — reduce one of the entries above before saving.</p>
-                )}
-                {assignMode === 'byPieces' && overAllottedPieces && (
-                  <p className="text-[11px] font-bold text-rose-600">⚠ These pieces need more length than the bar(s) received actually have — reduce one of the entries above before saving.</p>
-                )}
+                      <FormField label="Spec / Material">
+                        <input value={line.spec} onChange={(e) => patchLine(line.id, l => ({ ...l, spec: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                      </FormField>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FormField label="Bar Length (mm)">
+                          <input type="number" value={line.lengthMm} onChange={(e) => patchLine(line.id, l => ({ ...l, lengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                        </FormField>
+                        <FormField label="Bars Received">
+                          <input type="number" value={line.barsReceived} onChange={(e) => patchLine(line.id, l => ({ ...l, barsReceived: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                        </FormField>
+                      </div>
+                      <FormField label="Cross-Invoicing Customer">
+                        <select value={line.customerId} onChange={(e) => patchLine(line.id, l => ({ ...l, customerId: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                          {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      </FormField>
+
+                      <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
+                        <span className="text-slate-500">Bars available: {lc.barsReceivedNum}</span>
+                        {line.assignMode === 'byBars' ? (
+                          <span className={lc.overAllotted ? 'text-rose-600' : 'text-slate-700'}>Remaining to allot: {lc.barsRemaining}</span>
+                        ) : (
+                          <span className={lc.overAllottedPieces ? 'text-rose-600' : 'text-slate-700'}>Length remaining: {lc.unattributedScrapMm}mm</span>
+                        )}
+                      </div>
+
+                      <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+                        <button
+                          onClick={() => patchLine(line.id, l => ({ ...l, assignMode: 'byBars' }))}
+                          className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.assignMode === 'byBars' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
+                        >
+                          Whole Bars per Item
+                        </button>
+                        <button
+                          onClick={() => patchLine(line.id, l => ({ ...l, assignMode: 'byPieces' }))}
+                          className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.assignMode === 'byPieces' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
+                        >
+                          Split by Pieces (Shortage)
+                        </button>
+                      </div>
+                      {line.assignMode === 'byPieces' && (
+                        <p className="text-[11px] text-slate-400 -mt-1">Use this when very few bars came in and have to be shared across items due to a planning/RM shortage. Enter pieces directly per item — whatever length is left over is logged as one shared, unattributed scrap figure rather than credited to any single item.</p>
+                      )}
+
+                      <FormField label="Search items">
+                        <input value={line.itemSearch} onChange={(e) => patchLine(line.id, l => ({ ...l, itemSearch: e.target.value }))} placeholder="Search by name or SAP code…" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                      </FormField>
+
+                      <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
+                        {searchItems(line.itemSearch).map(it => {
+                          const checked = line.checkedItemIds.includes(it.id);
+                          return (
+                            <div key={it.id} className={`p-3 ${checked ? 'bg-indigo-50/40' : ''}`}>
+                              <label className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => patchLine(line.id, l => ({
+                                    ...l,
+                                    checkedItemIds: l.checkedItemIds.includes(it.id) ? l.checkedItemIds.filter(x => x !== it.id) : [...l.checkedItemIds, it.id],
+                                  }))}
+                                />
+                                {it.name} <span className="text-[10px] text-slate-400 font-mono">({it.itemLengthMm}mm)</span>
+                                {idx === 0 && entryForItem.siblingIds.includes(it.id) && (
+                                  <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 border border-sky-200">Sibling — pre-checked</span>
+                                )}
+                              </label>
+                              {checked && line.assignMode === 'byBars' && (
+                                <div className="mt-2 flex items-center gap-3 pl-6">
+                                  <input
+                                    type="number"
+                                    placeholder="Bars"
+                                    value={line.barsPerItem[it.id] || ''}
+                                    onChange={(e) => patchLine(line.id, l => ({ ...l, barsPerItem: { ...l.barsPerItem, [it.id]: e.target.value } }))}
+                                    className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
+                                  />
+                                  <span className="text-[11px] text-slate-500">
+                                    = {lc.byItem?.[it.id]?.pcs ?? 0} Pcs (floor({lc.lengthMmNum || 0}÷{it.itemLengthMm})) · scrap {lc.byItem?.[it.id]?.scrapMmPerBar ?? 0}mm/bar
+                                  </span>
+                                </div>
+                              )}
+                              {checked && line.assignMode === 'byPieces' && (
+                                <div className="mt-2 flex items-center gap-3 pl-6">
+                                  <input
+                                    type="number"
+                                    placeholder="Pcs"
+                                    value={line.pcsPerItem[it.id] || ''}
+                                    onChange={(e) => patchLine(line.id, l => ({ ...l, pcsPerItem: { ...l.pcsPerItem, [it.id]: e.target.value } }))}
+                                    className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
+                                  />
+                                  <span className="text-[11px] text-slate-500">
+                                    = {((parseFloat(line.pcsPerItem[it.id] || '') || 0) * it.itemLengthMm)}mm consumed
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {line.assignMode === 'byBars' && lc.overAllotted && (
+                        <p className="text-[11px] font-bold text-rose-600">⚠ You've assigned more bars than were received on this line — reduce one of the entries above before saving.</p>
+                      )}
+                      {line.assignMode === 'byPieces' && lc.overAllottedPieces && (
+                        <p className="text-[11px] font-bold text-rose-600">⚠ These pieces need more length than this line's bar(s) actually have — reduce one of the entries above before saving.</p>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <button onClick={addLine} className="w-full py-2.5 border-2 border-dashed border-slate-300 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 rounded-xl text-xs font-black uppercase tracking-widest">
+                  + Add Another Line (different bar length / items)
+                </button>
 
                 <div className="flex gap-2 pt-2">
                   <button onClick={() => setStep(1)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-                  <button
-                    onClick={saveLongerPipe}
-                    disabled={assignMode === 'byBars' ? (overAllotted || barsAllotted <= 0) : (overAllottedPieces || pcsAllottedTotal <= 0)}
-                    className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest"
-                  >
+                  <button onClick={saveLongerPipe} disabled={!allLinesValid} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
                     Save (Trial only)
                   </button>
                 </div>
