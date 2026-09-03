@@ -316,10 +316,16 @@ const TrialRMReceiving: React.FC = () => {
         });
         const barsAllotted = Object.values(byItem).reduce((s, c) => s + c.bars, 0);
         const barsRemaining = barsReceivedNum - barsAllotted;
+        // A negative bars-per-item entry (e.g. -5) can cancel out a positive over-allotment
+        // elsewhere on the same line and land "Remaining to allot" at exactly 0, which would
+        // otherwise slip past the full-allotment check above even though no such bars
+        // physically exist — so it's tracked and blocked separately, regardless of the total.
+        const hasNegativeEntry = Object.values(byItem).some(c => c.bars < 0);
         return {
           mode: 'byBars' as const,
           line, barsReceivedNum, lengthMmNum, byItem, barsAllotted, barsRemaining,
           overAllotted: barsRemaining < -0.0001,
+          hasNegativeEntry,
         };
       }
 
@@ -334,10 +340,12 @@ const TrialRMReceiving: React.FC = () => {
       });
       const unattributedScrapMm = totalAvailableMm - totalConsumedMm;
       const pcsAllottedTotal = Object.values(pcsByItem).reduce((s, p) => s + p, 0);
+      const hasNegativeEntry = Object.values(pcsByItem).some(p => p < 0);
       return {
         mode: 'byPieces' as const,
         line, barsReceivedNum, lengthMmNum, pcsByItem, totalAvailableMm, totalConsumedMm,
         unattributedScrapMm, overAllottedPieces: unattributedScrapMm < -0.0001, pcsAllottedTotal,
+        hasNegativeEntry,
       };
     });
   }, [lines, items]);
@@ -345,6 +353,11 @@ const TrialRMReceiving: React.FC = () => {
   const isLineValid = (lc: typeof lineComputations[number]) => {
     if (!lc.line.spec) return false;
     if (lc.lengthMmNum <= 0 || lc.barsReceivedNum <= 0) return false;
+    // A negative bars/pcs entry against any single item is never physically real — even
+    // when it happens to cancel out to a "clean" total (e.g. 205 to one sibling, -5 to the
+    // other, netting to the 200 received) — so it's rejected regardless of what the line's
+    // totals work out to.
+    if (lc.hasNegativeEntry) return false;
     if (lc.mode === 'byBars') {
       if (lc.overAllotted || lc.barsAllotted <= 0) return false;
       // Every bar received on a "Whole Bars per Item" line must be allotted to some item
@@ -799,10 +812,11 @@ const TrialRMReceiving: React.FC = () => {
                                 <div className="mt-2 flex items-center gap-3 pl-6">
                                   <input
                                     type="number"
+                                    min="0"
                                     placeholder="Bars"
                                     value={line.barsPerItem[it.id] || ''}
                                     onChange={(e) => patchLine(line.id, l => ({ ...l, barsPerItem: { ...l.barsPerItem, [it.id]: e.target.value } }))}
-                                    className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
+                                    className={`border-2 rounded-lg px-2 py-1 text-xs w-24 ${(lc.byItem?.[it.id]?.bars ?? 0) < 0 ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`}
                                   />
                                   <span className="text-[11px] text-slate-500">
                                     = {lc.byItem?.[it.id]?.pcs ?? 0} Pcs (floor({lc.lengthMmNum || 0}÷{it.itemLengthMm})) · scrap {lc.byItem?.[it.id]?.scrapMmPerBar ?? 0}mm/bar
@@ -813,10 +827,11 @@ const TrialRMReceiving: React.FC = () => {
                                 <div className="mt-2 flex items-center gap-3 pl-6">
                                   <input
                                     type="number"
+                                    min="0"
                                     placeholder="Pcs"
                                     value={line.pcsPerItem[it.id] || ''}
                                     onChange={(e) => patchLine(line.id, l => ({ ...l, pcsPerItem: { ...l.pcsPerItem, [it.id]: e.target.value } }))}
-                                    className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
+                                    className={`border-2 rounded-lg px-2 py-1 text-xs w-24 ${(lc.pcsByItem?.[it.id] ?? 0) < 0 ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`}
                                   />
                                   <span className="text-[11px] text-slate-500">
                                     = {((parseFloat(line.pcsPerItem[it.id] || '') || 0) * it.itemLengthMm)}mm consumed
@@ -830,6 +845,9 @@ const TrialRMReceiving: React.FC = () => {
                         </>
                       )}
 
+                      {lc.hasNegativeEntry && (
+                        <p className="text-[11px] font-bold text-rose-600">⚠ One of the items above has a negative value entered — that isn't physically possible, even if it happens to make the line's total add up. Fix it before saving.</p>
+                      )}
                       {line.assignMode === 'byBars' && lc.overAllotted && (
                         <p className="text-[11px] font-bold text-rose-600">⚠ You've assigned more bars than were received on this line — reduce one of the entries above before saving.</p>
                       )}
