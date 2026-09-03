@@ -167,6 +167,26 @@ const TrialRMReceiving: React.FC = () => {
   const addLine = () => setLines(prev => [...prev, makeLine()]);
   const removeLine = (lineId: string) => setLines(prev => (prev.length > 1 ? prev.filter(l => l.id !== lineId) : prev));
 
+  // Every item has a parent RM spec (e.g. A-POST LH/RH share "70x50x30x3.2 Butterfly";
+  // Upper/Rear/Lower Tube share "25x25x2 MS Tube"). Physically, a bar of one spec can
+  // only ever be cut into items of that same spec — a 25x25 tube can never become an
+  // A-POST. So a line's item picker only shows/allows items matching that line's chosen
+  // spec, and changing the spec drops any already-checked items that no longer qualify.
+  const distinctSpecs = useMemo(() => Array.from(new Set(items.map(it => it.spec))), [items]);
+
+  const setLineSpec = (lineId: string, newSpec: string) => {
+    patchLine(lineId, l => {
+      const validIds = new Set(items.filter(it => it.spec === newSpec).map(it => it.id));
+      return {
+        ...l,
+        spec: newSpec,
+        checkedItemIds: l.checkedItemIds.filter(id => validIds.has(id)),
+        barsPerItem: Object.fromEntries(Object.entries(l.barsPerItem).filter(([id]) => validIds.has(id))),
+        pcsPerItem: Object.fromEntries(Object.entries(l.pcsPerItem).filter(([id]) => validIds.has(id))),
+      };
+    });
+  };
+
   const patchFinishedLine = (lineId: string, updater: (l: FinishedLine) => FinishedLine) => {
     setFinishedLines(prev => prev.map(l => (l.id === lineId ? updater(l) : l)));
   };
@@ -219,14 +239,16 @@ const TrialRMReceiving: React.FC = () => {
   }, [lines, items]);
 
   const isLineValid = (lc: typeof lineComputations[number]) => {
+    if (!lc.line.spec) return false;
     if (lc.lengthMmNum <= 0 || lc.barsReceivedNum <= 0) return false;
     if (lc.mode === 'byBars') return !lc.overAllotted && lc.barsAllotted > 0;
     return !lc.overAllottedPieces && lc.pcsAllottedTotal > 0;
   };
   const allLinesValid = lineComputations.length > 0 && lineComputations.every(isLineValid);
 
-  const searchItems = (search: string) => items.filter(it =>
-    it.name.toLowerCase().includes(search.toLowerCase()) || it.sapCode.toLowerCase().includes(search.toLowerCase())
+  // Only items sharing this exact RM spec are selectable for a line — see distinctSpecs above.
+  const searchItemsForSpec = (spec: string, search: string) => items.filter(it =>
+    it.spec === spec && (it.name.toLowerCase().includes(search.toLowerCase()) || it.sapCode.toLowerCase().includes(search.toLowerCase()))
   );
 
   const finishedLinesValid = finishedLines.length > 0 && finishedLines.every(l => l.itemId && (parseFloat(l.qty) || 0) > 0);
@@ -543,9 +565,13 @@ const TrialRMReceiving: React.FC = () => {
                         )}
                       </div>
 
-                      <FormField label="Spec / Material">
-                        <input value={line.spec} onChange={(e) => patchLine(line.id, l => ({ ...l, spec: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                      <FormField label="Spec / Material (RM Group)">
+                        <select value={line.spec} onChange={(e) => setLineSpec(line.id, e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                          <option value="">Select spec…</option>
+                          {distinctSpecs.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
                       </FormField>
+                      <p className="text-[11px] text-slate-400 -mt-2">Only items that share this exact RM spec are shown below — a bar of one spec physically can't be cut into a different spec's item, so switching this drops any items you'd already checked that no longer belong.</p>
                       <div className="grid grid-cols-2 gap-3">
                         <FormField label="Bar Length (mm)">
                           <input type="number" value={line.lengthMm} onChange={(e) => patchLine(line.id, l => ({ ...l, lengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
@@ -581,12 +607,18 @@ const TrialRMReceiving: React.FC = () => {
                         <p className="text-[11px] text-slate-400 -mt-1">Use this when very few bars came in and have to be shared across items due to a planning/RM shortage. Enter pieces directly per item — whatever length is left over is logged as one shared, unattributed scrap figure rather than credited to any single item.</p>
                       )}
 
-                      <FormField label="Search items">
-                        <input value={line.itemSearch} onChange={(e) => patchLine(line.id, l => ({ ...l, itemSearch: e.target.value }))} placeholder="Search by name or SAP code…" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
-                      </FormField>
+                      {!line.spec && (
+                        <p className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">Select a Spec / Material above to see which items can be cut from this RM group.</p>
+                      )}
 
-                      <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
-                        {searchItems(line.itemSearch).map(it => {
+                      {line.spec && (
+                        <>
+                          <FormField label="Search items">
+                            <input value={line.itemSearch} onChange={(e) => patchLine(line.id, l => ({ ...l, itemSearch: e.target.value }))} placeholder="Search by name or SAP code…" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                          </FormField>
+
+                          <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
+                            {searchItemsForSpec(line.spec, line.itemSearch).map(it => {
                           const checked = line.checkedItemIds.includes(it.id);
                           return (
                             <div key={it.id} className={`p-3 ${checked ? 'bg-indigo-50/40' : ''}`}>
@@ -633,9 +665,11 @@ const TrialRMReceiving: React.FC = () => {
                                 </div>
                               )}
                             </div>
-                          );
-                        })}
-                      </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
 
                       {line.assignMode === 'byBars' && lc.overAllotted && (
                         <p className="text-[11px] font-bold text-rose-600">⚠ You've assigned more bars than were received on this line — reduce one of the entries above before saving.</p>
