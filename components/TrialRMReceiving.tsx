@@ -345,7 +345,18 @@ const TrialRMReceiving: React.FC = () => {
   const isLineValid = (lc: typeof lineComputations[number]) => {
     if (!lc.line.spec) return false;
     if (lc.lengthMmNum <= 0 || lc.barsReceivedNum <= 0) return false;
-    if (lc.mode === 'byBars') return !lc.overAllotted && lc.barsAllotted > 0;
+    if (lc.mode === 'byBars') {
+      if (lc.overAllotted || lc.barsAllotted <= 0) return false;
+      // Every bar received on a "Whole Bars per Item" line must be allotted to some item
+      // before Save is allowed — whether the line was pulled from an RM Cross-Bill invoice
+      // (which gets marked "used" and can't be pulled again) or typed in manually. Either
+      // way, an unallotted bar left behind at Save time has nowhere left to be accounted
+      // for and becomes untrackable stock. (The "Split by Pieces (Shortage)" mode is
+      // different on purpose — leftover length there is deliberately logged as one shared
+      // unattributed scrap figure, not silently dropped.)
+      if (lc.barsRemaining > 0.0001) return false;
+      return true;
+    }
     return !lc.overAllottedPieces && lc.pcsAllottedTotal > 0;
   };
   const allLinesValid = lineComputations.length > 0 && lineComputations.every(isLineValid);
@@ -824,6 +835,12 @@ const TrialRMReceiving: React.FC = () => {
                       )}
                       {line.assignMode === 'byPieces' && lc.overAllottedPieces && (
                         <p className="text-[11px] font-bold text-rose-600">⚠ These pieces need more length than this line's bar(s) actually have — reduce one of the entries above before saving.</p>
+                      )}
+                      {lc.mode === 'byBars' && !lc.overAllotted && lc.barsRemaining > 0.0001 && (
+                        <p className="text-[11px] font-bold text-rose-600">
+                          ⚠ {lc.barsRemaining} bar(s) on this line are still unallotted — every bar received must be assigned to an item before Save is enabled (or reduce Bars Received to just what you're assigning now).
+                          {line.lockedFromInvoice && ' This line was pulled from an RM Cross-Bill invoice, which gets marked "used" and won\'t be pullable again once saved, so leftover bars here would become untrackable.'}
+                        </p>
                       )}
                     </div>
                   );
