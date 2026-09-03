@@ -721,7 +721,7 @@ const TrialRMReceiving: React.FC = () => {
                     <div key={line.id} className="border-2 border-slate-100 rounded-2xl p-4 space-y-3">
                       <div className="flex justify-between items-center">
                         <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Line {idx + 1}</p>
-                        {lines.length > 1 && (
+                        {lines.length > 1 && !line.lockedFromInvoice && (
                           <button onClick={() => removeLine(line.id)} className="text-[10px] font-black uppercase tracking-widest text-rose-500 hover:text-rose-700">Remove</button>
                         )}
                       </div>
@@ -754,7 +754,7 @@ const TrialRMReceiving: React.FC = () => {
                         </FormField>
                       </div>
                       {line.lockedFromInvoice && (
-                        <p className="text-[11px] text-slate-400 -mt-2">Spec, Bar Length and Bars Received are all locked — pulled directly from this RM Cross-Bill invoice, so the physical quantity on the ground always matches what Accounts booked. Same catalog lock RM Cross-Bill already applies to Piece Length.</p>
+                        <p className="text-[11px] text-slate-400 -mt-2">Spec, Bar Length and Bars Received are all locked — pulled directly from this RM Cross-Bill invoice, so the physical quantity on the ground always matches what Accounts booked. Same catalog lock RM Cross-Bill already applies to Piece Length. This line also can't be removed — every material on this invoice must get a Material Entry; if the invoice was booked wrongly, Admin should delete and re-enter it in RM Cross-Bill Check rather than dropping a line here.</p>
                       )}
                       <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
                         <span className="text-slate-500">Bars available: {lc.barsReceivedNum}</span>
