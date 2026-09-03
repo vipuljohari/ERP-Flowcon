@@ -15,13 +15,18 @@ import React, { useMemo, useState } from 'react';
 // sample data before any of it touches the live app, per Vipul's request
 // (2-Sept-2026) for a trial before implementing this in production.
 //
-// A "Longer Pipe" receipt is invoice-first: Supplier/Invoice/Date/Total
-// Weight/Total Bill Value are entered once for the whole bill, and one or
-// more "lines" sit underneath it — each line is its own bar length + bars
-// received + item assignment. This covers a single invoice covering
-// several items at different bar lengths (e.g. Upper Tube on one length,
-// Rear+Lower Tube sharing a different length, all on one bill) without
-// re-entering the invoice totals per item.
+// Both "Longer Pipe" and "Finished Pieces" receipts are invoice-first:
+// Supplier/Invoice/Date/Total Weight/Total Bill Value are entered once for
+// the whole bill, and one or more "lines" sit underneath it — a bar length +
+// bars received + item assignment for Longer Pipe, or one item + qty for
+// Finished Pieces. This covers a single invoice covering several items (e.g.
+// Upper Tube on one bar length, Rear+Lower Tube sharing a different length,
+// all on one bill; or three different already-cut CTL parts on one bill)
+// without re-entering the invoice totals per item.
+//
+// This is direct-from-manufacturer RM procurement, not the customer-supplied
+// RM covered by RM Cross-Bill Check — so there is no customer/cross-invoice
+// link anywhere on this screen, per Vipul's confirmation.
 // ============================================================
 
 interface TrialItem {
@@ -32,11 +37,6 @@ interface TrialItem {
   itemLengthMm: number;
   stock: number;
   siblingIds: string[]; // ids of items interchangeable with this one in RM/CTL form (empty = none)
-}
-
-interface TrialCustomer {
-  id: string;
-  name: string;
 }
 
 interface ActivityEntry {
@@ -60,11 +60,18 @@ interface Line {
   lengthMm: string;
   barsReceived: string;
   assignMode: LineAssignMode;
-  customerId: string;
   checkedItemIds: string[];
   barsPerItem: Record<string, string>;
   pcsPerItem: Record<string, string>;
   itemSearch: string;
+}
+
+// One item + qty within a Finished Pieces invoice — e.g. 3 different CTL parts
+// arriving pre-cut on the same bill, each its own line under one invoice header.
+interface FinishedLine {
+  id: string;
+  itemId: string;
+  qty: string;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -78,11 +85,6 @@ const SEED_ITEMS: TrialItem[] = [
   { id: 'lower', name: 'Lower Tube', sapCode: 'TRIAL-LT-01', spec: '25x25x2 MS Tube', itemLengthMm: 1600, stock: 25, siblingIds: [] },
 ];
 
-const SEED_CUSTOMERS: TrialCustomer[] = [
-  { id: 'c1', name: 'SIAC-SKH INDIA CABS Mfg. Pvt. Ltd. Palwal' },
-  { id: 'c2', name: 'BELRISE INDUSTRIES LIMITED - XII' },
-];
-
 const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div>
     <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1 px-1">{label}</label>
@@ -94,7 +96,6 @@ const inrFmt = (n: number) => n.toLocaleString('en-IN', { minimumFractionDigits:
 
 const TrialRMReceiving: React.FC = () => {
   const [items, setItems] = useState<TrialItem[]>(SEED_ITEMS);
-  const [customers] = useState<TrialCustomer[]>(SEED_CUSTOMERS);
   const [log, setLog] = useState<ActivityEntry[]>([]);
 
   const addLog = (kind: ActivityEntry['kind'], message: string) => {
@@ -120,8 +121,9 @@ const TrialRMReceiving: React.FC = () => {
   const [weightKg, setWeightKg] = useState('');
   const [billValue, setBillValue] = useState('');
 
-  // Finished-pieces-only field
-  const [piecesQty, setPiecesQty] = useState('');
+  // Finished-pieces-only: one or more item+qty lines under the invoice header above —
+  // e.g. 3 different CTL parts arriving already cut, on one bill.
+  const [finishedLines, setFinishedLines] = useState<FinishedLine[]>([]);
 
   // Longer-pipe-only: one or more bar-length lines under the invoice header above.
   const [lines, setLines] = useState<Line[]>([]);
@@ -132,11 +134,16 @@ const TrialRMReceiving: React.FC = () => {
     lengthMm: '',
     barsReceived: '',
     assignMode: 'byBars',
-    customerId: customers[0]?.id || '',
     checkedItemIds: seedItem ? [seedItem.id, ...seedItem.siblingIds] : [],
     barsPerItem: {},
     pcsPerItem: {},
     itemSearch: '',
+  });
+
+  const makeFinishedLine = (seedItem?: TrialItem): FinishedLine => ({
+    id: genId(),
+    itemId: seedItem?.id || '',
+    qty: '',
   });
 
   const openEntry = (item: TrialItem) => {
@@ -144,8 +151,8 @@ const TrialRMReceiving: React.FC = () => {
     setEntryMode(null);
     setStep(1);
     setSupplier(''); setInvoiceNo(''); setDate(''); setWeightKg(''); setBillValue('');
-    setPiecesQty('');
     setLines([makeLine(item)]);
+    setFinishedLines([makeFinishedLine(item)]);
   };
 
   const closeEntry = () => {
@@ -159,6 +166,12 @@ const TrialRMReceiving: React.FC = () => {
 
   const addLine = () => setLines(prev => [...prev, makeLine()]);
   const removeLine = (lineId: string) => setLines(prev => (prev.length > 1 ? prev.filter(l => l.id !== lineId) : prev));
+
+  const patchFinishedLine = (lineId: string, updater: (l: FinishedLine) => FinishedLine) => {
+    setFinishedLines(prev => prev.map(l => (l.id === lineId ? updater(l) : l)));
+  };
+  const addFinishedLine = () => setFinishedLines(prev => [...prev, makeFinishedLine()]);
+  const removeFinishedLine = (lineId: string) => setFinishedLines(prev => (prev.length > 1 ? prev.filter(l => l.id !== lineId) : prev));
 
   // Live per-line computation: pcs/scrap for 'byBars', consumed-length/unattributed-scrap
   // for 'byPieces'. Recomputed from the lines array + items whenever either changes.
@@ -216,12 +229,21 @@ const TrialRMReceiving: React.FC = () => {
     it.name.toLowerCase().includes(search.toLowerCase()) || it.sapCode.toLowerCase().includes(search.toLowerCase())
   );
 
+  const finishedLinesValid = finishedLines.length > 0 && finishedLines.every(l => l.itemId && (parseFloat(l.qty) || 0) > 0);
+
   const saveFinishedPieces = () => {
-    if (!entryForItem) return;
-    const qty = parseFloat(piecesQty) || 0;
-    if (qty <= 0) return;
-    setItems(prev => prev.map(it => it.id === entryForItem.id ? { ...it, stock: it.stock + qty } : it));
-    addLog('receipt', `${entryForItem.name} — received ${qty} Pcs (finished pieces) from ${supplier || 'supplier'}, Invoice ${invoiceNo || 'n/a'}${weightKg ? `, ${weightKg} Kg` : ''}${billValue ? `, Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}.`);
+    if (!finishedLinesValid) return;
+    const stockDeltas: Record<string, number> = {};
+    const parts: string[] = [];
+    finishedLines.forEach(l => {
+      const qty = parseFloat(l.qty) || 0;
+      if (!l.itemId || qty <= 0) return;
+      stockDeltas[l.itemId] = (stockDeltas[l.itemId] || 0) + qty;
+      const it = items.find(i => i.id === l.itemId);
+      if (it) parts.push(`${it.name} +${qty} Pcs`);
+    });
+    setItems(prev => prev.map(it => (stockDeltas[it.id] ? { ...it, stock: it.stock + stockDeltas[it.id] } : it)));
+    addLog('receipt', `Finished Pieces Receipt — Invoice ${invoiceNo || 'n/a'} from ${supplier || 'supplier'}${date ? `, ${date}` : ''}${weightKg ? `, Total Weight ${weightKg} Kg` : ''}${billValue ? `, Total Bill Value ₹${inrFmt(parseFloat(billValue) || 0)}` : ''}. Received: ${parts.join('; ')}.`);
     closeEntry();
   };
 
@@ -429,23 +451,58 @@ const TrialRMReceiving: React.FC = () => {
               </div>
             )}
 
-            {entryMode === 'pieces' && (
+            {entryMode === 'pieces' && step === 1 && (
               <div className="mt-4 space-y-3">
+                <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several different finished parts, enter Total Weight and Total Bill Value once here.</p>
                 <div className="grid grid-cols-2 gap-3">
                   <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 </div>
+                <FormField label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 <div className="grid grid-cols-2 gap-3">
-                  <FormField label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-                  <FormField label="Qty (Pcs)"><input type="number" value={piecesQty} onChange={(e) => setPiecesQty(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField label="Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+                  <FormField label="Total Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                   <FormField label="Total Bill Value (₹)"><input type="number" value={billValue} onChange={(e) => setBillValue(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
                 </div>
                 <div className="flex gap-2 pt-2">
                   <button onClick={() => setEntryMode(null)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-                  <button onClick={saveFinishedPieces} disabled={(parseFloat(piecesQty) || 0) <= 0} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+                  <button onClick={() => setStep(2)} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+                    Next: Add Item Line(s) ›
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {entryMode === 'pieces' && step === 2 && (
+              <div className="mt-4 space-y-4">
+                {finishedLines.map((fl, idx) => (
+                  <div key={fl.id} className="border-2 border-slate-100 rounded-2xl p-4 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Line {idx + 1}</p>
+                      {finishedLines.length > 1 && (
+                        <button onClick={() => removeFinishedLine(fl.id)} className="text-[10px] font-black uppercase tracking-widest text-rose-500 hover:text-rose-700">Remove</button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Item">
+                        <select value={fl.itemId} onChange={(e) => patchFinishedLine(fl.id, l => ({ ...l, itemId: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
+                          <option value="">Select item…</option>
+                          {items.map(it => <option key={it.id} value={it.id}>{it.name} ({it.sapCode})</option>)}
+                        </select>
+                      </FormField>
+                      <FormField label="Qty (Pcs)">
+                        <input type="number" value={fl.qty} onChange={(e) => patchFinishedLine(fl.id, l => ({ ...l, qty: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                      </FormField>
+                    </div>
+                  </div>
+                ))}
+
+                <button onClick={addFinishedLine} className="w-full py-2.5 border-2 border-dashed border-slate-300 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 rounded-xl text-xs font-black uppercase tracking-widest">
+                  + Add Another Line (different item)
+                </button>
+
+                <div className="flex gap-2 pt-2">
+                  <button onClick={() => setStep(1)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
+                  <button onClick={saveFinishedPieces} disabled={!finishedLinesValid} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
                     Save (Trial only)
                   </button>
                 </div>
@@ -497,12 +554,6 @@ const TrialRMReceiving: React.FC = () => {
                           <input type="number" value={line.barsReceived} onChange={(e) => patchLine(line.id, l => ({ ...l, barsReceived: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                         </FormField>
                       </div>
-                      <FormField label="Cross-Invoicing Customer">
-                        <select value={line.customerId} onChange={(e) => patchLine(line.id, l => ({ ...l, customerId: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
-                          {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                      </FormField>
-
                       <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
                         <span className="text-slate-500">Bars available: {lc.barsReceivedNum}</span>
                         {line.assignMode === 'byBars' ? (
