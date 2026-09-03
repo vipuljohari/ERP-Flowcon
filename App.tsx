@@ -20,6 +20,7 @@ import ImportLegacyData from './components/ImportLegacyData';
 import ImportIssues from './components/ImportIssues';
 import RMCrossBillCheck from './components/RMCrossBillCheck';
 import Notifications from './components/Notifications';
+import TrialRMReceiving from './components/TrialRMReceiving';
 import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
@@ -1565,6 +1566,7 @@ const MainApp: React.FC = () => {
           {isAdmin && currentView === 'user_master' && <UserMaster />}
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}
+          {isAdmin && currentView === 'trial_rm_receiving' && <TrialRMReceiving />}
           {canAccessView(role, currentView) && currentView === 'import_issues' && (
             <ImportIssues
               isAdmin={isAdmin}

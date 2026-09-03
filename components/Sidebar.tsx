@@ -78,6 +78,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       { id: 'user_master', label: 'User Master', icon: '👤' },
       { id: 'company_master', label: 'Company Master', icon: '🏭' },
       { id: 'import_legacy', label: 'Import Legacy Data', icon: '📤' },
+      { id: 'trial_rm_receiving', label: '🧪 RM Receiving (Trial)', icon: '🧪' },
     );
   }
 
