@@ -746,11 +746,15 @@ const TrialRMReceiving: React.FC = () => {
                           )}
                         </FormField>
                         <FormField label="Bars Received">
-                          <input type="number" value={line.barsReceived} onChange={(e) => patchLine(line.id, l => ({ ...l, barsReceived: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                          {line.lockedFromInvoice ? (
+                            <input disabled value={line.barsReceived} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
+                          ) : (
+                            <input type="number" value={line.barsReceived} onChange={(e) => patchLine(line.id, l => ({ ...l, barsReceived: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                          )}
                         </FormField>
                       </div>
                       {line.lockedFromInvoice && (
-                        <p className="text-[11px] text-slate-400 -mt-2">Spec and Bar Length are locked — pulled from RM Cross-Bill's material catalog for this material code, same as that screen locks Piece Length.</p>
+                        <p className="text-[11px] text-slate-400 -mt-2">Spec, Bar Length and Bars Received are all locked — pulled directly from this RM Cross-Bill invoice, so the physical quantity on the ground always matches what Accounts booked. Same catalog lock RM Cross-Bill already applies to Piece Length.</p>
                       )}
                       <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
                         <span className="text-slate-500">Bars available: {lc.barsReceivedNum}</span>
