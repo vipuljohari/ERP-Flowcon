@@ -219,9 +219,16 @@ const TrialRMReceiving: React.FC = () => {
     setLinkedInvoiceId(null);
   };
 
-  // Only invoices that have not yet had a Material Entry done against them are offered —
-  // in the real app this would also exclude invoices booked before this feature went live.
-  const availableMfgInvoices = mfgInvoices.filter(inv => !inv.usedForMaterialEntry);
+  // Only invoices that (a) have not yet had a Material Entry done against them, and (b)
+  // contain at least one material matching the spec of the item this Material Entry was
+  // opened for, are offered — an invoice with no relevant material has no business showing
+  // up here at all, even if it does contain other, unrelated materials. In the real app this
+  // would also exclude invoices booked before this feature went live.
+  const availableMfgInvoices = mfgInvoices.filter(inv =>
+    !inv.usedForMaterialEntry &&
+    entryForItem &&
+    inv.materials.some(m => MATERIAL_CATALOG[m.materialCode]?.spec === entryForItem.spec)
+  );
 
   const pullFromInvoice = (inv: MfgInvoice) => {
     const hasExistingData = lines.some(l => l.lengthMm || l.barsReceived || l.checkedItemIds.length > 0);
