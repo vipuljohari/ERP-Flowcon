@@ -1828,7 +1828,7 @@ const MainApp: React.FC = () => {
     pushAdminAlert({
       type: 'item_inward', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
       timestamp: finalTs, itemCount: newLogs.length,
-      details: `Material Entry — Finished Pieces: ${newLogs.length} item(s) received.`,
+      details: `Material Entry — Finished Pieces: ${newLogs.length} item(s) received. Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
     });
   }
 
@@ -1906,7 +1906,7 @@ const MainApp: React.FC = () => {
     pushAdminAlert({
       type: 'rm_inward', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
       timestamp: finalTs, itemCount: lines.length,
-      details: `Material Entry — Longer Pipe: ${lines.length} line(s), Total Weight ${header.totalWeightKg ?? '—'} Kg, Bill Value ₹${header.totalBillValue ?? '—'}.`,
+      details: `Material Entry — Longer Pipe: ${lines.length} line(s), Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
     });
     if (totalScrapMm > 0.0001) {
       pushAdminAlert({

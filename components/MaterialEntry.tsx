@@ -121,6 +121,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   const [date, setDate] = useState(todayDateStr);
   const [weightKg, setWeightKg] = useState('');
   const [billValue, setBillValue] = useState('');
+  const [dharamkantaWeightKg, setDharamkantaWeightKg] = useState('');
 
   const [finishedLines, setFinishedLines] = useState<UIFinishedLine[]>([]);
   const [lines, setLines] = useState<UILongerLine[]>([]);
@@ -352,12 +353,25 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     });
   }, [lines, parts]);
 
-  const allLinesValid = lineComputations.length > 0 && lineComputations.every(lc => lc.error === null) && isDateValid(date);
+  // The invoice header is mandatory in full — Supplier, Invoice No., Total
+  // Weight, Total Bill Value and the Dharamkanta (weighbridge) Weight all
+  // have to be filled in before moving past step 1, and are re-checked here
+  // (not just on the "Next" button) so Save can never go through with any of
+  // them blank even if a Next-button check is ever bypassed.
+  const headerValid =
+    supplier.trim().length > 0 &&
+    invoiceNo.trim().length > 0 &&
+    (parseFloat(weightKg) || 0) > 0 &&
+    (parseFloat(billValue) || 0) > 0 &&
+    (parseFloat(dharamkantaWeightKg) || 0) > 0 &&
+    isDateValid(date);
+
+  const allLinesValid = headerValid && lineComputations.length > 0 && lineComputations.every(lc => lc.error === null);
 
   const finishedLinesValid =
+    headerValid &&
     finishedLines.length > 0 &&
-    finishedLines.every(l => l.partId && (parseFloat(l.qty) || 0) > 0) &&
-    isDateValid(date);
+    finishedLines.every(l => l.partId && (parseFloat(l.qty) || 0) > 0);
 
   const buildHeader = (): MaterialEntryHeader => ({
     supplierName: supplier,
@@ -365,6 +379,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     date,
     totalWeightKg: weightKg ? parseFloat(weightKg) || undefined : undefined,
     totalBillValue: billValue ? parseFloat(billValue) || undefined : undefined,
+    dharamkantaWeightKg: dharamkantaWeightKg ? parseFloat(dharamkantaWeightKg) || undefined : undefined,
     invoiceBookedInUnit1: bookedInUnit1,
   });
 
@@ -411,10 +426,10 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'pieces' && step === 1 && (
           <div className="mt-4 space-y-3">
-            <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several different finished parts, enter Total Weight and Total Bill Value once here.</p>
+            <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several different finished parts, enter Total Weight and Total Bill Value once here. Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
-              <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-              <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Invoice No. *"><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
             </div>
             <label className="flex items-start gap-2 text-xs font-bold text-slate-600 -mt-1 px-1">
               <input type="checkbox" checked={bookedInUnit1} onChange={(e) => setBookedInUnit1(e.target.checked)} className="mt-0.5" />
@@ -425,12 +440,18 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
             </FormField>
             <p className="text-[11px] text-slate-400 -mt-2">Current month only ({minEntryDateStr} to {todayDateStr}) — previous months are locked.</p>
             <div className="grid grid-cols-2 gap-3">
-              <FormField label="Total Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-              <FormField label="Total Bill Value (₹)"><input type="number" value={billValue} onChange={(e) => setBillValue(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Total Weight (Kg) *"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Total Bill Value (₹) *"><input type="number" value={billValue} onChange={(e) => setBillValue(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
             </div>
+            <FormField label="Dharamkanta Weight (Kg) *">
+              <input type="number" value={dharamkantaWeightKg} onChange={(e) => setDharamkantaWeightKg(e.target.value)} placeholder="Actual weighbridge slip weight" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+            </FormField>
+            {!headerValid && (
+              <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">Supplier, Invoice No., a valid Date, Total Weight, Total Bill Value and Dharamkanta Weight are all required before you can continue.</p>
+            )}
             <div className="flex gap-2 pt-2">
               <button onClick={() => setEntryMode(null)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-              <button onClick={() => setStep(2)} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+              <button onClick={() => setStep(2)} disabled={!headerValid} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
                 Next: Add Item Line(s) ›
               </button>
             </div>
@@ -502,10 +523,10 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
                 )}
               </div>
             )}
-            <p className="text-[11px] text-slate-400">{availableInvoiceGroups.length > 0 ? 'Or enter these details manually:' : 'These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here.'}</p>
+            <p className="text-[11px] text-slate-400">{availableInvoiceGroups.length > 0 ? 'Or enter these details manually:' : 'These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here.'} Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
-              <FormField label="Supplier"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-              <FormField label="Invoice No."><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Invoice No. *"><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
             </div>
             <label className="flex items-start gap-2 text-xs font-bold text-slate-600 -mt-1 px-1">
               <input type="checkbox" checked={bookedInUnit1} onChange={(e) => setBookedInUnit1(e.target.checked)} className="mt-0.5" />
@@ -516,12 +537,18 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
             </FormField>
             <p className="text-[11px] text-slate-400 -mt-2">Current month only ({minEntryDateStr} to {todayDateStr}) — previous months are locked.</p>
             <div className="grid grid-cols-2 gap-3">
-              <FormField label="Total Weight (Kg)"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-              <FormField label="Total Bill Value (₹)"><input type="number" value={billValue} onChange={(e) => setBillValue(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Total Weight (Kg) *"><input type="number" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Total Bill Value (₹) *"><input type="number" value={billValue} onChange={(e) => setBillValue(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
             </div>
+            <FormField label="Dharamkanta Weight (Kg) *">
+              <input type="number" value={dharamkantaWeightKg} onChange={(e) => setDharamkantaWeightKg(e.target.value)} placeholder="Actual weighbridge slip weight" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+            </FormField>
+            {!headerValid && (
+              <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">Supplier, Invoice No., a valid Date, Total Weight, Total Bill Value and Dharamkanta Weight are all required before you can continue — even when pulling from an invoice, the Dharamkanta Weight still has to be entered by hand since it comes from the weighbridge slip, not the invoice.</p>
+            )}
             <div className="flex gap-2 pt-2">
               <button onClick={() => setEntryMode(null)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-              <button onClick={() => setStep(2)} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+              <button onClick={() => setStep(2)} disabled={!headerValid} className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
                 Next: Add Bar-Length Line(s) ›
               </button>
             </div>

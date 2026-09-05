@@ -27,6 +27,10 @@ export interface MaterialEntryHeader {
   date: string; // yyyy-mm-dd
   totalWeightKg?: number;
   totalBillValue?: number;
+  // Actual weighbridge (Dharamkanta) reading for this receipt — a physical
+  // check against the invoice's own stated Total Weight, entered separately
+  // since it comes from the weighbridge slip, not the supplier's paperwork.
+  dharamkantaWeightKg?: number;
   invoiceBookedInUnit1: boolean;
 }
 
