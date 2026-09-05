@@ -34,6 +34,7 @@ import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
 import { TallyService } from './services/tally';
 import { isSheetRM, rmKgPerPart, partsPerRMUnit } from './services/rmYield';
+import { pcsPerBar, computeUnattributedScrapMm, LongerPipeLine, MaterialEntryHeader, FinishedPieceLine } from './services/materialEntry';
 // Clock-corrected timestamp helper — see services/time.ts for why a plain
 // `new Date()` here is no longer trusted directly (a wrong device clock
 // used to be able to produce a dispatch/inward entry dated in a future
@@ -47,6 +48,12 @@ const MainApp: React.FC = () => {
   const role = appUser?.role || 'store';
   const isAdmin = role === 'admin';
   const [currentView, setCurrentView] = useState('dashboard');
+  // Set when Store/Admin clicks "Post to Inventory" on an already-posted RM
+  // Cross-Bill invoice — carries that invoice group's key across to
+  // Inventory/MaterialEntry so it opens straight into Longer Pipe mode with
+  // that invoice already pulled in, skipping the "find the right invoice"
+  // picker step. Cleared once MaterialEntry has consumed it.
+  const [pendingMaterialEntryInvoiceKey, setPendingMaterialEntryInvoiceKey] = useState<string | null>(null);
   const [pendingItemDraft, setPendingItemDraft] = useState<{ sapCode: string; name: string; customer?: string } | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [userName, setUserName] = useState(() => appUser?.displayName || localStorage.getItem('autopart_username') || 'Vipul PC');
@@ -269,6 +276,10 @@ const MainApp: React.FC = () => {
   const activeCustomerRef = useRef(activeCustomer);
   const rawMaterialsRef = useRef(rawMaterials);
   const rmInwardLogsRef = useRef(rmInwardLogs);
+  const rmManufacturerInvoicesRef = useRef(rmManufacturerInvoices);
+  const rmCrossInvoicesRef = useRef(rmCrossInvoices);
+  const rmMaterialLengthsRef = useRef(rmMaterialLengths);
+  const adminAlertsRef = useRef(adminAlerts);
   const localRMOpeningBalancesRef = useRef(localRMOpeningBalances);
   const localPartOpeningBalancesRef = useRef(localPartOpeningBalances);
   const lastSyncTimeRef = useRef(0);
@@ -278,6 +289,10 @@ const MainApp: React.FC = () => {
     inwardLogsRef.current = inwardLogs; archivesRef.current = archives;
     activeCustomerRef.current = activeCustomer;
     rawMaterialsRef.current = rawMaterials; rmInwardLogsRef.current = rmInwardLogs;
+    rmManufacturerInvoicesRef.current = rmManufacturerInvoices;
+    rmCrossInvoicesRef.current = rmCrossInvoices;
+    rmMaterialLengthsRef.current = rmMaterialLengths;
+    adminAlertsRef.current = adminAlerts;
     localRMOpeningBalancesRef.current = localRMOpeningBalances;
     localPartOpeningBalancesRef.current = localPartOpeningBalances;
 
@@ -286,7 +301,7 @@ const MainApp: React.FC = () => {
     // localStorage. Only small local-only preferences stay here.
     localStorage.setItem('autopart_local_rm_opening_balances', JSON.stringify(localRMOpeningBalances));
     localStorage.setItem('autopart_username', userName);
-  }, [parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, localRMOpeningBalances, localPartOpeningBalances, userName]);
+  }, [parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, rmManufacturerInvoices, rmCrossInvoices, rmMaterialLengths, adminAlerts, localRMOpeningBalances, localPartOpeningBalances, userName]);
 
   const sD = selectedDate;
   const sDK = `${sD.getFullYear()}-${String(sD.getMonth()+1).padStart(2,'0')}-${String(sD.getDate()).padStart(2,'0')}`;
@@ -705,14 +720,18 @@ const MainApp: React.FC = () => {
       if (!gService && !dService) return;
 
       try {
-        const backup = { 
-          parts: partsRef.current, 
-          sales: salesRef.current, 
-          inwardLogs: inwardLogsRef.current, 
-          archives: archivesRef.current, 
-          customers: customersRef.current, 
+        const backup = {
+          parts: partsRef.current,
+          sales: salesRef.current,
+          inwardLogs: inwardLogsRef.current,
+          archives: archivesRef.current,
+          customers: customersRef.current,
           rawMaterials: rawMaterialsRef.current,
           rmInwardLogs: rmInwardLogsRef.current,
+          rmManufacturerInvoices: rmManufacturerInvoicesRef.current,
+          rmCrossInvoices: rmCrossInvoicesRef.current,
+          rmMaterialLengths: rmMaterialLengthsRef.current,
+          adminAlerts: adminAlertsRef.current,
           localRMOpeningBalances: localRMOpeningBalancesRef.current,
           localPartOpeningBalances: localPartOpeningBalancesRef.current,
           timestamp: new Date().toISOString(),
@@ -731,7 +750,7 @@ const MainApp: React.FC = () => {
     }, 45000); // 45 second debounce captures batch updates
 
     return () => clearTimeout(debounceTimer);
-  }, [parts, sales, inwardLogs, archives, customers, localRMOpeningBalances, localPartOpeningBalances]);
+  }, [parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, rmManufacturerInvoices, rmCrossInvoices, rmMaterialLengths, adminAlerts, localRMOpeningBalances, localPartOpeningBalances]);
 
   // OAuth Callback Handler
   useEffect(() => {
@@ -927,14 +946,18 @@ const MainApp: React.FC = () => {
         
         // 2. Perform Cloud Backup
         if (autoBackupEnabled) {
-          const backup = { 
-            parts: partsRef.current, 
-            sales: salesRef.current, 
-            inwardLogs: inwardLogsRef.current, 
-            archives: archivesRef.current, 
-            customers: customersRef.current, 
+          const backup = {
+            parts: partsRef.current,
+            sales: salesRef.current,
+            inwardLogs: inwardLogsRef.current,
+            archives: archivesRef.current,
+            customers: customersRef.current,
             rawMaterials: rawMaterialsRef.current,
             rmInwardLogs: rmInwardLogsRef.current,
+            rmManufacturerInvoices: rmManufacturerInvoicesRef.current,
+            rmCrossInvoices: rmCrossInvoicesRef.current,
+            rmMaterialLengths: rmMaterialLengthsRef.current,
+            adminAlerts: adminAlertsRef.current,
             localRMOpeningBalances: localRMOpeningBalancesRef.current,
             localPartOpeningBalances: localPartOpeningBalancesRef.current,
             timestamp: new Date().toISOString(),
@@ -1010,7 +1033,22 @@ const MainApp: React.FC = () => {
     setCustomers(data.customers || INITIAL_CUSTOMERS);
     setRawMaterials(data.rawMaterials || []);
     setRmInwardLogs(data.rmInwardLogs || []);
-    
+    setRmManufacturerInvoices(data.rmManufacturerInvoices || []);
+    setRmCrossInvoices(data.rmCrossInvoices || []);
+    setRmMaterialLengths(data.rmMaterialLengths || []);
+    setAdminAlerts(data.adminAlerts || []);
+    // Deliberately NOT restored, even though a complete backup captures
+    // them (see components/DataManagement.tsx's handlePushToCloud):
+    //  - data.rmPurchaseVouchers is an hourly-refreshed Tally mirror —
+    //    restoring a stale copy is pointless, the next sync overwrites it
+    //    within the hour anyway.
+    //  - data.companies / data.users carry live login/session state
+    //    (activeDeviceToken, pendingDevices) tied to real Firebase Auth
+    //    accounts — silently overwriting those from an old snapshot could
+    //    revoke or resurrect a device's access with no one aware it
+    //    happened. If Company/User Master ever genuinely needs restoring,
+    //    that should be a deliberate manual step, not part of this button.
+
     // Support restoring localRMOpeningBalances!
     const restoredOpeningBalances = data.localRMOpeningBalances || {};
     setLocalRMOpeningBalances(restoredOpeningBalances);
@@ -1359,6 +1397,13 @@ const MainApp: React.FC = () => {
               setRawMaterials={setRawMaterials}
               setParts={setParts}
               onCreateAlert={pushAdminAlert}
+              manufacturerInvoices={rmManufacturerInvoices}
+              setManufacturerInvoices={setRmManufacturerInvoices}
+              materialLengths={rmMaterialLengths}
+              onMaterialEntryFinishedPieces={handleMaterialEntryFinishedPieces}
+              onMaterialEntryLongerPipe={handleMaterialEntryLongerPipe}
+              pendingMaterialEntryInvoiceKey={pendingMaterialEntryInvoiceKey}
+              onPendingMaterialEntryInvoiceConsumed={() => setPendingMaterialEntryInvoiceKey(null)}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
@@ -1397,7 +1442,7 @@ const MainApp: React.FC = () => {
              }
           }} />}
           {canAccessView(role, currentView) && currentView === 'analytics' && <AIAnalyst parts={cDP} sales={contextSales} />}
-          {canAccessView(role, currentView) && currentView === 'data_mgmt' && <DataManagement parts={parts} sales={sales} inwardLogs={inwardLogs} archives={archives} customers={customers} rawMaterials={rawMaterials} rmInwardLogs={rmInwardLogs} localRMOpeningBalances={localRMOpeningBalances} localPartOpeningBalances={localPartOpeningBalances} isAdmin={isAdmin} onImportData={handleFullImport} syncLog={syncLog} userName={userName} />}
+          {canAccessView(role, currentView) && currentView === 'data_mgmt' && <DataManagement parts={parts} sales={sales} inwardLogs={inwardLogs} archives={archives} customers={customers} rawMaterials={rawMaterials} rmInwardLogs={rmInwardLogs} rmManufacturerInvoices={rmManufacturerInvoices} rmCrossInvoices={rmCrossInvoices} rmMaterialLengths={rmMaterialLengths} rmPurchaseVouchers={tallyPurchaseVouchers} adminAlerts={adminAlerts} localRMOpeningBalances={localRMOpeningBalances} localPartOpeningBalances={localPartOpeningBalances} isAdmin={isAdmin} onImportData={handleFullImport} syncLog={syncLog} userName={userName} />}
           {canAccessView(role, currentView) && currentView === 'item_master' && isAdmin && (
             <ItemMaster 
               parts={sortedParts} 
@@ -1409,8 +1454,19 @@ const MainApp: React.FC = () => {
               onAdd={(p) => {
                 const newPartId = Math.random().toString(36).substr(2, 9);
                 const newPart = { ...p, id: newPartId, stock: 0, inward: 0, revisionCount: 0, lastUpdated: new Date().toISOString(), status: 'Out of Stock', schedules: {} } as Part;
-                setParts(prev => [...prev, newPart]);
-                
+                setParts(prev => {
+                  const withNew = [...prev, newPart];
+                  // Sibling links are always symmetric — a brand-new part has no
+                  // prior siblings to remove, only ones to add the reverse link for.
+                  const newSiblings = newPart.siblingIds || [];
+                  if (newSiblings.length === 0) return withNew;
+                  return withNew.map(existing =>
+                    newSiblings.includes(existing.id)
+                      ? { ...existing, siblingIds: Array.from(new Set([...(existing.siblingIds || []), newPartId])) }
+                      : existing
+                  );
+                });
+
                 // Sync Raw Materials for this new part
                 if (p.customerRMMappings) {
                   const mappings = p.customerRMMappings;
@@ -1424,8 +1480,19 @@ const MainApp: React.FC = () => {
                 }
               }} 
               onEdit={(id, up) => {
-                setParts(prev => prev.map(p => p.id === id ? { ...p, ...up } : p));
-                
+                setParts(prev => {
+                  const prevSiblings = prev.find(p => p.id === id)?.siblingIds || [];
+                  const nextSiblings = up.siblingIds !== undefined ? (up.siblingIds || []) : prevSiblings;
+                  const added = nextSiblings.filter(sid => !prevSiblings.includes(sid));
+                  const removed = prevSiblings.filter(sid => !nextSiblings.includes(sid));
+                  return prev.map(p => {
+                    if (p.id === id) return { ...p, ...up };
+                    if (added.includes(p.id)) return { ...p, siblingIds: Array.from(new Set([...(p.siblingIds || []), id])) };
+                    if (removed.includes(p.id)) return { ...p, siblingIds: (p.siblingIds || []).filter(x => x !== id) };
+                    return p;
+                  });
+                });
+
                 // Sync Raw Materials for this part
                 const mappings = up.customerRMMappings || {};
                 const partName = up.name || parts.find(p => p.id === id)?.name || '';
@@ -1442,7 +1509,10 @@ const MainApp: React.FC = () => {
                 }));
               }} 
               onDelete={(id) => {
-                setParts(prev => prev.filter(p => p.id !== id));
+                setParts(prev => prev
+                  .filter(p => p.id !== id)
+                  .map(p => (p.siblingIds || []).includes(id) ? { ...p, siblingIds: p.siblingIds!.filter(x => x !== id) } : p)
+                );
                 // Clear any RM mappings previously pointing to this item definition
                 setRawMaterials(prevRMs => prevRMs.map(rm => {
                   if (rm.partId === id) {
@@ -1590,6 +1660,10 @@ const MainApp: React.FC = () => {
               setMaterialLengths={setRmMaterialLengths}
               isAdmin={isAdmin}
               onCreateAlert={pushAdminAlert}
+              onPostToInventory={(invoiceKey) => {
+                setPendingMaterialEntryInvoiceKey(invoiceKey);
+                setCurrentView('inventory');
+              }}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
@@ -1697,6 +1771,130 @@ const MainApp: React.FC = () => {
           }
         });
         return nextLogs;
+      });
+    }
+  }
+
+  // --- Material Entry (RM Receiving) — Longer Pipe / Finished Pieces ---
+  // Deliberately does NOT call handleAddInward/handleAddRMInward above: both
+  // assume one RM maps to a single yield factor (partsPerRMUnit), which
+  // can't represent "one bar becomes several different Part sizes" — using
+  // them here would double-count or misassign stock. These two write
+  // directly, once, to each collection instead. Validated rules (full
+  // allotment before save, no negative entries, an invoice-pulled line
+  // can't be removed) live in services/materialEntry.ts and are enforced by
+  // components/MaterialEntry.tsx before either of these is ever called.
+  function handleMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[]) {
+    const finalTs = `${header.date}T12:00:00.000`;
+    const entryId = Math.random().toString(36).substr(2, 9);
+    const newLogs = lines
+      .map(l => {
+        const part = parts.find(p => p.id === l.partId);
+        if (!part || l.quantity <= 0) return null;
+        return {
+          id: Math.random().toString(36).substr(2, 9), partId: l.partId, partName: part.name,
+          sapCode: part.sapCode, quantity: l.quantity, supplier: header.supplierName, timestamp: finalTs,
+          invoiceNumber: header.invoiceNo, materialEntryId: entryId, invoiceBookedInUnit1: header.invoiceBookedInUnit1,
+        };
+      })
+      .filter((l): l is NonNullable<typeof l> => l !== null);
+    if (newLogs.length === 0) return;
+
+    setInwardLogs(prev => [...newLogs, ...prev]);
+    setParts(prev => prev.map(p => {
+      const gained = newLogs.filter(l => l.partId === p.id).reduce((s, l) => s + l.quantity, 0);
+      return gained !== 0 ? { ...p, stock: p.stock + gained, lastUpdated: finalTs } : p;
+    }));
+    // Deliberately no RM-side effect at all — Finished Pieces means nothing
+    // bar-shaped was received (e.g. a job-work vendor already did the cutting).
+    pushAdminAlert({
+      type: 'item_inward', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
+      timestamp: finalTs, itemCount: newLogs.length,
+      details: `Material Entry — Finished Pieces: ${newLogs.length} item(s) received.`,
+    });
+  }
+
+  function handleMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[]) {
+    const finalTs = `${header.date}T12:00:00.000`;
+    const entryId = Math.random().toString(36).substr(2, 9);
+    const newInwardLogs: InwardLog[] = [];
+    const newRmInwardLogs: RMInwardLog[] = [];
+    const rmStockDelta: Record<string, number> = {};
+    const partStockDelta: Record<string, number> = {};
+    const pulledInvoiceLineIds: string[] = [];
+    let totalScrapMm = 0;
+
+    lines.forEach(line => {
+      const rm = rawMaterials.find(r => r.id === line.rmId);
+      if (!rm) return;
+
+      newRmInwardLogs.push({
+        id: Math.random().toString(36).substr(2, 9), rmId: rm.id, rmSize: rm.size,
+        quantity: line.barsReceived, supplier: header.supplierName, timestamp: finalTs,
+        invoiceNumber: header.invoiceNo, unit: 'pcs', materialEntryId: entryId,
+        invoiceBookedInUnit1: header.invoiceBookedInUnit1,
+        remarks: line.pulledFromInvoiceLineId ? 'Pulled from RM Cross-Bill Invoice' : undefined,
+      });
+      rmStockDelta[rm.id] = (rmStockDelta[rm.id] || 0) + line.barsReceived;
+
+      const itemLengthById: Record<string, number> = {};
+      line.allotments.forEach(a => {
+        const part = parts.find(p => p.id === a.partId);
+        if (!part) return;
+        itemLengthById[a.partId] = part.itemLength || 0;
+        const pcs = line.subMode === 'whole_bars'
+          ? (a.barsAllotted || 0) * pcsPerBar(line.barLengthMm, part.itemLength || 0)
+          : (a.piecesAllotted || 0);
+        if (pcs <= 0) return;
+        newInwardLogs.push({
+          id: Math.random().toString(36).substr(2, 9), partId: a.partId, partName: part.name,
+          sapCode: part.sapCode, quantity: pcs, supplier: header.supplierName, timestamp: finalTs,
+          invoiceNumber: header.invoiceNo, materialEntryId: entryId,
+          invoiceBookedInUnit1: header.invoiceBookedInUnit1,
+        });
+        partStockDelta[a.partId] = (partStockDelta[a.partId] || 0) + pcs;
+      });
+
+      if (line.subMode === 'split_pieces') {
+        totalScrapMm += computeUnattributedScrapMm(line, itemLengthById);
+      }
+      if (line.pulledFromInvoiceLineId) pulledInvoiceLineIds.push(line.pulledFromInvoiceLineId);
+    });
+
+    if (newRmInwardLogs.length === 0 && newInwardLogs.length === 0) return;
+
+    if (newInwardLogs.length > 0) setInwardLogs(prev => [...newInwardLogs, ...prev]);
+    setRmInwardLogs(prev => [...newRmInwardLogs, ...prev]);
+    if (Object.keys(partStockDelta).length > 0) {
+      setParts(prev => prev.map(p => partStockDelta[p.id] ? { ...p, stock: p.stock + partStockDelta[p.id], lastUpdated: finalTs } : p));
+    }
+    setRawMaterials(prev => prev.map(r => rmStockDelta[r.id] ? { ...r, stock: r.stock + rmStockDelta[r.id] } : r));
+
+    if (pulledInvoiceLineIds.length > 0) {
+      // Every material line under a pulled invoice's invoiceNo is grouped
+      // together in the UI and must all be included (no partial pull) — this
+      // marks the whole invoice group used, once, and it's irreversible from
+      // here: re-entry means Admin deletes and redoes it in RM Cross-Bill Check.
+      const usedKeys = new Set(
+        rmManufacturerInvoices.filter(inv => pulledInvoiceLineIds.includes(inv.id)).map(inv => `${inv.invoiceNo}__${inv.manufacturerName}`)
+      );
+      setRmManufacturerInvoices(prev => prev.map(inv =>
+        usedKeys.has(`${inv.invoiceNo}__${inv.manufacturerName}`)
+          ? { ...inv, usedForMaterialEntry: true, usedForMaterialEntryAt: finalTs }
+          : inv
+      ));
+    }
+
+    pushAdminAlert({
+      type: 'rm_inward', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
+      timestamp: finalTs, itemCount: lines.length,
+      details: `Material Entry — Longer Pipe: ${lines.length} line(s), Total Weight ${header.totalWeightKg ?? '—'} Kg, Bill Value ₹${header.totalBillValue ?? '—'}.`,
+    });
+    if (totalScrapMm > 0.0001) {
+      pushAdminAlert({
+        type: 'material_entry_scrap', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
+        timestamp: finalTs,
+        details: `${totalScrapMm.toFixed(0)} mm unattributed leftover across Split-by-Pieces line(s) in this Material Entry — not credited to any single item.`,
       });
     }
   }

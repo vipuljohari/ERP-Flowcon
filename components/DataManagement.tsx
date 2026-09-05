@@ -1,6 +1,8 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Part, Sale, InwardLog, MonthlyArchive, Customer, RawMaterial, RMInwardLog } from '../types';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '../services/firebase';
+import { Part, Sale, InwardLog, MonthlyArchive, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert } from '../types';
 import { GoogleDriveService, GDriveBackupFile, GDriveFolder } from '../services/googleDrive';
 import { DropboxService, DropboxBackupFile } from '../services/dropbox';
 
@@ -12,6 +14,17 @@ interface DataManagementProps {
   customers: Customer[];
   rawMaterials: RawMaterial[];
   rmInwardLogs: RMInwardLog[];
+  // Added so "Manual Backup" (and the automatic backups in App.tsx) capture
+  // every collection this app manages, not just the original set — see the
+  // Sep-2026 request for a complete backup before the Material Entry
+  // feature went live. rmPurchaseVouchers is included read-only (it's an
+  // hourly Tally mirror, harmless to snapshot, but never restored — see
+  // App.tsx's handleFullImport for why).
+  rmManufacturerInvoices?: RMManufacturerInvoice[];
+  rmCrossInvoices?: RMCustomerCrossInvoice[];
+  rmMaterialLengths?: RMMaterialLength[];
+  rmPurchaseVouchers?: RMPurchaseVoucher[];
+  adminAlerts?: AdminAlert[];
   localRMOpeningBalances?: Record<string, string>;
   localPartOpeningBalances?: Record<string, string>;
   onImportData: (data: any) => void;
@@ -38,6 +51,11 @@ const DataManagement: React.FC<DataManagementProps> = ({
   customers, 
   rawMaterials = [],
   rmInwardLogs = [],
+  rmManufacturerInvoices = [],
+  rmCrossInvoices = [],
+  rmMaterialLengths = [],
+  rmPurchaseVouchers = [],
+  adminAlerts = [],
   localRMOpeningBalances = {},
   localPartOpeningBalances = {},
   onImportData,
@@ -267,7 +285,26 @@ const DataManagement: React.FC<DataManagementProps> = ({
   const handlePushToCloud = async (provider: 'gdrive' | 'dropbox') => {
     setIsSyncing(true);
     try {
-      const data = { parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs, localRMOpeningBalances, localPartOpeningBalances, timestamp: new Date().toISOString(), lastModifiedBy: userName };
+      // Company Master and User Master aren't lifted into App.tsx state
+      // (each manages its own onSnapshot listener), so a one-off read here
+      // is the simplest way to fold them into a "everything" backup without
+      // restructuring how either screen works. Both change rarely, so a
+      // fresh read at click-time is more than fresh enough — no need to
+      // keep either of these subscribed/live for this.
+      const [companiesSnap, usersSnap] = await Promise.all([
+        getDocs(collection(db, 'companies')),
+        getDocs(collection(db, 'users')),
+      ]);
+      const companies = companiesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const data = {
+        parts, sales, inwardLogs, archives, customers, rawMaterials, rmInwardLogs,
+        rmManufacturerInvoices, rmCrossInvoices, rmMaterialLengths, rmPurchaseVouchers, adminAlerts,
+        companies, users,
+        localRMOpeningBalances, localPartOpeningBalances,
+        timestamp: new Date().toISOString(), lastModifiedBy: userName,
+      };
       if (provider === 'gdrive' && isGdriveLinked) {
         await new GoogleDriveService().uploadData(data);
       } else if (provider === 'dropbox' && dropboxToken) {
@@ -409,7 +446,8 @@ const DataManagement: React.FC<DataManagementProps> = ({
                    <button onClick={() => handleDisconnect('gdrive')} className="px-6 py-4 border border-rose-200 text-rose-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-rose-50">Unlink</button>
                 )}
               </div>
-              
+              <p className="text-[10px] text-slate-400 font-medium -mt-2">Covers everything — Parts, Raw Materials, Sales, Inward Logs, RM Cross-Bill Invoices, Material Lengths, Notifications, Companies, Users — in one snapshot.</p>
+
               <div className="space-y-2 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
                 {gBackups.map(b => (
                   <div key={b.id} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex items-center justify-between group">
@@ -455,6 +493,7 @@ const DataManagement: React.FC<DataManagementProps> = ({
                    <button onClick={() => handleDisconnect('dropbox')} className="px-6 py-4 border border-rose-200 text-rose-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-rose-50">Unlink</button>
                 )}
               </div>
+              <p className="text-[10px] text-slate-400 font-medium">Covers everything — Parts, Raw Materials, Sales, Inward Logs, RM Cross-Bill Invoices, Material Lengths, Notifications, Companies, Users — in one snapshot.</p>
               <div className="space-y-2 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
                 {dBackups.map(b => (
                   <div key={b.path} className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex items-center justify-between group">

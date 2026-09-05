@@ -106,6 +106,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
     partType: 'tubular' as PartType,
     netWeight: 0,
     grossWeight: 0,
+    siblingIds: [] as string[],
   });
 
   const handleOpenAdd = () => {
@@ -115,7 +116,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       rate: 0, customerRates: {}, customerModels: {}, size: '', minThreshold: 100, mappedCustomers: [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
       hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false,
-      partType: 'tubular', netWeight: 0, grossWeight: 0,
+      partType: 'tubular', netWeight: 0, grossWeight: 0, siblingIds: [],
     });
     setShowModal(true);
   };
@@ -136,7 +137,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       mappedCustomers: prefillDraft.customer ? [prefillDraft.customer] : [],
       itemWeight: 0, itemLength: 0, customerRMMappings: {},
       hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false,
-      partType: 'tubular', netWeight: 0, grossWeight: 0,
+      partType: 'tubular', netWeight: 0, grossWeight: 0, siblingIds: [],
     });
     setShowModal(true);
     onDraftConsumed?.();
@@ -157,6 +158,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       partType: p.partType || 'tubular',
       netWeight: p.netWeight || 0,
       grossWeight: p.grossWeight || 0,
+      siblingIds: p.siblingIds || [],
     });
     setShowModal(true);
   };
@@ -494,6 +496,31 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                         {pt === 'tubular' ? 'Tubular' : 'Sheet Metal'}
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="col-span-2 text-left">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Sibling Parts (share/borrow stock — e.g. an LH/RH pair)</label>
+                  <p className="text-[11px] text-slate-400 mb-3 -mt-2">Used by Material Entry to pre-check both sides together when receiving material cut from the same RM. Linking here is always two-way — the other part shows this one as a sibling too, automatically.</p>
+                  <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto p-1">
+                    {parts.filter(p => p.id !== editingId).map(p => {
+                      const checked = formData.siblingIds.includes(p.id);
+                      return (
+                        <label key={p.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-xs font-bold cursor-pointer ${checked ? 'bg-sky-50 border-sky-300 text-sky-700' : 'bg-slate-50 border-slate-100 text-slate-500 hover:border-slate-200'}`}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => setFormData(prev => ({
+                              ...prev,
+                              siblingIds: checked ? prev.siblingIds.filter(id => id !== p.id) : [...prev.siblingIds, p.id],
+                            }))}
+                          />
+                          {p.name} <span className="text-slate-400 font-mono">({p.sapCode})</span>
+                        </label>
+                      );
+                    })}
+                    {parts.filter(p => p.id !== editingId).length === 0 && (
+                      <p className="text-[11px] text-slate-400">Add more items to Item Master before pairing siblings.</p>
+                    )}
                   </div>
                 </div>
                 <div className="text-left">

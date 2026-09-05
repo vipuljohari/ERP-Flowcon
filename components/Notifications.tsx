@@ -17,6 +17,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   schedule_bulk_import: { label: 'Bulk Customer Schedule Import', icon: '📋', color: 'violet' },
   rm_cross_bill: { label: 'RM Cross-Bill Invoice Entry', icon: '🧾', color: 'sky' },
   rm_weight_mismatch: { label: 'RM Weight Mismatch (vs Dharam Kanta)', icon: '⚖️', color: 'orange' },
+  material_entry_scrap: { label: 'Material Entry — Unattributed Scrap (Shortage Split)', icon: '✂️', color: 'amber' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {

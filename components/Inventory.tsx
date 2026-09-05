@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert } from '../types';
+import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength } from '../types';
 import { CATEGORIES } from '../constants';
 import { isSheetRM, partsPerRMUnit, rmKgPerPart } from '../services/rmYield';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
@@ -7,6 +7,8 @@ import { isSheetRM, partsPerRMUnit, rmKgPerPart } from '../services/rmYield';
 // wrong system clock would validate against its OWN wrong idea of "today",
 // letting a wrong-dated entry sail straight through.
 import { getLocalDateStr, correctedNow } from '../services/time';
+import MaterialEntry from './MaterialEntry';
+import { MaterialEntryHeader, FinishedPieceLine, LongerPipeLine } from '../services/materialEntry';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -38,6 +40,19 @@ interface InventoryProps {
   // negative-quantity Discrepancy Control Entry (Item or RM) and for every
   // RM Inward entry, so Admin can cross-check who entered what.
   onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
+  // Material Entry (RM Receiving) — Longer Pipe / Finished Pieces, tubular
+  // parts only (see components/MaterialEntry.tsx). Sheet-metal parts and
+  // RM-only inward keep using the plain modal below, untouched.
+  manufacturerInvoices?: RMManufacturerInvoice[];
+  setManufacturerInvoices?: (update: RMManufacturerInvoice[] | ((prev: RMManufacturerInvoice[]) => RMManufacturerInvoice[])) => void;
+  materialLengths?: RMMaterialLength[];
+  onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
+  onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[]) => void;
+  // Set when Store/Admin clicked "Post to Inventory" on an RM Cross-Bill
+  // invoice — opens Material Entry straight into Longer Pipe mode with that
+  // invoice group already pulled in.
+  pendingMaterialEntryInvoiceKey?: string | null;
+  onPendingMaterialEntryInvoiceConsumed?: () => void;
 }
 
 // An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
@@ -72,9 +87,43 @@ const Inventory: React.FC<InventoryProps> = ({
   setRawMaterials,
   setParts,
   onCreateAlert,
+  manufacturerInvoices = [],
+  setManufacturerInvoices,
+  materialLengths = [],
+  onMaterialEntryFinishedPieces,
+  onMaterialEntryLongerPipe,
+  pendingMaterialEntryInvoiceKey,
+  onPendingMaterialEntryInvoiceConsumed,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
+  // Material Entry (RM Receiving) — tubular parts only; sheet-metal parts
+  // keep using the plain single-quantity modal below (selectedPart/showAddModal).
+  const [materialEntryPart, setMaterialEntryPart] = useState<Part | null>(null);
+  const [showMaterialEntry, setShowMaterialEntry] = useState(false);
+  const openMaterialEntry = (p: Part) => {
+    if (p.partType === 'sheet_metal') {
+      setSelectedPart(p);
+      setShowAddModal(true);
+      setAddQty('');
+      setSupplier('');
+      setRemarks('');
+      return;
+    }
+    setMaterialEntryPart(p);
+    setShowMaterialEntry(true);
+  };
+  // "Post to Inventory" shortcut from RM Cross-Bill Check — jump straight
+  // into Material Entry, Longer Pipe mode, with that invoice already pulled
+  // in. No specific part is pre-selected here (Store picks from whichever
+  // items the RM's own mapping makes eligible) — MaterialEntry.tsx opens
+  // itself past the picker step whenever it's given an initialInvoiceKey.
+  useEffect(() => {
+    if (pendingMaterialEntryInvoiceKey && !readOnly) {
+      setMaterialEntryPart(null);
+      setShowMaterialEntry(true);
+    }
+  }, [pendingMaterialEntryInvoiceKey, readOnly]);
   // Dropdown 2: Customer Filter
   const [selectedCustomer, setSelectedCustomer] = useState<string>('All');
   // Dropdown 3: Visual Layout Template
@@ -967,13 +1016,7 @@ const Inventory: React.FC<InventoryProps> = ({
                         <td className="px-8 py-6 text-center">
                           {!readOnly && (
                             <button 
-                              onClick={() => { 
-                                setSelectedPart(p); 
-                                setShowAddModal(true); 
-                                setAddQty('');
-                                setSupplier('');
-                                setRemarks('');
-                              }}
+                              onClick={() => openMaterialEntry(p)}
                               className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md active:scale-95 ${isAdmin ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-900 hover:bg-emerald-600'}`}
                             >
                               Material Entry
@@ -1045,13 +1088,7 @@ const Inventory: React.FC<InventoryProps> = ({
                           <td className="py-2.5 px-4 text-center">
                             {!readOnly && (
                               <button
-                                onClick={() => { 
-                                  setSelectedPart(p); 
-                                  setShowAddModal(true); 
-                                  setAddQty('');
-                                  setSupplier('');
-                                  setRemarks('');
-                                }}
+                                onClick={() => openMaterialEntry(p)}
                                 className="text-[10px] bg-slate-900 text-white hover:bg-emerald-600 px-3 py-1 rounded-md font-bold transition-all shadow-sm active:scale-95"
                               >
                                 + Entry
@@ -1118,13 +1155,7 @@ const Inventory: React.FC<InventoryProps> = ({
 
                     {!readOnly && (
                       <button
-                        onClick={() => { 
-                          setSelectedPart(p); 
-                          setShowAddModal(true); 
-                          setAddQty('');
-                          setSupplier('');
-                          setRemarks('');
-                        }}
+                        onClick={() => openMaterialEntry(p)}
                         className="w-full py-2.5 bg-slate-900 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-sm active:scale-95"
                       >
                         Material Entry
@@ -1828,6 +1859,34 @@ const Inventory: React.FC<InventoryProps> = ({
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Material Entry (RM Receiving) — Longer Pipe / Finished Pieces, tubular parts only */}
+      {showMaterialEntry && (
+        <MaterialEntry
+          seedPart={materialEntryPart}
+          parts={parts}
+          rawMaterials={rawMaterials}
+          manufacturerInvoices={manufacturerInvoices}
+          materialLengths={materialLengths}
+          initialInvoiceKey={pendingMaterialEntryInvoiceKey}
+          onInitialInvoiceConsumed={onPendingMaterialEntryInvoiceConsumed}
+          onSubmitFinishedPieces={(header, lines) => {
+            onMaterialEntryFinishedPieces?.(header, lines);
+            setShowMaterialEntry(false);
+            setMaterialEntryPart(null);
+          }}
+          onSubmitLongerPipe={(header, lines) => {
+            onMaterialEntryLongerPipe?.(header, lines);
+            setShowMaterialEntry(false);
+            setMaterialEntryPart(null);
+          }}
+          onClose={() => {
+            setShowMaterialEntry(false);
+            setMaterialEntryPart(null);
+            onPendingMaterialEntryInvoiceConsumed?.();
+          }}
+        />
       )}
 
       {/* SHARED MODALS FOR ADDING INWARD (ITEM OR RM) */}

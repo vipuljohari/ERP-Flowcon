@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
+import { getLocalDateStr, correctedNow } from '../services/time';
+import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
 
 const NEW_OPTION = '__new__';
 
@@ -34,6 +36,12 @@ interface RMCrossBillCheckProps {
   // or Customer Invoice saved here, whether typed in by hand or auto-filled
   // from a photo, so they can cross-check it against the source invoice.
   onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
+  // "Post to Inventory / Update Stock" shortcut on a shipment below — jumps
+  // straight into Material Entry (Inventory) with that invoice's lines
+  // already pulled in, skipping the "find the right invoice" search step.
+  // Receives the same "invoiceNo__manufacturerName" key Material Entry
+  // resolves invoices by. Omitted entirely (button hidden) if not passed.
+  onPostToInventory?: (invoiceKey: string) => void;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -162,7 +170,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   manufacturerInvoices, crossInvoices, materialLengths, customers, rmInwardLogs,
   tallyPurchaseVouchers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
-  onCreateAlert,
+  onCreateAlert, onPostToInventory,
 }) => {
   const [showMfgForm, setShowMfgForm] = useState(false);
   const [showCrossForm, setShowCrossForm] = useState(false);
@@ -181,6 +189,18 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const [filterManufacturer, setFilterManufacturer] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
   const [filterMaterial, setFilterMaterial] = useState('');
+
+  // Bill-posting date lock — no back-dating into a closed month, and no
+  // future-dating either. Identical pattern to Inventory.tsx's Material
+  // Entry date field; applied here to both the Manufacturer Invoice and
+  // Customer Cross-Invoice forms since both are bill-posting dates on this
+  // same screen.
+  const todayDateStr = useMemo(() => getLocalDateStr(), []);
+  const minEntryDateStr = useMemo(() => {
+    const now = correctedNow();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  }, []);
+  const isBillDateValid = (d: string) => d >= minEntryDateStr && d <= todayDateStr;
 
   const handleBulkFile = (file: File) => {
     setBulkStatus(null);
@@ -328,6 +348,19 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       );
       const tallyValueMismatch = !!tallyMatch && Math.abs(tallyMatch.totalValue - appTotalValue) > VALUE_MISMATCH_TOLERANCE_RS;
 
+      // "Post to Inventory" shortcut eligibility — same rules Material
+      // Entry's own "Pull from Invoice" picker applies (see
+      // services/materialEntry.ts's getPullableInvoiceGroups): every line
+      // must still be unused, the invoice must be dated on/after this
+      // feature's go-live, and at least one line's material code must be
+      // linked (via RMMaterialLength.linkedRMId) to a real Raw Material —
+      // otherwise Material Entry would have nothing to do with it anyway.
+      const usedForMaterialEntry = items.every(i => i.usedForMaterialEntry);
+      const eligibleForMaterialEntry =
+        !usedForMaterialEntry &&
+        first.date >= MATERIAL_ENTRY_INVOICE_PULL_CUTOFF &&
+        items.some(i => !!materialLengths.find(m => m.materialCode === i.materialCode)?.linkedRMId);
+
       return {
         key,
         invoiceNo: first.invoiceNo,
@@ -351,9 +384,16 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         // check below — an automatic Tally match counts the same as the
         // manual checkbox, since either way the supplier has been paid.
         effectiveTallyBooked: !!first.tallyBooked || !!tallyMatch,
+        usedForMaterialEntry,
+        eligibleForMaterialEntry,
+        // Exact-case key — matches components/MaterialEntry.tsx's own
+        // `${inv.invoiceNo}__${inv.manufacturerName}` resolution exactly
+        // (the shipment grouping `key` above is lowercased for matching
+        // purposes only, so it can't be reused here).
+        materialEntryKey: `${first.invoiceNo}__${first.manufacturerName}`,
       };
     }).sort((a, b) => b.date.localeCompare(a.date));
-  }, [manufacturerInvoices, rmInwardLogs, tallyPurchaseVouchers]);
+  }, [manufacturerInvoices, rmInwardLogs, tallyPurchaseVouchers, materialLengths]);
 
   // Every RMManufacturerInvoice line sharing an invoice no. + manufacturer
   // represents the same physical shipment, so a Tally-booking or debit-note
@@ -577,6 +617,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
 
   const submitMfgInvoice = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isBillDateValid(mfgForm.date)) {
+      alert(`Invoice Date must be within the current month (from ${minEntryDateStr} to ${todayDateStr}). Previous months are locked, and future dates aren't allowed.`);
+      return;
+    }
     // Hard block: this exact material already has an entry under this
     // invoice number for this manufacturer. Scoped to manufacturer (not
     // global) since two different manufacturers can legitimately reuse the
@@ -777,6 +821,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
 
   const submitCrossInvoice = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isBillDateValid(crossForm.date)) {
+      alert(`Invoice Date must be within the current month (from ${minEntryDateStr} to ${todayDateStr}). Previous months are locked, and future dates aren't allowed.`);
+      return;
+    }
     if (!selectedMfgInvoice) return;
     // Hard block: this exact Manufacturer Invoice already has a matching
     // Customer Invoice on file. Scoped to the specific manufacturer invoice
@@ -1010,6 +1058,17 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border ${noStockYet ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>
                       {noStockYet ? 'Not yet in stock' : `${s.matchingInwardCount} stock entr${s.matchingInwardCount === 1 ? 'y' : 'ies'} logged`}
                     </span>
+                    {s.usedForMaterialEntry ? (
+                      <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">✓ Posted to Inventory</span>
+                    ) : s.eligibleForMaterialEntry && onPostToInventory ? (
+                      <button
+                        type="button"
+                        onClick={() => onPostToInventory(s.materialEntryKey)}
+                        className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm active:scale-95"
+                      >
+                        📥 Post to Inventory / Update Stock
+                      </button>
+                    ) : null}
                   </div>
                 </div>
                 {s.hasWeights && (
@@ -1175,9 +1234,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
                 <FormField label="Date">
-                  <input required type="date" value={mfgForm.date}
+                  <input required type="date" min={minEntryDateStr} max={todayDateStr} value={mfgForm.date}
                     onChange={(e) => setMfgForm({ ...mfgForm, date: e.target.value })}
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                  <p className="text-[10px] text-slate-400 mt-1">Current month only ({minEntryDateStr} to {todayDateStr}) — previous months are locked.</p>
                 </FormField>
               </div>
               {/* One vehicle, one Dharam Kanta weighment — these two cover
@@ -1394,9 +1454,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
                 </FormField>
                 <FormField label="Date">
-                  <input required type="date" value={crossForm.date}
+                  <input required type="date" min={minEntryDateStr} max={todayDateStr} value={crossForm.date}
                     onChange={(e) => setCrossForm({ ...crossForm, date: e.target.value })}
                     className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                  <p className="text-[10px] text-slate-400 mt-1">Current month only ({minEntryDateStr} to {todayDateStr}) — previous months are locked.</p>
                 </FormField>
               </div>
               <div className="grid grid-cols-3 gap-3">

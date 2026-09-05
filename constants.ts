@@ -30,3 +30,11 @@ export const INITIAL_PARTS: Part[] = [
 export const CATEGORIES = [
   'Structural', 'Rail Systems', 'Body Posts', 'Interior Trim', 'Frame Tubing'
 ];
+
+// The date the new Material Entry ("Longer Pipe" / "Finished Pieces")
+// feature went live. Any RM Cross-Bill Manufacturer Invoice dated before
+// this can never be pulled into Material Entry — it was already reconciled
+// under the old, simpler Material Entry rules, and silently re-consuming it
+// under the new invoice-line rules would risk double-counting stock. See
+// services/materialEntry.ts's getPullableInvoiceGroups.
+export const MATERIAL_ENTRY_INVOICE_PULL_CUTOFF = '2026-09-04';

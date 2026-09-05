@@ -100,6 +100,12 @@ export interface Part {
   // Scrap per piece is NEVER stored directly — always derive it as
   // (grossWeight - netWeight) wherever it's needed, so it can't drift out
   // of sync with the two weights it's defined from.
+  // Sibling parts (e.g. an LH/RH mirror pair) that Material Entry treats as
+  // one RM-cutting group — pre-checking them together and letting stock be
+  // allotted across whichever of them the physical pieces actually became.
+  // ALWAYS symmetric: if A lists B here, B must list A — kept in sync by
+  // App.tsx's part onAdd/onEdit/onDelete handlers, never edited one-sided.
+  siblingIds?: string[];
 }
 
 export interface RMManufacturerInvoice {
@@ -140,6 +146,13 @@ export interface RMManufacturerInvoice {
   tallyBookedAt?: string;
   matchedCrossInvoiceId?: string; // set once a corresponding customer invoice is entered
   createdAt: string;
+  // Set true the moment a Material Entry (Longer Pipe) save pulls this
+  // material line in — irreversible from the UI (see components/MaterialEntry.tsx
+  // and the "Post to Inventory" shortcut in RMCrossBillCheck.tsx). Once true
+  // this line can never be pulled again; if the invoice was booked wrongly
+  // the fix is deleting and re-entering it here, never un-flagging this.
+  usedForMaterialEntry?: boolean;
+  usedForMaterialEntryAt?: string;
 }
 
 // Mirrored automatically every hour from Tally's own Purchase vouchers by
@@ -189,6 +202,12 @@ export interface RMMaterialLength {
   materialName: string;
   lengthMm: number;
   updatedAt: string;
+  // Bridges this manufacturer material code to a real RawMaterial record in
+  // Inventory (RM Master), so Material Entry's "Pull from Invoice" knows
+  // which RM's stock to bump and which Parts (rm.partId/rm.partIds) are
+  // eligible to be cut from it. Admin sets this once per material code, the
+  // same "catalog, first-entry-wins" idiom already used for lengthMm above.
+  linkedRMId?: string;
 }
 
 // 'tube' = the original RM shape (a fixed-length bar, tracked by
@@ -238,6 +257,11 @@ export interface RMInwardLog {
   unit?: 'pcs' | 'kg';
   sheetSizeText?: string; // Sheet only — free text e.g. "2500x1250",
   // record-only for traceability, NEVER used in any weight/stock calc.
+  // Groups every InwardLog/RMInwardLog row one Material Entry save produced
+  // (Finished Pieces or Longer Pipe), so a future "view this whole receipt"
+  // screen is possible without a new collection. Purely additive.
+  materialEntryId?: string;
+  invoiceBookedInUnit1?: boolean; // carried from the Material Entry invoice header
 }
 
 export interface Sale {
@@ -262,6 +286,8 @@ export interface InwardLog {
   timestamp: string;
   remarks?: string; // New field for adjustments
   invoiceNumber?: string;
+  materialEntryId?: string; // groups rows from one Material Entry save — see RMInwardLog
+  invoiceBookedInUnit1?: boolean;
 }
 
 // Admin-only "Notifications" feed. Every entry is created by a human-
@@ -271,7 +297,7 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch';
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap';
 
 export interface AdminAlert {
   id: string;
