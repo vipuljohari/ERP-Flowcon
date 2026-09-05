@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength } from '../types';
 import { CATEGORIES } from '../constants';
-import { isSheetRM, partsPerRMUnit, rmKgPerPart } from '../services/rmYield';
+import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers } from '../services/rmYield';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
 // used to be computed from a raw `new Date()`, so a device with a badly
 // wrong system clock would validate against its OWN wrong idea of "today",
@@ -354,7 +354,7 @@ const Inventory: React.FC<InventoryProps> = ({
     return sorted.filter(rm => {
       const matchesSearch = rm.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             rm.partName.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesCustomer = selectedCustomer === 'All' || rm.customerName.toUpperCase().trim() === selectedCustomer.toUpperCase().trim();
+      const matchesCustomer = selectedCustomer === 'All' || rmMatchesCustomer(rm, selectedCustomer);
       const matchesCategory = (rm.category || 'tube') === selectedRMCategory;
       return matchesSearch && matchesCustomer && matchesCategory;
     });
@@ -668,8 +668,8 @@ const Inventory: React.FC<InventoryProps> = ({
         .reduce((sum, s) => sum + s.quantity, 0);
 
       const mappedRMs = rawMaterials.filter(rm => {
-        const matchesCustomer = selectedCustomer === 'All' || rm.customerName.toUpperCase().trim() === selectedCustomer.toUpperCase().trim();
-        const isLinked = Object.keys(p.customerRMMappings || {}).some(k => k.toUpperCase().trim() === rm.customerName.toUpperCase().trim() && p.customerRMMappings?.[k] === rm.id) || (rm.partId === p.id) || (rm.partIds && rm.partIds.includes(p.id));
+        const matchesCustomer = selectedCustomer === 'All' || rmMatchesCustomer(rm, selectedCustomer);
+        const isLinked = rmAllCustomers(rm).some(cust => Object.keys(p.customerRMMappings || {}).some(k => k.toUpperCase().trim() === cust.toUpperCase().trim() && p.customerRMMappings?.[k] === rm.id)) || (rm.partId === p.id) || (rm.partIds && rm.partIds.includes(p.id));
         return matchesCustomer && isLinked;
       });
 
@@ -1205,7 +1205,7 @@ const Inventory: React.FC<InventoryProps> = ({
               <div key={rm.id} className="flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3">
                 <div>
                   <p className="font-bold text-slate-900 text-sm">{rm.size}</p>
-                  <p className="text-xs text-slate-500">{rm.partName} • {rm.customerName}</p>
+                  <p className="text-xs text-slate-500">{rm.partName} • {rmAllCustomers(rm).join(' + ')}</p>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -1311,9 +1311,12 @@ const Inventory: React.FC<InventoryProps> = ({
                     }
                   }
 
-                  // RM Consumed via Dispatch (Sales) this month for this mapped item
+                  // RM Consumed via Dispatch (Sales) this month for this mapped item —
+                  // counts dispatches to EVERY customer this RM is shared with (see
+                  // rmMatchesCustomer), so a shared RM's one stock number is debited
+                  // for the whole physical consumption, not just its primary customer.
                   const salesQty = sales
-                    .filter(s => s.partId === item.id && s.customer.toUpperCase().trim() === rm.customerName.toUpperCase().trim())
+                    .filter(s => s.partId === item.id && rmMatchesCustomer(rm, s.customer))
                     .reduce((sum, s) => sum + s.quantity, 0);
 
                   const itemMeters = salesQty * lengthFactorMeters;
@@ -1395,9 +1398,11 @@ const Inventory: React.FC<InventoryProps> = ({
                 let totalScheduleScrapKgNeeded = 0;
 
                 mappedItems.forEach(item => {
-                  const target = getCustomerSchedule(item, rm.customerName);
+                  // A shared RM's future need is the SUM of every customer's
+                  // schedule for this item, since they all draw on the same stock.
+                  const target = rmAllCustomers(rm).reduce((sum, cust) => sum + getCustomerSchedule(item, cust), 0);
                   const salesQty = sales
-                    .filter(s => s.partId === item.id && s.customer.toUpperCase().trim() === rm.customerName.toUpperCase().trim())
+                    .filter(s => s.partId === item.id && rmMatchesCustomer(rm, s.customer))
                     .reduce((sum, s) => sum + s.quantity, 0);
 
                   const rmBalanceQtyNeeded = Math.max(0, target - salesQty);
@@ -1464,7 +1469,7 @@ const Inventory: React.FC<InventoryProps> = ({
                 return (
                   <tr key={rm.id} className={`hover:bg-indigo-50/10 transition-all ${isRMNegative ? 'bg-rose-50/50' : ''}`}>
                     <td className="px-8 py-6">
-                      <div className="text-[9px] text-indigo-500 font-black tracking-tight uppercase mb-0.5">{rm.customerName}</div>
+                      <div className="text-[9px] text-indigo-500 font-black tracking-tight uppercase mb-0.5">{rmAllCustomers(rm).join(' + ')}</div>
                       <div className="font-extrabold text-slate-900 text-sm leading-tight uppercase">{rm.size}</div>
                       <div className="mt-1 text-[10px] text-slate-500 font-medium">
                         Standard Length: <span className="font-bold text-indigo-650">{rmLength} mm</span> ({rmStandardMeters.toFixed(1)} metres)
@@ -1698,7 +1703,7 @@ const Inventory: React.FC<InventoryProps> = ({
 
                 mappedItems.forEach(item => {
                   const salesQty = sales
-                    .filter(s => s.partId === item.id && s.customer.toUpperCase().trim() === rm.customerName.toUpperCase().trim())
+                    .filter(s => s.partId === item.id && rmMatchesCustomer(rm, s.customer))
                     .reduce((sum, s) => sum + s.quantity, 0);
                   totalSalesQty += salesQty;
 
@@ -1729,9 +1734,11 @@ const Inventory: React.FC<InventoryProps> = ({
 
                 let totalScheduleKgNeeded = 0;
                 mappedItems.forEach(item => {
-                  const target = getCustomerSchedule(item, rm.customerName);
+                  // A shared RM's future need is the SUM of every customer's
+                  // schedule for this item, since they all draw on the same stock.
+                  const target = rmAllCustomers(rm).reduce((sum, cust) => sum + getCustomerSchedule(item, cust), 0);
                   const salesQty = sales
-                    .filter(s => s.partId === item.id && s.customer.toUpperCase().trim() === rm.customerName.toUpperCase().trim())
+                    .filter(s => s.partId === item.id && rmMatchesCustomer(rm, s.customer))
                     .reduce((sum, s) => sum + s.quantity, 0);
                   const balanceQtyNeeded = Math.max(0, target - salesQty);
                   totalScheduleKgNeeded += balanceQtyNeeded * rmKgPerPart(item);
@@ -1748,7 +1755,7 @@ const Inventory: React.FC<InventoryProps> = ({
                 return (
                   <tr key={rm.id} className={`hover:bg-violet-50/10 transition-all ${isRMNegative ? 'bg-rose-50/50' : ''}`}>
                     <td className="px-8 py-6">
-                      <div className="text-[9px] text-violet-500 font-black tracking-tight uppercase mb-0.5">{rm.customerName}</div>
+                      <div className="text-[9px] text-violet-500 font-black tracking-tight uppercase mb-0.5">{rmAllCustomers(rm).join(' + ')}</div>
                       <div className="font-extrabold text-slate-900 text-sm leading-tight uppercase">{rm.size}</div>
                       <div className="mt-1 text-[10px] text-slate-500 font-medium">
                         Thickness: <span className="font-bold text-violet-650">{rm.thickness || '—'}</span> · Grade: <span className="font-bold text-violet-650">{rm.grade || '—'}</span>

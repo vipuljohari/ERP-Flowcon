@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { RawMaterial, Customer, Part, RMCategory } from '../types';
+import { rmAllCustomers, rmMatchesCustomer } from '../services/rmYield';
 
 // A Part with no partType set is a pre-existing Tubular part (see
 // types.ts's PartType comment) — treat undefined the same as 'tubular'
@@ -48,6 +49,9 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
     thickness: '',
     grade: '',
     customerName: '',
+    // Additional customers this RM's stock is ALSO shared with, besides
+    // `customerName` above — see types.ts's RawMaterial.customerNames.
+    customerNames: [] as string[],
     model: '',
     partId: '',
     partIds: [] as string[],
@@ -65,6 +69,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       thickness: '',
       grade: '',
       customerName: initialCustomer,
+      customerNames: [],
       model: '',
       partId: initialPartId,
       partIds: initialPartId ? [initialPartId] : [],
@@ -85,6 +90,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       thickness: rm.thickness || '',
       grade: rm.grade || '',
       customerName: rm.customerName,
+      customerNames: rm.customerNames || [],
       model: rm.model || '',
       partId: rm.partId || '',
       partIds: rm.partIds || (rm.partId ? [rm.partId] : []),
@@ -94,18 +100,25 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     let finalPartIds = formData.partIds;
     if (finalPartIds.length === 0 && formData.partId) {
       finalPartIds = [formData.partId];
     }
-    
+
     const selectedParts = parts.filter(p => finalPartIds.includes(p.id));
     const finalPartNames = selectedParts.map(p => p.name).join(', ') || 'Unmapped';
     const finalPartId = finalPartIds[0] || '';
 
+    // Never let the primary customer also sit in the "additional" list —
+    // switching "Map to Customer" can otherwise leave a stale duplicate.
+    const finalCustomerNames = formData.customerNames.filter(
+      c => c.toUpperCase().trim() !== formData.customerName.toUpperCase().trim()
+    );
+
     const submitData = {
       ...formData,
+      customerNames: finalCustomerNames,
       partId: finalPartId,
       partIds: finalPartIds,
       partName: finalPartNames,
@@ -130,11 +143,17 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   // guardrail against linking a Tubular part to a Sheet RM (or vice versa),
   // which would silently feed the wrong numbers into the stock/shortage
   // math in App.tsx (see services/rmYield.ts).
+  // Includes items mapped to ANY customer on this RM (primary + additional
+  // "Also Used By" ones) so a shared RM can still offer the right Finished
+  // Goods Items checklist regardless of which customer is currently primary.
+  const rmFormCustomers = [formData.customerName, ...formData.customerNames].filter(Boolean);
   const customerParts = parts.filter(p =>
     partMatchesRMCategory(p, formData.category) && (
-      !formData.customerName ||
-      p.mappedCustomers?.some(c => c.toUpperCase().trim() === formData.customerName.toUpperCase().trim()) ||
-      (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === formData.customerName.toUpperCase().trim()))
+      rmFormCustomers.length === 0 ||
+      rmFormCustomers.some(cust =>
+        p.mappedCustomers?.some(c => c.toUpperCase().trim() === cust.toUpperCase().trim()) ||
+        (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === cust.toUpperCase().trim()))
+      )
     )
   );
   const displayedParts = customerParts.length > 0
@@ -158,7 +177,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   const filteredRMs = rawMaterials.filter(rm => {
     const matchesSearch = rm.size.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           rm.partName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCustomer = selectedCustFilter === 'All' || rm.customerName.toUpperCase().trim() === selectedCustFilter.toUpperCase().trim();
+    const matchesCustomer = selectedCustFilter === 'All' || rmMatchesCustomer(rm, selectedCustFilter);
     const matchesCategory = selectedCategoryFilter === 'All' || (rm.category || 'tube') === selectedCategoryFilter;
     return matchesSearch && matchesCustomer && matchesCategory;
   });
@@ -241,8 +260,11 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                   <div className="space-y-1 text-left">
                     <div className="flex items-center gap-2">
                       <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-[9px] font-black uppercase">Customer</span>
-                      <span className="font-bold text-slate-800 text-xs">{rm.customerName}</span>
+                      <span className="font-bold text-slate-800 text-xs">{rmAllCustomers(rm).join(' + ')}</span>
                     </div>
+                    {(rm.customerNames && rm.customerNames.length > 0) && (
+                      <div className="text-[9px] text-indigo-400 font-bold pl-1">Shared stock — same RM used for all of the above</div>
+                    )}
                     <div className="flex items-center gap-2">
                       <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded text-[9px] font-black uppercase">Item</span>
                       <span className="font-bold text-slate-800 text-xs">{rm.partName}</span>
@@ -385,6 +407,39 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                     >
                       {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                     </select>
+                  </div>
+
+                  <div className="col-span-2 text-left">
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 text-left">
+                      Also Used By (Optional) — Shares This Same RM Stock
+                    </label>
+                    <p className="text-[11px] text-slate-400 font-medium mb-3">
+                      Check other customers only when this is genuinely the SAME physical material/stock going to more than one of them (e.g. two plants of one customer group). This does NOT create separate stock — dispatches to every checked customer will all draw from, and count against, this one RM's stock number.
+                    </p>
+                    <div className="border-2 border-slate-100 rounded-2xl p-3 max-h-32 overflow-y-auto space-y-1 bg-slate-50">
+                      {customers.filter(c => c.name.toUpperCase().trim() !== formData.customerName.toUpperCase().trim()).map(c => {
+                        const isChecked = formData.customerNames.some(cn => cn.toUpperCase().trim() === c.name.toUpperCase().trim());
+                        return (
+                          <label key={c.id} className="flex items-center gap-3 p-1.5 hover:bg-white rounded-lg cursor-pointer select-none transition-all">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-slate-300 rounded cursor-pointer"
+                              checked={isChecked}
+                              onChange={() => {
+                                const updated = isChecked
+                                  ? formData.customerNames.filter(cn => cn.toUpperCase().trim() !== c.name.toUpperCase().trim())
+                                  : [...formData.customerNames, c.name];
+                                setFormData({ ...formData, customerNames: updated });
+                              }}
+                            />
+                            <span className="text-xs font-bold text-slate-800">{c.name}</span>
+                          </label>
+                        );
+                      })}
+                      {customers.length <= 1 && (
+                        <div className="text-xs text-slate-400 font-medium py-2 text-center">No other customers to add yet.</div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="text-left col-span-2 sm:col-span-1">

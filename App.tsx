@@ -33,7 +33,7 @@ import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
 import { TallyService } from './services/tally';
-import { isSheetRM, rmKgPerPart, partsPerRMUnit } from './services/rmYield';
+import { isSheetRM, rmKgPerPart, partsPerRMUnit, rmMatchesCustomer, rmAllCustomers } from './services/rmYield';
 import { pcsPerBar, computeUnattributedScrapMm, LongerPipeLine, MaterialEntryHeader, FinishedPieceLine } from './services/materialEntry';
 // Clock-corrected timestamp helper — see services/time.ts for why a plain
 // `new Date()` here is no longer trusted directly (a wrong device clock
@@ -253,7 +253,7 @@ const MainApp: React.FC = () => {
 
   const modelFilteredRawMaterials = useMemo(() => {
     if (activeModel === 'All') return sortedRawMaterials;
-    return sortedRawMaterials.filter(rm => rm.customerName === activeCustomer && rm.model === activeModel);
+    return sortedRawMaterials.filter(rm => rmMatchesCustomer(rm, activeCustomer) && rm.model === activeModel);
   }, [sortedRawMaterials, activeCustomer, activeModel]);
 
   // customers loads asynchronously from Firestore — it's empty for a moment
@@ -388,7 +388,7 @@ const MainApp: React.FC = () => {
             const salesQty = sales
               .filter(s => {
                 if (s.partId !== item.id) return false;
-                if (s.customer.toUpperCase().trim() !== rm.customerName.toUpperCase().trim()) return false;
+                if (!rmMatchesCustomer(rm, s.customer)) return false;
                 let y: number, m: number;
                 if (s.timestamp && s.timestamp.includes('T')) {
                   const dateParts = s.timestamp.split('T')[0].split('-');
@@ -435,7 +435,7 @@ const MainApp: React.FC = () => {
           const salesQty = sales
             .filter(s => {
               if (s.partId !== item.id) return false;
-              if (s.customer.toUpperCase().trim() !== rm.customerName.toUpperCase().trim()) return false;
+              if (!rmMatchesCustomer(rm, s.customer)) return false;
               let y: number, m: number;
               if (s.timestamp && s.timestamp.includes('T')) {
                 const dateParts = s.timestamp.split('T')[0].split('-');
@@ -1533,60 +1533,77 @@ const MainApp: React.FC = () => {
                 const newRMId = Math.random().toString(36).substr(2, 9);
                 const newRM = { ...rm, id: newRMId, stock: 0 } as RawMaterial;
                 setRawMaterials(prev => [...prev, newRM]);
-                
+
+                // Sets Part.customerRMMappings for EVERY customer this RM
+                // serves (its primary customerName + any additional
+                // "Also Used By" customerNames) — a shared RM must show up
+                // linked from every one of its customers, not just the
+                // primary, since they all draw from the same one stock.
                 const selectedPartIds = newRM.partIds || (newRM.partId ? [newRM.partId] : []);
-                if (selectedPartIds.length > 0 && newRM.customerName) {
+                const rmCustomers = rmAllCustomers(newRM).filter(Boolean);
+                if (selectedPartIds.length > 0 && rmCustomers.length > 0) {
                   setParts(prevParts => prevParts.map(p => {
-                    if (selectedPartIds.includes(p.id)) {
-                      const m = p.customerRMMappings || {};
-                      return { ...p, customerRMMappings: { ...m, [newRM.customerName]: newRMId } };
-                    }
-                    return p;
+                    if (!selectedPartIds.includes(p.id)) return p;
+                    const m = { ...(p.customerRMMappings || {}) };
+                    rmCustomers.forEach(cust => { m[cust] = newRMId; });
+                    return { ...p, customerRMMappings: m };
                   }));
                 }
-              }} 
+              }}
               onEdit={(id, rm) => {
+                // Read the PRE-edit RM (still in current state) so we know
+                // which customers/parts used to be mapped, before the update
+                // below changes it — same "read old, then setState" pattern
+                // already used by onDelete just below.
+                const oldRM = rawMaterials.find(r => r.id === id);
                 const updatedRM = { ...rm, id } as RawMaterial; // partName is inside rm
                 setRawMaterials(prev => prev.map(r => r.id === id ? { ...r, ...rm } : r));
-                
-                const custName = updatedRM.customerName;
+
+                const newCustomers = rmAllCustomers(updatedRM).filter(Boolean);
+                const oldCustomers = oldRM ? rmAllCustomers(oldRM).filter(Boolean) : [];
+                // Union: covers a customer being ADDED to "Also Used By" (new
+                // mapping to write) as well as one being REMOVED from it or
+                // swapped out as primary (stale mapping to clear).
+                const touchedCustomers = Array.from(new Set([...newCustomers, ...oldCustomers]));
                 const selectedPartIds = updatedRM.partIds || (updatedRM.partId ? [updatedRM.partId] : []);
-                if (custName) {
+
+                if (touchedCustomers.length > 0) {
                   setParts(prevParts => prevParts.map(p => {
-                    const isTargetPart = selectedPartIds.includes(p.id);
-                    const isOldMappedPart = p.customerRMMappings?.[custName] === id;
-                    
-                    if (isTargetPart) {
-                      const m = p.customerRMMappings || {};
-                      return { ...p, customerRMMappings: { ...m, [custName]: id } };
-                    } else if (isOldMappedPart) {
-                      const m = { ...p.customerRMMappings };
-                      delete m[custName];
-                      return { ...p, customerRMMappings: m };
-                    }
-                    return p;
+                    const m = { ...(p.customerRMMappings || {}) };
+                    let changed = false;
+                    touchedCustomers.forEach(cust => {
+                      const isTargetPart = selectedPartIds.includes(p.id) && newCustomers.includes(cust);
+                      if (isTargetPart) {
+                        if (m[cust] !== id) { m[cust] = id; changed = true; }
+                      } else if (m[cust] === id) {
+                        delete m[cust];
+                        changed = true;
+                      }
+                    });
+                    return changed ? { ...p, customerRMMappings: m } : p;
                   }));
                 }
-              }} 
+              }}
               onDelete={(id) => {
                 const targetRM = rawMaterials.find(r => r.id === id);
                 setRawMaterials(prev => prev.filter(r => r.id !== id));
-                
+
                 if (targetRM) {
-                  const custName = targetRM.customerName;
+                  const rmCustomers = rmAllCustomers(targetRM).filter(Boolean);
                   const selectedPartIds = targetRM.partIds || (targetRM.partId ? [targetRM.partId] : []);
-                  if (custName && selectedPartIds.length > 0) {
+                  if (rmCustomers.length > 0 && selectedPartIds.length > 0) {
                     setParts(prevParts => prevParts.map(p => {
-                      if (selectedPartIds.includes(p.id) && p.customerRMMappings?.[custName] === id) {
-                        const m = { ...p.customerRMMappings };
-                        delete m[custName];
-                        return { ...p, customerRMMappings: m };
-                      }
-                      return p;
+                      if (!selectedPartIds.includes(p.id)) return p;
+                      const m = { ...(p.customerRMMappings || {}) };
+                      let changed = false;
+                      rmCustomers.forEach(cust => {
+                        if (m[cust] === id) { delete m[cust]; changed = true; }
+                      });
+                      return changed ? { ...p, customerRMMappings: m } : p;
                     }));
                   }
                 }
-              }} 
+              }}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'customer_master' && isAdmin && (

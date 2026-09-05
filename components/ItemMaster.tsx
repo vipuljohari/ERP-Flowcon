@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Part, Customer, RawMaterial, PartType } from '../types';
 import { CATEGORIES } from '../constants';
 import BulkItemImport from './BulkItemImport';
+import { rmMatchesCustomer } from '../services/rmYield';
 
 // Mirrors RMMaster.tsx's partMatchesRMCategory (inverse direction) — an RM
 // with no category set is a pre-existing Tube RM (see types.ts's
@@ -660,7 +661,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                 <div className="space-y-4 bg-slate-50 p-6 rounded-[2rem] border border-slate-100 text-left">
                   {customers.map(c => {
                     const isSelected = formData.mappedCustomers.includes(c.name);
-                    const customerRMs = rawMaterials.filter(rm => rm.customerName === c.name && rmMatchesPartType(rm, formData.partType));
+                    const customerRMs = rawMaterials.filter(rm => rmMatchesCustomer(rm, c.name) && rmMatchesPartType(rm, formData.partType));
                     const selectedRMId = formData.customerRMMappings?.[c.name] || '';
 
                     return (

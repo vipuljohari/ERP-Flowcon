@@ -240,6 +240,16 @@ export interface RawMaterial {
   // — every place that reads them must branch on category first (see
   // services/rmYield.ts), never assume a fallback like `rm.length || 6000`
   // is safe for a Sheet RM.
+
+  // Additional customers this SAME physical RM stock is ALSO used for,
+  // besides the primary `customerName` above — e.g. one bar bought once but
+  // cut into parts sold onward to two plants of the same customer group
+  // (SIAC Palwal + SIAC Jaipur). There is still only ONE stock number
+  // (`stock` above) shared by all of them — this is NOT a second stock pool.
+  // Every place that filters/attributes RM activity by customer must check
+  // membership in [customerName, ...customerNames] (see rmYield.ts's
+  // rmMatchesCustomer/rmAllCustomers), not just equality to `customerName`.
+  customerNames?: string[];
 }
 
 export interface RMInwardLog {

@@ -3,7 +3,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Part, Sale, InventoryStats, Customer, RawMaterial } from '../types';
 import ReportGenerator from './ReportGenerator';
 import { useBrandName } from '../contexts/CompanyContext';
-import { isSheetRM, rmKgPerPart } from '../services/rmYield';
+import { isSheetRM, rmKgPerPart, rmMatchesCustomer } from '../services/rmYield';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -219,9 +219,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
   const rmShortageAnalysis = useMemo(() => {
     if (!rawMaterials) return [];
     
-    const activeRMs = rawMaterials.filter(rm => 
-      rm.customerName.toUpperCase().trim() === activeCustomer.toUpperCase().trim()
-    );
+    const activeRMs = rawMaterials.filter(rm => rmMatchesCustomer(rm, activeCustomer));
 
     const actualInwardLogs = rmInwardLogs || [];
     const actualOpeningBalances = localRMOpeningBalances || {};

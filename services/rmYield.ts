@@ -20,6 +20,23 @@ import { Part, RawMaterial } from '../types';
 
 export const isSheetRM = (rm: Pick<RawMaterial, 'category'>): boolean => rm.category === 'sheet';
 
+// All customer names `rm` is used for — its primary `customerName` plus any
+// additional `customerNames` (an RM deliberately shared across more than one
+// customer/plant, one physical stock pool). Use this instead of reading
+// `rm.customerName` alone wherever "which customers does this RM serve"
+// matters — a shared RM must count as belonging to every one of them.
+export const rmAllCustomers = (rm: Pick<RawMaterial, 'customerName' | 'customerNames'>): string[] =>
+  [rm.customerName, ...(rm.customerNames || [])];
+
+// True if `rm` is used for `customerName` — either as its primary
+// `customerName` or as one of its additional `customerNames`. Case/
+// whitespace-insensitive to match the comparison style already used
+// throughout the app for customer names.
+export const rmMatchesCustomer = (rm: Pick<RawMaterial, 'customerName' | 'customerNames'>, customerName: string): boolean => {
+  const target = (customerName || '').toUpperCase().trim();
+  return rmAllCustomers(rm).some(c => (c || '').toUpperCase().trim() === target);
+};
+
 // Kg of Sheet RM consumed to make one piece of `part`. 0 if the part has no
 // Gross Weight set (e.g. not actually a Sheet Metal part, or not yet filled in).
 export const rmKgPerPart = (part: Pick<Part, 'grossWeight'>): number => part.grossWeight || 0;
