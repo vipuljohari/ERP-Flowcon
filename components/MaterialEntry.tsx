@@ -555,7 +555,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
                   <p className="text-[11px] text-slate-400 -mt-2">Only items this Raw Material is mapped to (RM Master's item mapping) are shown below — a bar physically can't be cut into an unrelated item, so switching this drops any items you'd already checked that no longer belong.</p>
                   <div className="grid grid-cols-2 gap-3">
                     <FormField label="Bar Length (mm)">
-                      {line.lockedFromInvoice ? (
+                      {line.lockedFromInvoice || line.subMode === 'whole_bars' ? (
                         <input disabled value={line.barLengthMm} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
                       ) : (
                         <input type="number" value={line.barLengthMm} onChange={(e) => patchLine(line.key, l => ({ ...l, barLengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
@@ -572,6 +572,9 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
                   {line.lockedFromInvoice && (
                     <p className="text-[11px] text-slate-400 -mt-2">Spec, Bar Length and Bars Received are all locked — pulled directly from this RM Cross-Bill invoice, so the physical quantity on the ground always matches what Accounts booked. This line also can't be removed — every material on this invoice must get a Material Entry; if the invoice was booked wrongly, Admin should delete and re-enter it in RM Cross-Bill Check rather than dropping a line here.</p>
                   )}
+                  {!line.lockedFromInvoice && line.subMode === 'whole_bars' && (
+                    <p className="text-[11px] text-slate-400 -mt-2">Bar Length is fixed to this Raw Material's own spec ({rm ? rm.length : '—'}mm) — it shouldn't change bar to bar. If a real shortage means bars have to be split unevenly across items, switch to "Split by Pieces (Shortage)" below, where Bar Length can be adjusted.</p>
+                  )}
 
                   <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
                     <span className="text-slate-500">Bars available: {parseFloat(line.barsReceived) || 0}</span>
@@ -584,7 +587,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
                   <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
                     <button
-                      onClick={() => patchLine(line.key, l => ({ ...l, subMode: 'whole_bars' }))}
+                      onClick={() => patchLine(line.key, l => ({ ...l, subMode: 'whole_bars', barLengthMm: l.lockedFromInvoice ? l.barLengthMm : (rm ? String(rm.length) : l.barLengthMm) }))}
                       className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'whole_bars' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
                     >
                       Whole Bars per Item
