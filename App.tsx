@@ -1652,6 +1652,7 @@ const MainApp: React.FC = () => {
               manufacturerInvoices={rmManufacturerInvoices}
               crossInvoices={rmCrossInvoices}
               materialLengths={rmMaterialLengths}
+              rawMaterials={rawMaterials}
               customers={customersWithItems}
               rmInwardLogs={rmInwardLogs}
               tallyPurchaseVouchers={tallyPurchaseVouchers}

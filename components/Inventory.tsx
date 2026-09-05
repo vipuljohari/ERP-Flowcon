@@ -100,6 +100,7 @@ const Inventory: React.FC<InventoryProps> = ({
   // Material Entry (RM Receiving) — tubular parts only; sheet-metal parts
   // keep using the plain single-quantity modal below (selectedPart/showAddModal).
   const [materialEntryPart, setMaterialEntryPart] = useState<Part | null>(null);
+  const [materialEntryRMId, setMaterialEntryRMId] = useState<string | null>(null);
   const [showMaterialEntry, setShowMaterialEntry] = useState(false);
   const openMaterialEntry = (p: Part) => {
     if (p.partType === 'sheet_metal') {
@@ -110,7 +111,31 @@ const Inventory: React.FC<InventoryProps> = ({
       setRemarks('');
       return;
     }
+    setMaterialEntryRMId(null);
     setMaterialEntryPart(p);
+    setShowMaterialEntry(true);
+  };
+  // Same 3-way "is this part linked to this RM" check used across App.tsx
+  // (customerRMMappings, OR RawMaterial.partId/partIds) — a Raw Material
+  // only qualifies for the new invoice-first Material Entry flow if there's
+  // at least one item it could actually be cut into; a Sheet RM, or a Tube
+  // RM nothing is mapped to yet, has nothing to allot to, so those keep the
+  // older plain quantity/supplier/date/invoice# entry below instead.
+  const rmEligibleForMaterialEntry = (rm: RawMaterial): boolean =>
+    rm.category !== 'sheet' &&
+    parts.some(p => p.customerRMMappings?.[rm.customerName] === rm.id || rm.partId === p.id || (rm.partIds && rm.partIds.includes(p.id)));
+  const openMaterialEntryForRM = (rm: RawMaterial) => {
+    if (!rmEligibleForMaterialEntry(rm)) {
+      setSelectedRM(rm);
+      setShowAddModal(true);
+      setAddQty('');
+      setSupplier('');
+      setRemarks('');
+      setSheetSizeText('');
+      return;
+    }
+    setMaterialEntryPart(null);
+    setMaterialEntryRMId(rm.id);
     setShowMaterialEntry(true);
   };
   // "Post to Inventory" shortcut from RM Cross-Bill Check — jump straight
@@ -1618,15 +1643,8 @@ const Inventory: React.FC<InventoryProps> = ({
                     </td>
                     <td className="px-8 py-6 text-center">
                       {!readOnly && (
-                        <button 
-                          onClick={() => {
-                            setSelectedRM(rm);
-                            setShowAddModal(true);
-                            setAddQty('');
-                            setSupplier('');
-                            setRemarks('');
-                            setSheetSizeText('');
-                          }}
+                        <button
+                          onClick={() => openMaterialEntryForRM(rm)}
                           className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-indigo-600 hover:bg-emerald-600 active:scale-95`}
                         >
                           RM Inward Receipt +
@@ -1830,14 +1848,7 @@ const Inventory: React.FC<InventoryProps> = ({
                     <td className="px-8 py-6 text-center">
                       {!readOnly && (
                         <button
-                          onClick={() => {
-                            setSelectedRM(rm);
-                            setShowAddModal(true);
-                            setAddQty('');
-                            setSupplier('');
-                            setRemarks('');
-                            setSheetSizeText('');
-                          }}
+                          onClick={() => openMaterialEntryForRM(rm)}
                           className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-violet-600 hover:bg-emerald-600 active:scale-95`}
                         >
                           RM Inward Receipt +
@@ -1871,19 +1882,24 @@ const Inventory: React.FC<InventoryProps> = ({
           materialLengths={materialLengths}
           initialInvoiceKey={pendingMaterialEntryInvoiceKey}
           onInitialInvoiceConsumed={onPendingMaterialEntryInvoiceConsumed}
+          initialRMId={materialEntryRMId}
+          onInitialRMConsumed={() => setMaterialEntryRMId(null)}
           onSubmitFinishedPieces={(header, lines) => {
             onMaterialEntryFinishedPieces?.(header, lines);
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
+            setMaterialEntryRMId(null);
           }}
           onSubmitLongerPipe={(header, lines) => {
             onMaterialEntryLongerPipe?.(header, lines);
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
+            setMaterialEntryRMId(null);
           }}
           onClose={() => {
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
+            setMaterialEntryRMId(null);
             onPendingMaterialEntryInvoiceConsumed?.();
           }}
         />

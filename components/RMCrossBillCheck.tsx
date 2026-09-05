@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher } from '../types';
+import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 import { getLocalDateStr, correctedNow } from '../services/time';
 import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
@@ -10,6 +10,13 @@ interface RMCrossBillCheckProps {
   manufacturerInvoices: RMManufacturerInvoice[];
   crossInvoices: RMCustomerCrossInvoice[];
   materialLengths: RMMaterialLength[];
+  // Every Raw Material on file (RM Master) — lets Admin link a manufacturer
+  // material code to the real RM record it corresponds to (see the
+  // "Linked Raw Material" control in the Material Lengths editor below).
+  // That link is what actually lets Material Entry find the right RM when
+  // pulling an invoice — the material code and the RM Master entry's own
+  // name don't need to match textually, only this link matters.
+  rawMaterials: RawMaterial[];
   customers: Customer[];
   // Read-only here — used only to check whether anything has actually been
   // logged into RM stock against a given invoice number (see the Weight &
@@ -167,7 +174,7 @@ const invoiceNumbersLooselyMatch = (a: string, b: string): boolean => {
 const VALUE_MISMATCH_TOLERANCE_RS = 5;
 
 const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
-  manufacturerInvoices, crossInvoices, materialLengths, customers, rmInwardLogs,
+  manufacturerInvoices, crossInvoices, materialLengths, rawMaterials, customers, rmInwardLogs,
   tallyPurchaseVouchers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
   onCreateAlert, onPostToInventory,
@@ -1526,36 +1533,56 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             <h3 className="text-lg font-black text-slate-900 mb-1">Material Lengths</h3>
             <p className="text-xs text-slate-500 mb-4">
               The recorded piece length (mm) for each material code — used for the Pcs→Meter check, and locked on the
-              Manufacturer Invoice form once a material is selected. Fix a wrong value here.
+              Manufacturer Invoice form once a material is selected. Fix a wrong value here. The "Linked Raw Material"
+              on each row is what lets Material Entry find the right stock item when pulling an invoice — the
+              manufacturer's own material name doesn't need to match RM Master's name, only this link matters.
             </p>
             <div className="overflow-y-auto flex-1 -mx-2 px-2 space-y-2">
               {[...materialLengths].sort((a, b) => a.materialName.localeCompare(b.materialName)).map(m => {
                 const edited = lengthEdits[m.materialCode] ?? String(m.lengthMm);
                 const dirty = parseFloat(edited) !== m.lengthMm;
                 return (
-                  <div key={m.materialCode} className="flex items-center gap-3 border border-slate-100 rounded-xl px-4 py-2.5">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold text-slate-900 truncate">{m.materialName}</p>
-                      <p className="text-xs text-slate-400 font-mono">{m.materialCode}</p>
+                  <div key={m.materialCode} className="border border-slate-100 rounded-xl px-4 py-2.5 space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-900 truncate">{m.materialName}</p>
+                        <p className="text-xs text-slate-400 font-mono">{m.materialCode}</p>
+                      </div>
+                      <input type="number" value={edited}
+                        onChange={(e) => setLengthEdits({ ...lengthEdits, [m.materialCode]: e.target.value })}
+                        className="w-28 border-2 border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" />
+                      <span className="text-xs text-slate-400 font-bold">mm</span>
+                      <button
+                        type="button"
+                        onClick={() => saveMaterialLength(m.materialCode)}
+                        disabled={!dirty}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${
+                          justSavedCode === m.materialCode
+                            ? 'bg-emerald-600 text-white'
+                            : dirty
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                        }`}
+                      >
+                        {justSavedCode === m.materialCode ? 'Saved' : 'Save'}
+                      </button>
                     </div>
-                    <input type="number" value={edited}
-                      onChange={(e) => setLengthEdits({ ...lengthEdits, [m.materialCode]: e.target.value })}
-                      className="w-28 border-2 border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" />
-                    <span className="text-xs text-slate-400 font-bold">mm</span>
-                    <button
-                      type="button"
-                      onClick={() => saveMaterialLength(m.materialCode)}
-                      disabled={!dirty}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${
-                        justSavedCode === m.materialCode
-                          ? 'bg-emerald-600 text-white'
-                          : dirty
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-slate-100 text-slate-300 cursor-not-allowed'
-                      }`}
-                    >
-                      {justSavedCode === m.materialCode ? 'Saved' : 'Save'}
-                    </button>
+                    <div className="flex items-center gap-2 pl-0.5">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 shrink-0">Linked Raw Material:</span>
+                      <select
+                        value={m.linkedRMId || ''}
+                        onChange={(e) => {
+                          const rmId = e.target.value || undefined;
+                          setMaterialLengths(prev => prev.map(x => x.materialCode === m.materialCode ? { ...x, linkedRMId: rmId, updatedAt: new Date().toISOString() } : x));
+                        }}
+                        className={`flex-1 min-w-0 border-2 rounded-lg px-2 py-1.5 text-xs font-bold ${m.linkedRMId ? 'border-emerald-200 text-emerald-700 bg-emerald-50' : 'border-amber-200 text-amber-700 bg-amber-50'}`}
+                      >
+                        <option value="">— Not linked (Material Entry can't pull this material in) —</option>
+                        {rawMaterials.filter(rm => rm.category !== 'sheet').map(rm => (
+                          <option key={rm.id} value={rm.id}>{rm.size} — {rm.partName} ({rm.length}mm)</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 );
               })}

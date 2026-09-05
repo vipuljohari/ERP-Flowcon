@@ -75,6 +75,15 @@ interface MaterialEntryProps {
   materialLengths: RMMaterialLength[];
   initialInvoiceKey?: string | null;
   onInitialInvoiceConsumed?: () => void;
+  // Third way in, alongside seedPart and initialInvoiceKey: opened directly
+  // from a specific Raw Material's own "Material Entry" button on the RM
+  // Inventory (RM-wise) ledger — a direct-from-manufacturer purchase that
+  // was never booked through RM Cross-Bill Check at all. Skips straight to
+  // Longer Pipe step 2 with one unlocked line seeded to this RM (no invoice
+  // to pull details from, so Store types Supplier/Invoice/Date/Weight/Bill
+  // Value in fresh, same as any manual line).
+  initialRMId?: string | null;
+  onInitialRMConsumed?: () => void;
   onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
   onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[]) => void;
   onClose: () => void;
@@ -88,6 +97,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   materialLengths,
   initialInvoiceKey,
   onInitialInvoiceConsumed,
+  initialRMId,
+  onInitialRMConsumed,
   onSubmitFinishedPieces,
   onSubmitLongerPipe,
   onClose,
@@ -117,10 +128,21 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   // Cross-Bill invoice — used to mark that invoice's lines "used" on Save.
   const [linkedInvoiceKey, setLinkedInvoiceKey] = useState<string | null>(null);
 
+  // A part counts as mapped to an RM via EITHER mechanism this app
+  // supports — a per-customer link set on the Part itself
+  // (customerRMMappings) or the RM-side mapping set in RM Master
+  // (RawMaterial.partId/partIds). This must match the exact predicate used
+  // everywhere else in App.tsx (the RM Weight & Stock Reconciliation panel,
+  // RM Master's own item list, etc.) — using only partId/partIds here would
+  // wrongly show "no RM available" for any part that's actually mapped the
+  // other way, even though the rest of the app already treats it as linked.
+  const isPartMappedToRM = (p: Part, rm: RawMaterial): boolean =>
+    p.customerRMMappings?.[rm.customerName] === rm.id || rm.partId === p.id || !!rm.partIds?.includes(p.id);
+
   const eligiblePartsForRM = (rmId: string): Part[] => {
     const rm = rawMaterials.find(r => r.id === rmId);
     if (!rm) return [];
-    return parts.filter(p => p.id === rm.partId || rm.partIds?.includes(p.id));
+    return parts.filter(p => isPartMappedToRM(p, rm));
   };
 
   // The RM this Material Entry's part is actually mapped to (normal case,
@@ -129,7 +151,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   // RM Master's existing partId/partIds mapping already drives elsewhere.
   const impliedRM = useMemo(() => {
     if (!seedPart) return null;
-    return rawMaterials.find(rm => rm.partId === seedPart.id || rm.partIds?.includes(seedPart.id)) || null;
+    return rawMaterials.find(rm => isPartMappedToRM(seedPart, rm)) || null;
   }, [seedPart, rawMaterials]);
 
   const makeFinishedLine = (partId?: string): UIFinishedLine => ({ key: genId(), partId: partId || '', qty: '' });
@@ -248,6 +270,21 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     onInitialInvoiceConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialInvoiceKey]);
+
+  // --- Jump straight in from a specific RM's own "Material Entry" button
+  // on the RM Inventory (RM-wise) ledger — a direct-from-manufacturer buy
+  // that has no RM Cross-Bill invoice behind it at all. Unlike the invoice
+  // pull above, nothing is locked here and no header fields are pre-filled
+  // (there's no invoice to pull them from) — this only seeds which RM the
+  // single starting line is for, exactly as if Store had picked it manually.
+  useEffect(() => {
+    if (!initialRMId) return;
+    setEntryMode('longer');
+    setStep(2);
+    setLines([makeLongerLine(initialRMId, [])]);
+    onInitialRMConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRMId]);
 
   const closeEntry = () => onClose();
 

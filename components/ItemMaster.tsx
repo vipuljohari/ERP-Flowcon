@@ -50,6 +50,26 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
   const [searchTerm, setSearchTerm] = useState('');
   const [customerFilter, setCustomerFilter] = useState('All');
   const [modelFilter, setModelFilter] = useState('All');
+  const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
+
+  // Same "is this part linked to a Raw Material" check used everywhere else
+  // in App.tsx (RM Master's item list, the RM Weight & Stock Reconciliation
+  // panel, Material Entry's eligible-items lookup) — a part counts as
+  // mapped via EITHER of the two mechanisms this app supports: a per-
+  // customer link set on the Part itself (customerRMMappings), or the
+  // RM-side mapping set in RM Master (RawMaterial.partId/partIds). Scoped
+  // to tubular parts only — Sheet Metal parts don't go through Material
+  // Entry's Longer Pipe flow, so an unmapped one isn't the same problem.
+  const isMappedToAnyRM = (p: Part): boolean =>
+    p.partType === 'sheet_metal' ||
+    rawMaterials.some(rm =>
+      p.customerRMMappings?.[rm.customerName] === rm.id || rm.partId === p.id || (rm.partIds && rm.partIds.includes(p.id))
+    );
+
+  const unmappedTubularCount = useMemo(
+    () => parts.filter(p => !isMappedToAnyRM(p)).length,
+    [parts, rawMaterials]
+  );
 
   // Reset the Model filter whenever the Customer filter changes — a model
   // selected for one customer is meaningless once you switch to another.
@@ -228,11 +248,12 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
   };
 
   const filteredParts = parts.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       p.sapCode.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCustomer = customerFilter === 'All' || (p.mappedCustomers || []).includes(customerFilter);
     const matchesModel = modelFilter === 'All' || p.customerModels?.[customerFilter] === modelFilter;
-    return matchesSearch && matchesCustomer && matchesModel;
+    const matchesUnmapped = !showUnmappedOnly || !isMappedToAnyRM(p);
+    return matchesSearch && matchesCustomer && matchesModel && matchesUnmapped;
   });
 
   return (
@@ -304,6 +325,22 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
         </div>
       </header>
 
+      {unmappedTubularCount > 0 && (
+        <div className="flex items-center justify-between gap-4 border-2 border-rose-200 bg-rose-50/60 rounded-2xl px-6 py-4">
+          <div>
+            <p className="text-sm font-black text-rose-700">⚠ {unmappedTubularCount} item{unmappedTubularCount === 1 ? '' : 's'} with no Raw Material mapped</p>
+            <p className="text-[11px] text-rose-600/80 mt-0.5">Material Entry's "Longer Pipe" mode can't be used for these until RM Master links a Raw Material to them (RM Master → Map to Finished Goods Items).</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowUnmappedOnly(v => !v)}
+            className={`shrink-0 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest border-2 ${showUnmappedOnly ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-rose-600 border-rose-300 hover:bg-rose-50'}`}
+          >
+            {showUnmappedOnly ? 'Showing Unmapped Only ✓' : 'Show Unmapped Only'}
+          </button>
+        </div>
+      )}
+
       {onBulkAdd && (
         <BulkItemImport
           isOpen={showBulkImport}
@@ -365,6 +402,11 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                 <td className="px-8 py-6">
                   <div className="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5">{p.sapCode}</div>
                   <div className="font-black text-slate-900 text-base uppercase">{p.name}</div>
+                  {!isMappedToAnyRM(p) && (
+                    <div className="mt-1 inline-block text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                      ⚠ No RM Mapped
+                    </div>
+                  )}
                 </td>
                 <td className="px-8 py-6">
                   <div className="flex flex-col gap-1 items-start">
