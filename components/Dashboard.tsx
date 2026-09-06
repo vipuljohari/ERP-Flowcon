@@ -3,7 +3,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { Part, Sale, InventoryStats, Customer, RawMaterial } from '../types';
 import ReportGenerator from './ReportGenerator';
 import { useBrandName } from '../contexts/CompanyContext';
-import { isSheetRM, rmKgPerPart, rmMatchesCustomer } from '../services/rmYield';
+import { isSheetRM, rmKgPerPart, rmMatchesCustomer, partsSharingRM, partsPerRMUnit, computeRMStockAsOnDate } from '../services/rmYield';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -133,6 +133,38 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
   const mappedParts = useMemo(() => {
     return parts.filter(p => p.mappedCustomers?.some(c => c.toUpperCase().trim() === activeCustomer.toUpperCase().trim()));
   }, [parts, activeCustomer]);
+
+  // Performance Ledger's "Available Stock" — for a part cut from a Raw
+  // Material (Longer Pipe), this must be the SAME live figure the RM
+  // Inventory (RM-wise) ledger shows as "Stock as on date", not the part's
+  // own `stock` field. `stock` is a running counter nudged by individual
+  // inward/sale events and drifts out of sync the moment someone corrects
+  // the RM's Opening Balance directly (as on the RM ledger) — it has no way
+  // to know that happened. Computed fresh here instead, and — since two or
+  // more Parts can share one RM's stock pool (e.g. LH/RH siblings cut from
+  // the same bar) — split evenly across every Part currently mapped to that
+  // RM, matching how many physical bars each one could actually claim.
+  // Parts not linked to any RM keep reading `stock` directly, unchanged.
+  const availableStockByPartId = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!rawMaterials || rawMaterials.length === 0) return map;
+    parts.forEach(p => {
+      const rm = rawMaterials.find(r => r.partId === p.id || (r.partIds && r.partIds.includes(p.id)));
+      if (!rm) return;
+      const siblings = partsSharingRM(rm, parts);
+      if (siblings.length === 0) return;
+      const { closingBalancePipes } = computeRMStockAsOnDate(
+        rm,
+        siblings,
+        rmInwardLogs || [],
+        sales,
+        localRMOpeningBalances?.[rm.id] || '0'
+      );
+      const yieldFactor = partsPerRMUnit(p, rm);
+      map.set(p.id, Math.round((closingBalancePipes * yieldFactor) / siblings.length));
+    });
+    return map;
+  }, [parts, rawMaterials, rmInwardLogs, sales, localRMOpeningBalances]);
 
   // --- BUSINESS LOGIC: Commitment-Based Shortage Alerts ---
   const shortageAnalysis = useMemo(() => {
@@ -706,6 +738,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                   const dispatchCount = filteredSales.filter(s => s.partId === p.id).reduce((sum, s) => sum + s.quantity, 0);
                   const achv = Math.round((dispatchCount / (target || 1)) * 100);
                   const balance = Math.max(0, target - dispatchCount);
+                  const availableStock = availableStockByPartId.get(p.id) ?? Math.round(p.stock);
 
                   return (
                     <tr key={p.id} className="hover:bg-indigo-50/30 transition-all group text-left">
@@ -727,8 +760,8 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
                         <span className={`font-black text-xs ${balance > 0 ? 'text-slate-900' : 'text-emerald-500'}`}>{balance}</span>
                       </td>
                       <td className="px-8 py-5 text-center font-black">
-                        <span className={`px-3 py-1.5 rounded-full text-xs font-black ${p.stock < 0 ? 'bg-rose-100 text-rose-700' : p.stock <= p.minThreshold ? 'bg-amber-100 text-amber-700' : 'bg-slate-50 text-slate-800 border border-slate-100'}`}>
-                          {Math.round(p.stock)}
+                        <span className={`px-3 py-1.5 rounded-full text-xs font-black ${availableStock < 0 ? 'bg-rose-100 text-rose-700' : availableStock <= p.minThreshold ? 'bg-amber-100 text-amber-700' : 'bg-slate-50 text-slate-800 border border-slate-100'}`}>
+                          {availableStock}
                         </span>
                       </td>
                     </tr>

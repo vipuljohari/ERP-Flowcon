@@ -16,7 +16,7 @@
 // RM stock" IS "1 Kg", and a part's RM cost is simply its Gross Weight
 // (Kg/pc, entered in Item Master) — no floor/bar-fitting needed at the
 // RM-unit level, only at the final whole-pieces-obtainable level.
-import { Part, RawMaterial } from '../types';
+import { Part, RawMaterial, Sale, RMInwardLog } from '../types';
 
 export const isSheetRM = (rm: Pick<RawMaterial, 'category'>): boolean => rm.category === 'sheet';
 
@@ -64,4 +64,84 @@ export const partsPerRMUnit = (part: Pick<Part, 'itemLength' | 'itemWeight' | 'g
     return Math.floor(rmWeight / partWeight);
   }
   return 0;
+};
+
+// Every Part currently cut from `rm` — i.e. every item that would draw down
+// the SAME physical stock pool. Mirrors the RM-wise ledger's own "mapped
+// items" definition (Inventory.tsx) — RM-side partId/partIds only, not the
+// Part-side customerRMMappings — since that's what that trusted screen's
+// numbers are actually built from. Used to know how many ways one shared
+// RM's derived piece-count has to be split.
+export const partsSharingRM = (rm: Pick<RawMaterial, 'id' | 'partId' | 'partIds'>, allParts: Part[]): Part[] =>
+  allParts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
+
+// "Stock as on date" for a Tube RM, in bars/pipes and metres — the same
+// figure the RM Inventory (RM-wise) ledger shows (Inventory.tsx): opening
+// balance + this month's RM Inward, minus this month's dispatches (summed
+// across every customer the RM is shared with) and end-piece scrap, all
+// converted through the RM's own bar length. Deliberately kept a line-by-
+// line match of that screen's own inline calculation (not a refactor of it)
+// so as not to risk the screen Vipul checks daily — any change here should
+// be mirrored there, and vice versa.
+//
+// `monthRmInwardLogs` and `monthSales` are expected already scoped to the
+// relevant month/date (as App.tsx's contextRmInwardLogs/contextSales
+// already are) — this function does no date filtering of its own.
+export const computeRMStockAsOnDate = (
+  rm: RawMaterial,
+  mappedItems: Part[],
+  monthRmInwardLogs: RMInwardLog[],
+  monthSales: Sale[],
+  openingBalancePipesStr: string
+): { closingBalancePipes: number; closingBalanceMeters: number } => {
+  const rmLength = rm.length || 6000;
+  const rmStandardMeters = rmLength / 1000;
+
+  const monthRMInwardPipes = monthRmInwardLogs
+    .filter(l => l.rmId === rm.id)
+    .reduce((sum, l) => sum + l.quantity, 0);
+  const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
+
+  let totalConsumedMeters = 0;
+  let totalScrapMeters = 0;
+
+  mappedItems.forEach(item => {
+    let lengthFactorMeters = 0;
+    if (item.itemLength && item.itemLength > 0) {
+      lengthFactorMeters = item.itemLength / 1000;
+    } else if (item.itemWeight && item.itemWeight > 0 && rm.weightPer1000 > 0) {
+      lengthFactorMeters = (item.itemWeight / (rm.weightPer1000 / 1000)) / 1000;
+    }
+
+    const salesQty = monthSales
+      .filter(s => s.partId === item.id && rmMatchesCustomer(rm, s.customer))
+      .reduce((sum, s) => sum + s.quantity, 0);
+
+    const itemMeters = salesQty * lengthFactorMeters;
+    totalConsumedMeters += itemMeters;
+
+    const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
+    let scrapMmPerPipe = 0;
+    let yieldFactor = 0;
+    if (item.hasCustomScrap) {
+      scrapMmPerPipe = item.customScrapMm || 0;
+      if (itemLengthMm > 0) yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+    } else if (itemLengthMm > 0) {
+      yieldFactor = Math.floor(rmLength / itemLengthMm);
+      scrapMmPerPipe = rmLength % itemLengthMm;
+    }
+
+    let pipesUsed = 0;
+    if (yieldFactor > 0) pipesUsed = Math.ceil(salesQty / yieldFactor);
+    else if (rmStandardMeters > 0 && salesQty > 0) pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
+
+    totalScrapMeters += pipesUsed * (scrapMmPerPipe / 1000);
+  });
+
+  const openingBalancePipes = parseFloat(openingBalancePipesStr || '0');
+  const openingBalanceMeters = openingBalancePipes * rmStandardMeters;
+  const closingBalanceMeters = openingBalanceMeters + monthRMInwardMeters - totalConsumedMeters - totalScrapMeters;
+  const closingBalancePipes = rmStandardMeters > 0 ? closingBalanceMeters / rmStandardMeters : 0;
+
+  return { closingBalancePipes, closingBalanceMeters };
 };
