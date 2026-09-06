@@ -1851,9 +1851,21 @@ const MainApp: React.FC = () => {
         quantity: line.barsReceived, supplier: header.supplierName, timestamp: finalTs,
         invoiceNumber: header.invoiceNo, unit: 'pcs', materialEntryId: entryId,
         invoiceBookedInUnit1: header.invoiceBookedInUnit1,
-        remarks: line.pulledFromInvoiceLineId ? 'Pulled from RM Cross-Bill Invoice' : undefined,
+        remarks: line.pulledFromInvoiceLineId
+          ? 'Pulled from RM Cross-Bill Invoice'
+          : (line.autoAssign ? 'Auto-Assign — added to shared RM stock, not split to specific items' : undefined),
       });
       rmStockDelta[rm.id] = (rmStockDelta[rm.id] || 0) + line.barsReceived;
+
+      // Auto-Assign: nothing to allot to any specific item — the RM-level
+      // bump above is the whole effect of this line. Skip the per-item loop
+      // (and the scrap tally right after it) entirely rather than relying on
+      // `line.allotments` merely being empty, so this stays correct even if
+      // that ever stops being guaranteed upstream.
+      if (line.autoAssign) {
+        if (line.pulledFromInvoiceLineId) pulledInvoiceLineIds.push(line.pulledFromInvoiceLineId);
+        return;
+      }
 
       const itemLengthById: Record<string, number> = {};
       line.allotments.forEach(a => {

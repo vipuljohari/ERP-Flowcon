@@ -60,6 +60,15 @@ export interface LongerPipeLine {
   // — such a line is locked (non-editable) and cannot be removed, since the
   // source invoice gets irreversibly marked "used" on save.
   pulledFromInvoiceLineId?: string;
+  // Restores the pre-Material-Entry-feature behaviour on request: Bars
+  // Received just goes straight into the RM's own shared stock pool (no
+  // per-item split at receiving time). Dispatches keep subtracting per-item
+  // consumption automatically the same way they already do today (see
+  // Inventory.tsx's RM-wise "Dispatches" column) — this only skips the
+  // itemised allotment step for RMs mapped to many items where that detail
+  // isn't wanted for a given receipt. When true, `allotments` is ignored
+  // (treated as empty) regardless of what it contains.
+  autoAssign?: boolean;
 }
 
 // Rule: a "Whole Bars per Item" line may not save with a negative entry
@@ -113,6 +122,9 @@ export const computeUnattributedScrapMm = (line: LongerPipeLine, itemLengthById:
 export const validateLongerPipeLine = (line: LongerPipeLine, itemLengthById: Record<string, number>): string | null => {
   if (!line.rmId) return 'Select a Spec / Material for this line.';
   if (line.barLengthMm <= 0 || line.barsReceived <= 0) return 'Bar Length and Bars Received must both be greater than zero.';
+  // Auto-Assign: nothing to allot, so the per-item allotment rules below
+  // don't apply — Bars Received alone is enough to save this line.
+  if (line.autoAssign) return null;
   return line.subMode === 'whole_bars'
     ? validateWholeBarsLine(line)
     : validateSplitPiecesLine(line, itemLengthById);

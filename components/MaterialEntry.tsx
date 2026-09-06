@@ -65,6 +65,11 @@ interface UILongerLine {
   // invoice line — locked (non-editable), Remove hidden, can't be un-pulled.
   lockedFromInvoice: boolean;
   pulledFromInvoiceLineId?: string;
+  // Auto-Assign — one decision per RM size/spec (this line), not per item
+  // within it and not shared across every line in the entry: an invoice
+  // covering two different RM sizes can auto-assign one and allot the other
+  // item-by-item. See services/materialEntry.ts's LongerPipeLine.autoAssign.
+  autoAssign: boolean;
 }
 
 interface MaterialEntryProps {
@@ -173,6 +178,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
       pcsPerItem: {},
       itemSearch: '',
       lockedFromInvoice: false,
+      autoAssign: false,
     };
   };
 
@@ -228,6 +234,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
         pcsPerItem: {},
         itemSearch: '',
         lockedFromInvoice: true,
+        autoAssign: false,
         pulledFromInvoiceLineId: line.id,
       };
     });
@@ -276,12 +283,15 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   // on the RM Inventory (RM-wise) ledger — a direct-from-manufacturer buy
   // that has no RM Cross-Bill invoice behind it at all. Unlike the invoice
   // pull above, nothing is locked here and no header fields are pre-filled
-  // (there's no invoice to pull them from) — this only seeds which RM the
-  // single starting line is for, exactly as if Store had picked it manually.
+  // (there's no invoice to pull them from), so this stops at step 1 — the
+  // invoice header still needs Supplier/Invoice No./Date/Weight/Bill Value
+  // typed in fresh — with the Longer Pipe line already seeded to this RM so
+  // Store lands straight on it after filling in the header (previously this
+  // jumped straight to step 2, skipping the header entirely and forcing a
+  // confusing "Back" just to reach it).
   useEffect(() => {
     if (!initialRMId) return;
     setEntryMode('longer');
-    setStep(2);
     setLines([makeLongerLine(initialRMId, [])]);
     onInitialRMConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -325,7 +335,14 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   // App.tsx's save handlers are always checking the exact same rules.
   const lineComputations = useMemo(() => {
     return lines.map(l => {
-      const allotments: AllottedItem[] = l.checkedPartIds.map(partId => ({
+      // Auto-Assign is a per-line decision (this line's own RM size/spec) —
+      // when it's on for this line, that line ignores whatever is checked,
+      // no per-item split at all; the full Bars Received amount goes
+      // straight into this line's RM's shared stock pool (see
+      // services/materialEntry.ts's autoAssign comment). A different line
+      // in the same entry (a different RM size on the same invoice) can
+      // make the opposite choice independently.
+      const allotments: AllottedItem[] = l.autoAssign ? [] : l.checkedPartIds.map(partId => ({
         partId,
         barsAllotted: l.subMode === 'whole_bars' ? parseFloat(l.barsPerItem[partId] || '') || 0 : undefined,
         piecesAllotted: l.subMode === 'split_pieces' ? parseFloat(l.pcsPerItem[partId] || '') || 0 : undefined,
@@ -338,6 +355,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
         subMode: l.subMode,
         allotments,
         pulledFromInvoiceLineId: l.pulledFromInvoiceLineId,
+        autoAssign: l.autoAssign,
       };
       const itemLengthById: Record<string, number> = {};
       l.checkedPartIds.forEach(id => {
@@ -582,7 +600,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
                   <p className="text-[11px] text-slate-400 -mt-2">Only items this Raw Material is mapped to (RM Master's item mapping) are shown below — a bar physically can't be cut into an unrelated item, so switching this drops any items you'd already checked that no longer belong.</p>
                   <div className="grid grid-cols-2 gap-3">
                     <FormField label="Bar Length (mm)">
-                      {line.lockedFromInvoice || line.subMode === 'whole_bars' ? (
+                      {line.lockedFromInvoice || line.subMode === 'whole_bars' || line.autoAssign ? (
                         <input disabled value={line.barLengthMm} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
                       ) : (
                         <input type="number" value={line.barLengthMm} onChange={(e) => patchLine(line.key, l => ({ ...l, barLengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
@@ -599,10 +617,28 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
                   {line.lockedFromInvoice && (
                     <p className="text-[11px] text-slate-400 -mt-2">Spec, Bar Length and Bars Received are all locked — pulled directly from this RM Cross-Bill invoice, so the physical quantity on the ground always matches what Accounts booked. This line also can't be removed — every material on this invoice must get a Material Entry; if the invoice was booked wrongly, Admin should delete and re-enter it in RM Cross-Bill Check rather than dropping a line here.</p>
                   )}
-                  {!line.lockedFromInvoice && line.subMode === 'whole_bars' && (
+                  {!line.lockedFromInvoice && !line.autoAssign && line.subMode === 'whole_bars' && (
                     <p className="text-[11px] text-slate-400 -mt-2">Bar Length is fixed to this Raw Material's own spec ({rm ? rm.length : '—'}mm) — it shouldn't change bar to bar. If a real shortage means bars have to be split unevenly across items, switch to "Split by Pieces (Shortage)" below, where Bar Length can be adjusted.</p>
                   )}
 
+                  <label className="flex items-start gap-2 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={line.autoAssign}
+                      onChange={(e) => patchLine(line.key, l => ({ ...l, autoAssign: e.target.checked }))}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      Auto-Assign this size — skip item-wise allotment for this line only. Bars Received goes straight into this Raw Material's shared stock pool (in metres/pipes), same as before this per-item screen existed; dispatches keep subtracting consumption automatically per item, just like they already do today. If this invoice has another size/line, that one can make its own choice independently.
+                    </span>
+                  </label>
+
+                  {line.autoAssign ? (
+                    <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold text-slate-500">
+                      No item split for this line — {parseFloat(line.barsReceived) || 0} bar(s) will be added to the RM's total stock only.
+                    </div>
+                  ) : (
+                    <>
                   <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
                     <span className="text-slate-500">Bars available: {parseFloat(line.barsReceived) || 0}</span>
                     {line.subMode === 'whole_bars' ? (
@@ -693,6 +729,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
                           );
                         })}
                       </div>
+                    </>
+                  )}
                     </>
                   )}
 
