@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength } from '../types';
 import { CATEGORIES } from '../constants';
-import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers } from '../services/rmYield';
+import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate } from '../services/rmYield';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
 // used to be computed from a raw `new Date()`, so a device with a badly
 // wrong system clock would validate against its OWN wrong idea of "today",
@@ -651,6 +651,17 @@ const Inventory: React.FC<InventoryProps> = ({
       hasCommonRM: boolean;
       openingBalValue: number;
       plantBalanceValue: number;
+      // Set only when every OTHER part sharing a mapped RM is a declared
+      // sibling of this one (Item Master's Sibling Parts picker) — a true
+      // LH/RH-style pair cut from the exact same bar, not just "some other
+      // part happens to use this RM too". For that specific case, Plant
+      // Balance can be shown directly (the RM's own live "Stock as on date"
+      // — same figure the RM Inventory ledger and Dashboard's Performance
+      // Ledger use — split evenly across the sibling group) instead of the
+      // "Refer RM Inventory" fallback, which stays reserved for a shared RM
+      // whose mapped items are NOT all mutual siblings (genuinely different
+      // parts/lengths, where an even split wouldn't mean anything).
+      siblingSplitPlantBalance?: number;
     }>();
 
     parts.forEach(p => {
@@ -699,7 +710,20 @@ const Inventory: React.FC<InventoryProps> = ({
           const opBalanceStr = localRMOpeningBalances[rm.id] || '0';
           const openingBalanceUnits = parseFloat(opBalanceStr);
           const yieldFactor = partsPerRMUnit(p, rm);
-          return sum + Math.round(openingBalanceUnits * yieldFactor);
+          const rawValue = openingBalanceUnits * yieldFactor;
+          // Declared siblings (Item Master's Sibling Parts picker) cut from
+          // the SAME bar physically split this one pool — without this, an
+          // LH/RH pair each independently showed the full RM-derived value
+          // (e.g. both at 1332 instead of 666 each), double-counting one
+          // physical stock as if it belonged whole to both. A shared RM
+          // whose other mapped items are NOT declared siblings (genuinely
+          // different parts/lengths) is left undivided here, same as before
+          // — that ambiguous case is what "Refer RM Inventory" (below) is
+          // for.
+          const siblings = partsSharingRM(rm, parts);
+          const isSiblingSplit = siblings.length > 1 && siblings.every(sp => sp.id === p.id || (p.siblingIds || []).includes(sp.id));
+          const splitValue = isSiblingSplit ? rawValue / siblings.length : rawValue;
+          return sum + Math.round(splitValue);
         }, 0);
       } else {
         // Stored, month-anchored value — see resolvedPartOpeningBalances in
@@ -713,11 +737,29 @@ const Inventory: React.FC<InventoryProps> = ({
       if (openingBalValue < 0 && !isAdmin) openingBalValue = 0;
       const plantBalanceValue = Math.round(openingBalValue + receiptsSinceStartOfMonth - totalSalesSinceStartOfMonth);
 
-      map.set(p.id, { receiptsSinceStartOfMonth, totalSalesSinceStartOfMonth, salesSinceStartOfMonth, mappedRMs, hasCommonRM, openingBalValue, plantBalanceValue });
+      // For a true sibling group, Plant Balance is shown directly instead of
+      // "Refer RM Inventory" — computed as the RM's own live "Stock as on
+      // date" (the exact figure the RM Inventory (RM-wise) ledger and
+      // Dashboard's Performance Ledger already show), converted to pieces
+      // and split evenly across the sibling group. This intentionally
+      // bypasses the receipts/sales-since-month-start formula above, which
+      // tracks each part's own individual InwardLog/sales activity and was
+      // never meant to represent one physically shared pool.
+      let siblingSplitPlantBalance: number | undefined;
+      mappedRMs.forEach(rm => {
+        const siblings = partsSharingRM(rm, parts);
+        const isSiblingSplit = siblings.length > 1 && siblings.every(sp => sp.id === p.id || (p.siblingIds || []).includes(sp.id));
+        if (!isSiblingSplit) return;
+        const { closingBalancePipes } = computeRMStockAsOnDate(rm, siblings, rmInwardLogs, sales, localRMOpeningBalances[rm.id] || '0');
+        const yieldFactor = partsPerRMUnit(p, rm);
+        siblingSplitPlantBalance = Math.round((closingBalancePipes * yieldFactor) / siblings.length);
+      });
+
+      map.set(p.id, { receiptsSinceStartOfMonth, totalSalesSinceStartOfMonth, salesSinceStartOfMonth, mappedRMs, hasCommonRM, openingBalValue, plantBalanceValue, siblingSplitPlantBalance });
     });
 
     return map;
-  }, [parts, inwardLogs, sales, rawMaterials, selectedCustomer, localRMOpeningBalances, localPartOpeningBalances, isAdmin]);
+  }, [parts, inwardLogs, sales, rawMaterials, selectedCustomer, localRMOpeningBalances, localPartOpeningBalances, isAdmin, rmInwardLogs]);
 
   // One-time correction: parts.stock is a running total, incremented and
   // decremented over time by every inward entry and every Tally-synced
@@ -951,11 +993,12 @@ const Inventory: React.FC<InventoryProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredParts.map(p => {
-                    const { receiptsSinceStartOfMonth, totalSalesSinceStartOfMonth, salesSinceStartOfMonth, hasCommonRM, openingBalValue, plantBalanceValue } = partComputations.get(p.id)!;
+                    const { receiptsSinceStartOfMonth, totalSalesSinceStartOfMonth, salesSinceStartOfMonth, hasCommonRM, openingBalValue, plantBalanceValue, siblingSplitPlantBalance } = partComputations.get(p.id)!;
 
                     const localVal = localOpeningBalances[p.id];
                     const isDirty = localVal !== undefined && parseInt(localVal) !== openingBalValue;
-                    const isNegative = plantBalanceValue < 0;
+                    const displayedPlantBalance = siblingSplitPlantBalance !== undefined ? siblingSplitPlantBalance : plantBalanceValue;
+                    const isNegative = displayedPlantBalance < 0;
 
                     return (
                       <tr key={p.id} className={`hover:bg-emerald-50/20 transition-all group ${isNegative ? 'bg-rose-50/50' : ''}`}>
@@ -1018,7 +1061,7 @@ const Inventory: React.FC<InventoryProps> = ({
                         </td>
                         <td className="px-8 py-6 text-center">
                           <div className="flex flex-col items-center">
-                            {hasCommonRM ? (
+                            {hasCommonRM && siblingSplitPlantBalance === undefined ? (
                               <span className="text-[11px] font-black px-3.5 py-2 bg-indigo-50 text-indigo-700 rounded-xl border border-indigo-100/80 uppercase tracking-wide shadow-sm text-center">
                                 Refer RM Inventory
                               </span>
@@ -1026,13 +1069,13 @@ const Inventory: React.FC<InventoryProps> = ({
                               <>
                                 <div className={`px-4 py-1.5 rounded-full transition-all duration-300 flex flex-col items-center ${isNegative ? 'bg-rose-600 text-white shadow-lg shadow-rose-200 scale-110' : ''}`}>
                                    <span className={`font-black text-lg ${isNegative ? 'text-white' : p.status === 'Low Stock' ? 'text-amber-600' : p.status === 'Out of Stock' ? 'text-rose-600' : 'text-slate-800'}`}>
-                                     {plantBalanceValue}
+                                     {displayedPlantBalance}
                                    </span>
                                 </div>
                                 <span className={`text-[8px] font-black uppercase tracking-tighter mt-2 px-2 py-0.5 rounded transition-all ${
                                   isNegative ? 'bg-rose-100 text-rose-700 animate-pulse ring-2 ring-rose-400' : p.status === 'In Stock' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
                                 }`}>
-                                  {isNegative ? 'Audit Required' : p.status}
+                                  {isNegative ? 'Audit Required' : (siblingSplitPlantBalance !== undefined ? 'Shared Stock (Split)' : p.status)}
                                 </span>
                               </>
                             )}
