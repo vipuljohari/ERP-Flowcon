@@ -11,6 +11,7 @@ import {
   computeUnattributedScrapMm,
   getPullableInvoiceGroups,
   PullableInvoiceGroup,
+  normalizeMaterialCode,
 } from '../services/materialEntry';
 import { getLocalDateStr, correctedNow } from '../services/time';
 import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
@@ -215,7 +216,11 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
   const buildLinesFromInvoiceGroup = (group: PullableInvoiceGroup): UILongerLine[] =>
     group.lines.map(line => {
-      const ml = materialLengths.find(m => m.materialCode === line.materialCode);
+      // Same normalized match as the eligibility check above — a line that
+      // qualified the whole invoice as pullable must resolve here too, even
+      // if ITS specific code differs from what's on file only by case or
+      // trailing whitespace (see normalizeMaterialCode's comment).
+      const ml = materialLengths.find(m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(line.materialCode));
       const rmId = ml?.linkedRMId || '';
       const eligible = rmId ? eligiblePartsForRM(rmId) : [];
       const preCheck = seedPart

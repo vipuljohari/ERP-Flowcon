@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 import { getLocalDateStr, correctedNow } from '../services/time';
+import { normalizeMaterialCode } from '../services/materialEntry';
 import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
 
 const NEW_OPTION = '__new__';
@@ -121,13 +122,6 @@ const readAndCompressInvoicePhoto = (file: File): Promise<{ base64: string; mime
     reader.readAsDataURL(file);
   });
 };
-
-// Material codes on a photographed invoice sometimes carry trailing print
-// artifacts (e.g. "RMSS00000119." with a stray period, from the column
-// layout on the source document) that aren't part of the actual code. Used
-// to compare a freshly-read code against what's already on file without
-// that kind of noise causing a real match to be missed.
-const normalizeMaterialCode = (code: string) => code.trim().replace(/[.\s]+$/, '').toUpperCase();
 
 // Permanent field header above an input/select — unlike a placeholder, this
 // stays visible once the field has a value, so it's always clear what the
@@ -362,11 +356,18 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       // feature's go-live, and at least one line's material code must be
       // linked (via RMMaterialLength.linkedRMId) to a real Raw Material —
       // otherwise Material Entry would have nothing to do with it anyway.
+      // Matched via normalizeMaterialCode, not a raw `===` — a manually
+      // typed code that only differs in case/whitespace from what's on
+      // file (e.g. "rmss00000119" vs "RMSS00000119") must still count as
+      // the same, linked material, exactly like materialLengths's own
+      // dedupe already treats it (confirmed bug: this line used to compare
+      // raw strings while dedupe normalized, so a code that correctly
+      // reused the existing on-file record still failed eligibility here).
       const usedForMaterialEntry = items.every(i => i.usedForMaterialEntry);
       const eligibleForMaterialEntry =
         !usedForMaterialEntry &&
         first.date >= MATERIAL_ENTRY_INVOICE_PULL_CUTOFF &&
-        items.some(i => !!materialLengths.find(m => m.materialCode === i.materialCode)?.linkedRMId);
+        items.some(i => !!materialLengths.find(m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(i.materialCode))?.linkedRMId);
 
       return {
         key,

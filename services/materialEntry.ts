@@ -141,6 +141,23 @@ export interface PullableInvoiceGroup {
   lines: RMManufacturerInvoice[];
 }
 
+// Material codes are sometimes typed by hand (RM Cross-Bill Check's "+ Add
+// New Material" flow) or read off a photographed invoice, and either way
+// can carry case differences or trailing print artifacts (e.g.
+// "RMSS00000119." with a stray period from the source document's column
+// layout, or "rmss00000119" typed in lowercase) that aren't part of the
+// actual code. Every place that matches one material code against another
+// — recognizing a re-typed material as the same one already on file,
+// deciding whether an invoice is eligible to post/pull — MUST go through
+// this, not a raw `===`, or a real match gets silently missed (confirmed
+// bug: RMCrossBillCheck.tsx's own "Post to Inventory" eligibility check
+// used to compare codes with `===` directly while the rest of that same
+// file already normalized this way, so a manually-typed code that differed
+// only in case from what's on file — matching materialLengths's own
+// case-insensitive dedupe, so no duplicate record was even created — still
+// silently failed the *eligibility* check alone).
+export const normalizeMaterialCode = (code: string): string => (code || '').trim().replace(/[.\s]+$/, '').toUpperCase();
+
 // Spec-relevance + deployment-cutoff filter for "Pull from Invoice": only
 // show invoices where (a) every line is still unused, (b) the invoice date
 // is on/after this feature's go-live (an invoice older than that was
@@ -155,7 +172,7 @@ export const getPullableInvoiceGroups = (
   cutoffDateStr: string
 ): PullableInvoiceGroup[] => {
   const linkedRMIdByCode: Record<string, string | undefined> = {};
-  materialLengths.forEach(ml => { linkedRMIdByCode[ml.materialCode] = ml.linkedRMId; });
+  materialLengths.forEach(ml => { linkedRMIdByCode[normalizeMaterialCode(ml.materialCode)] = ml.linkedRMId; });
 
   const groups = new Map<string, RMManufacturerInvoice[]>();
   invoices.forEach(inv => {
@@ -169,7 +186,7 @@ export const getPullableInvoiceGroups = (
     if (lines.some(l => l.usedForMaterialEntry)) return; // any line already used -> whole invoice is done
     const first = lines[0];
     if (first.date < cutoffDateStr) return;
-    const hasMatch = lines.some(l => linkedRMIdByCode[l.materialCode] === targetRMId);
+    const hasMatch = lines.some(l => linkedRMIdByCode[normalizeMaterialCode(l.materialCode)] === targetRMId);
     if (!hasMatch) return;
     result.push({ invoiceNo: first.invoiceNo, manufacturerName: first.manufacturerName, date: first.date, lines });
   });
