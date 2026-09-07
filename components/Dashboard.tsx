@@ -153,6 +153,17 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       if (!rm) return;
       const siblings = partsSharingRM(rm, parts);
       if (siblings.length === 0) return;
+      // Only pool-and-split when every part mapped to this RM is a true,
+      // mutually-declared sibling of every other one (e.g. LH/RH cut in
+      // pairs from the same bar). When an RM is shared by parts that are
+      // NOT all siblings — e.g. one RM feeding a manually-allotted mix like
+      // Bottom Rail (dedicated bars) plus LH/RH (a separate dedicated
+      // allotment) — dividing evenly by siblings.length would misattribute
+      // Bottom Rail's own dedicated stock as if it were pooled with LH/RH.
+      // Fall back to the part's own live `stock` field in that case, same
+      // as the Item-wise Inventory screen's "Refer RM Inventory" fallback.
+      const isSiblingSplit = siblings.length > 1 && siblings.every(sp => sp.id === p.id || (p.siblingIds || []).includes(sp.id));
+      if (siblings.length > 1 && !isSiblingSplit) return;
       const { closingBalancePipes } = computeRMStockAsOnDate(
         rm,
         siblings,

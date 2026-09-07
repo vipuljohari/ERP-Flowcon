@@ -35,6 +35,7 @@ import { DropboxService } from './services/dropbox';
 import { TallyService } from './services/tally';
 import { isSheetRM, rmKgPerPart, partsPerRMUnit, rmMatchesCustomer, rmAllCustomers } from './services/rmYield';
 import { pcsPerBar, computeUnattributedScrapMm, LongerPipeLine, MaterialEntryHeader, FinishedPieceLine } from './services/materialEntry';
+import { applySiblingBorrow } from './services/siblingBorrow';
 // Clock-corrected timestamp helper — see services/time.ts for why a plain
 // `new Date()` here is no longer trusted directly (a wrong device clock
 // used to be able to produce a dispatch/inward entry dated in a future
@@ -1422,17 +1423,39 @@ const MainApp: React.FC = () => {
                return { id: Math.random().toString(36).substr(2, 9), partId: part.id, partName: part.name, sapCode: part.sapCode, quantity: i.quantity, totalPrice: specificRate * i.quantity, timestamp: finalTs, customer: officialCustomer, invoiceNumber: inv };
              });
              setSales(prev => [...newSales, ...prev]);
+
+             // Sibling Stock Borrow: apply this batch's own -quantity
+             // deductions first, then let any part left negative cover the
+             // gap from a TRUE sibling's (mutually-declared, e.g. LH/RH)
+             // spare stock — never the reverse, a lender is never pushed
+             // negative to cover a borrower. Every borrow is logged as an
+             // Admin alert (sibling_stock_borrow) so it's visible, not silent.
+             const afterDispatch = new Map(parts.map(p => {
+               const match = items.find(i => i.partId === p.id);
+               return [p.id, match ? p.stock - match.quantity : p.stock] as const;
+             }));
+             const { updatedStock, borrowEvents } = applySiblingBorrow(parts, afterDispatch);
+
              setParts(prev => prev.map(p => {
                const match = items.find(i => i.partId === p.id);
-               if (match) {
-                 const schedules = p.schedules || {};
-                 const schedulesUpdate = schedules[officialCustomer] === undefined ? { ...schedules, [officialCustomer]: 0 } : schedules;
-                 const customerRates = p.customerRates || {};
-                 const customerRatesUpdate = customerRates[officialCustomer] === undefined ? { ...customerRates, [officialCustomer]: p.rate || 0 } : customerRates;
-                 return { ...p, stock: p.stock - match.quantity, schedules: schedulesUpdate, customerRates: customerRatesUpdate };
-               }
-               return p;
+               const schedules = p.schedules || {};
+               const schedulesUpdate = match && schedules[officialCustomer] === undefined ? { ...schedules, [officialCustomer]: 0 } : schedules;
+               const customerRates = p.customerRates || {};
+               const customerRatesUpdate = match && customerRates[officialCustomer] === undefined ? { ...customerRates, [officialCustomer]: p.rate || 0 } : customerRates;
+               return { ...p, stock: updatedStock.get(p.id) ?? p.stock, schedules: schedulesUpdate, customerRates: customerRatesUpdate };
              }));
+
+             borrowEvents.forEach(ev => {
+               pushAdminAlert({
+                 type: 'sibling_stock_borrow',
+                 partId: ev.borrowerPartId,
+                 partName: ev.borrowerPartName,
+                 quantity: ev.quantity,
+                 customer: officialCustomer,
+                 invoiceNumber: inv,
+                 remarks: `Borrowed ${ev.quantity} pc(s) of stock from sibling ${ev.lenderPartName} to cover this dispatch's shortfall.`,
+               });
+             });
           }} onCreateAlert={pushAdminAlert} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
           {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
              const sale = sales.find(s => s.id === id);

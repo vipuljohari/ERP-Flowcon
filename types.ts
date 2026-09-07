@@ -307,7 +307,7 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap';
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow';
 
 export interface AdminAlert {
   id: string;
