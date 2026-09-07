@@ -754,6 +754,22 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
               <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">Entry Date must be within the current month ({minEntryDateStr} to {todayDateStr}).</p>
             )}
 
+            {/* Step 2 can be reached directly (RM Cross-Bill Check's "Post to
+                Inventory" shortcut jumps straight here, skipping Step 1) with
+                every line fully allotted and Save still disabled, because
+                Save also gates on the Step 1 header fields — most commonly
+                Dharamkanta Weight, since that's the one field the pull
+                shortcut can never auto-fill (it's a physical weighbridge
+                reading, not something on the invoice). Without this message
+                that showed as an unexplained dead grey button — confirmed
+                bug, since Step 2 has no other way to see what Step 1 needs. */}
+            {isDateValid(date) && !headerValid && (
+              <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+                Can't save yet — click "‹ Back" below to open Invoice Details. Supplier, Invoice No., Total Weight, Total Bill Value and Dharamkanta Weight are all required.
+                {linkedInvoiceKey ? ' Since this was pulled from an RM Cross-Bill invoice, everything else is already filled in — only Dharamkanta Weight (the actual weighbridge slip reading) still needs to be typed in by hand.' : ''}
+              </p>
+            )}
+
             <div className="flex gap-2 pt-2">
               <button onClick={() => setStep(1)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
               <button onClick={saveLongerPipe} disabled={!allLinesValid} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
