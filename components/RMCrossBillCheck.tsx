@@ -307,6 +307,39 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setTimeout(() => setJustSavedCode(current => (current === code ? null : current)), 1500);
   };
 
+  // Registers a material Admin already knows is coming — e.g. a manufacturer
+  // has confirmed a new size/code — BEFORE it ever appears on an invoice.
+  // Needed because the single-stage invoice wizard (RMCrossBillCheck's own
+  // "+ Manufacturer Invoice" flow) hard-blocks Step 2's Save for any material
+  // that isn't already linked to a Raw Material at the moment Step 1 is
+  // submitted — a brand-new material typed there via "+ Add New Material"
+  // can't be linked in time for that same invoice, since the record doesn't
+  // exist until save. Pre-registering it here (with its Raw Material link
+  // already chosen) closes that gap: it will simply show up, already linked,
+  // the first time it's picked on an invoice.
+  const blankNewMaterialLength = () => ({ materialName: '', materialCode: '', lengthMm: '', linkedRMId: '' });
+  const [addingNewMaterialLength, setAddingNewMaterialLength] = useState(false);
+  const [newMaterialLength, setNewMaterialLength] = useState(blankNewMaterialLength);
+  const [newMaterialLengthError, setNewMaterialLengthError] = useState<string | null>(null);
+  const submitNewMaterialLength = () => {
+    const name = newMaterialLength.materialName.trim();
+    const code = newMaterialLength.materialCode.trim();
+    const lengthMm = parseFloat(newMaterialLength.lengthMm);
+    if (!name || !code) { setNewMaterialLengthError('Material Name and Material Code are both required.'); return; }
+    if (!Number.isFinite(lengthMm) || lengthMm <= 0) { setNewMaterialLengthError('Piece Length (mm) must be greater than zero.'); return; }
+    if (materialLengths.some(m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(code))) {
+      setNewMaterialLengthError('A material with this code is already recorded below — edit that row instead.');
+      return;
+    }
+    setMaterialLengths(prev => [
+      ...prev,
+      { materialCode: code, materialName: name, lengthMm, linkedRMId: newMaterialLength.linkedRMId || undefined, updatedAt: new Date().toISOString() },
+    ]);
+    setNewMaterialLength(blankNewMaterialLength());
+    setAddingNewMaterialLength(false);
+    setNewMaterialLengthError(null);
+  };
+
   const outstanding = useMemo(
     () => manufacturerInvoices.filter(m => !m.matchedCrossInvoiceId).sort((a, b) => a.date.localeCompare(b.date)),
     [manufacturerInvoices]
@@ -1794,9 +1827,53 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             <p className="text-xs text-slate-500 mb-4">
               The recorded piece length (mm) for each material code — used for the Pcs→Meter check, and locked on the
               Manufacturer Invoice form once a material is selected. Fix a wrong value here. The "Linked Raw Material"
-              on each row is what lets Material Entry find the right stock item when pulling an invoice — the
-              manufacturer's own material name doesn't need to match RM Master's name, only this link matters.
+              on each row is what lets the Manufacturer Invoice wizard find the right stock item to allot bars against —
+              the manufacturer's own material name doesn't need to match RM Master's name, only this link matters.
+              A material with no link shown in amber below will hard-block Step 2 of any invoice that uses it until
+              it's linked here.
             </p>
+            {addingNewMaterialLength ? (
+              <div className="border-2 border-emerald-200 bg-emerald-50/40 rounded-2xl p-4 space-y-3 mb-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600">+ Add New Material</p>
+                <FormField label="Material Name">
+                  <input autoFocus placeholder="e.g. ERW STEEL TUBES-REC-SBR-60x30x3x4250-AS ROLLED" value={newMaterialLength.materialName}
+                    onChange={(e) => setNewMaterialLength({ ...newMaterialLength, materialName: e.target.value })}
+                    className="w-full border-2 border-emerald-200 bg-white rounded-xl px-3 py-2 text-sm" />
+                </FormField>
+                <div className="grid grid-cols-2 gap-3">
+                  <FormField label="Material Code">
+                    <input placeholder="e.g. RMSS00000118" value={newMaterialLength.materialCode}
+                      onChange={(e) => setNewMaterialLength({ ...newMaterialLength, materialCode: e.target.value })}
+                      className="w-full border-2 border-emerald-200 bg-white rounded-xl px-3 py-2 text-sm" />
+                  </FormField>
+                  <FormField label="Piece Length (mm)">
+                    <input type="number" placeholder="e.g. 4250" value={newMaterialLength.lengthMm}
+                      onChange={(e) => setNewMaterialLength({ ...newMaterialLength, lengthMm: e.target.value })}
+                      className="w-full border-2 border-emerald-200 bg-white rounded-xl px-3 py-2 text-sm" />
+                  </FormField>
+                </div>
+                <FormField label="Linked Raw Material">
+                  <select value={newMaterialLength.linkedRMId} onChange={(e) => setNewMaterialLength({ ...newMaterialLength, linkedRMId: e.target.value })}
+                    className="w-full border-2 border-emerald-200 bg-white rounded-xl px-3 py-2 text-sm font-bold">
+                    <option value="">— Not linked yet (can be set later, but Step 2 stays blocked until it is) —</option>
+                    {rawMaterials.filter(rm => rm.category !== 'sheet').map(rm => (
+                      <option key={rm.id} value={rm.id}>{rm.size} — {rm.partName} ({rm.length}mm)</option>
+                    ))}
+                  </select>
+                </FormField>
+                {newMaterialLengthError && <p className="text-[11px] font-bold text-rose-600">{newMaterialLengthError}</p>}
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => { setAddingNewMaterialLength(false); setNewMaterialLength(blankNewMaterialLength()); setNewMaterialLengthError(null); }}
+                    className="flex-1 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-xs">Cancel</button>
+                  <button type="button" onClick={submitNewMaterialLength} className="flex-[2] py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs">Add Material</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setAddingNewMaterialLength(true)}
+                className="w-full py-2.5 mb-3 border-2 border-dashed border-emerald-200 text-emerald-700 rounded-xl font-bold text-xs hover:border-emerald-400 hover:bg-emerald-50/40">
+                + Add New Material
+              </button>
+            )}
             <div className="overflow-y-auto flex-1 -mx-2 px-2 space-y-2">
               {[...materialLengths].sort((a, b) => a.materialName.localeCompare(b.materialName)).map(m => {
                 const edited = lengthEdits[m.materialCode] ?? String(m.lengthMm);
