@@ -1,11 +1,52 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial } from '../types';
+import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial, Part } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 import { getLocalDateStr, correctedNow } from '../services/time';
-import { normalizeMaterialCode } from '../services/materialEntry';
-import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
+import {
+  normalizeMaterialCode,
+  pcsPerBar,
+  validateLongerPipeLine,
+  computeUnattributedScrapMm,
+  LongerPipeSubMode,
+  LongerPipeLine,
+  AllottedItem,
+} from '../services/materialEntry';
 
 const NEW_OPTION = '__new__';
+
+// --- Single-stage Manufacturer Invoice + Allotment (see submitMfgInvoice's
+// former two-stage design, now replaced) ---
+// One material line as it reaches the atomic save handler in App.tsx —
+// everything submitMfgInvoice used to persist on its own, PLUS the bar
+// allotment Step 2 collected against the RM that line resolved to. rmId is
+// always a real, resolved RawMaterial by the time this is built — Step 2's
+// Save button is disabled while any line is unresolved (see
+// allotmentComputations below), so App.tsx's handler never has to guess.
+export interface MfgInvoiceAllotmentLine {
+  materialName: string;
+  materialCode: string;
+  quantityPcs: number;
+  ratePerPc: number;
+  itemValue: number;
+  mfgLengthInput: string;
+  rmId: string;
+  barLengthMm: number;
+  subMode: LongerPipeSubMode;
+  allotments: AllottedItem[];
+  autoAssign: boolean;
+}
+export interface MfgInvoiceSubmission {
+  manufacturerName: string;
+  customerName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg: number;
+  actualWeightKg: number;
+  weightFlagged: boolean;
+  weightVarianceKg: number;
+  aiExtracted: boolean;
+  lines: MfgInvoiceAllotmentLine[];
+}
 
 interface RMCrossBillCheckProps {
   manufacturerInvoices: RMManufacturerInvoice[];
@@ -14,10 +55,16 @@ interface RMCrossBillCheckProps {
   // Every Raw Material on file (RM Master) — lets Admin link a manufacturer
   // material code to the real RM record it corresponds to (see the
   // "Linked Raw Material" control in the Material Lengths editor below).
-  // That link is what actually lets Material Entry find the right RM when
-  // pulling an invoice — the material code and the RM Master entry's own
-  // name don't need to match textually, only this link matters.
+  // That link is what lets the Manufacturer Invoice wizard's Step 2 resolve
+  // the right RM to allot bars against — the material code and the RM
+  // Master entry's own name don't need to match textually, only this link
+  // matters.
   rawMaterials: RawMaterial[];
+  // Every Part on file — needed here now that bar allotment (Step 2 of the
+  // Manufacturer Invoice wizard) lives on this screen too: the eligible-
+  // items checklist for a resolved RM is `parts.filter(p => p.id === rm.partId
+  // || rm.partIds?.includes(p.id))`, same predicate used everywhere else.
+  parts: Part[];
   customers: Customer[];
   // Read-only here — used only to check whether anything has actually been
   // logged into RM stock against a given invoice number (see the Weight &
@@ -44,12 +91,15 @@ interface RMCrossBillCheckProps {
   // or Customer Invoice saved here, whether typed in by hand or auto-filled
   // from a photo, so they can cross-check it against the source invoice.
   onCreateAlert?: (alert: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => void;
-  // "Post to Inventory / Update Stock" shortcut on a shipment below — jumps
-  // straight into Material Entry (Inventory) with that invoice's lines
-  // already pulled in, skipping the "find the right invoice" search step.
-  // Receives the same "invoiceNo__manufacturerName" key Material Entry
-  // resolves invoices by. Omitted entirely (button hidden) if not passed.
-  onPostToInventory?: (invoiceKey: string) => void;
+  // Fires once, atomically, when Step 2's green Save button is clicked —
+  // creates the RMManufacturerInvoice records, persists any new material
+  // length, posts RM + Part stock from the allotment, and raises every alert
+  // this invoice needs, all in one go (see App.tsx's
+  // handleManufacturerInvoiceWithAllotment). Replaces the old two-stage
+  // "save invoice, then separately Pull from Invoice into Material Entry"
+  // design entirely — per Vipul's sign-off, an invoice can no longer be
+  // saved without also allotting its bars to inventory in the same sitting.
+  onSaveManufacturerInvoiceWithAllotment: (submission: MfgInvoiceSubmission) => void;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -168,10 +218,10 @@ const invoiceNumbersLooselyMatch = (a: string, b: string): boolean => {
 const VALUE_MISMATCH_TOLERANCE_RS = 5;
 
 const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
-  manufacturerInvoices, crossInvoices, materialLengths, rawMaterials, customers, rmInwardLogs,
+  manufacturerInvoices, crossInvoices, materialLengths, rawMaterials, parts, customers, rmInwardLogs,
   tallyPurchaseVouchers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
-  onCreateAlert, onPostToInventory,
+  onCreateAlert, onSaveManufacturerInvoiceWithAllotment,
 }) => {
   const [showMfgForm, setShowMfgForm] = useState(false);
   const [showCrossForm, setShowCrossForm] = useState(false);
@@ -349,25 +399,15 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       );
       const tallyValueMismatch = !!tallyMatch && Math.abs(tallyMatch.totalValue - appTotalValue) > VALUE_MISMATCH_TOLERANCE_RS;
 
-      // "Post to Inventory" shortcut eligibility — same rules Material
-      // Entry's own "Pull from Invoice" picker applies (see
-      // services/materialEntry.ts's getPullableInvoiceGroups): every line
-      // must still be unused, the invoice must be dated on/after this
-      // feature's go-live, and at least one line's material code must be
-      // linked (via RMMaterialLength.linkedRMId) to a real Raw Material —
-      // otherwise Material Entry would have nothing to do with it anyway.
-      // Matched via normalizeMaterialCode, not a raw `===` — a manually
-      // typed code that only differs in case/whitespace from what's on
-      // file (e.g. "rmss00000119" vs "RMSS00000119") must still count as
-      // the same, linked material, exactly like materialLengths's own
-      // dedupe already treats it (confirmed bug: this line used to compare
-      // raw strings while dedupe normalized, so a code that correctly
-      // reused the existing on-file record still failed eligibility here).
+      // Every invoice going forward is posted to inventory atomically at
+      // creation (see the Manufacturer Invoice wizard below) — this is now
+      // just a display fact, never a gate for an action button. A FALSE
+      // here only ever means a legacy invoice entered under the old
+      // two-stage design before this redesign shipped; per Vipul, there is
+      // deliberately no way to post one of those from here any more — the
+      // fix for a legacy invoice is Admin re-entering it, not a bridge back
+      // into Material Entry.
       const usedForMaterialEntry = items.every(i => i.usedForMaterialEntry);
-      const eligibleForMaterialEntry =
-        !usedForMaterialEntry &&
-        first.date >= MATERIAL_ENTRY_INVOICE_PULL_CUTOFF &&
-        items.some(i => !!materialLengths.find(m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(i.materialCode))?.linkedRMId);
 
       return {
         key,
@@ -393,12 +433,6 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         // manual checkbox, since either way the supplier has been paid.
         effectiveTallyBooked: !!first.tallyBooked || !!tallyMatch,
         usedForMaterialEntry,
-        eligibleForMaterialEntry,
-        // Exact-case key — matches components/MaterialEntry.tsx's own
-        // `${inv.invoiceNo}__${inv.manufacturerName}` resolution exactly
-        // (the shipment grouping `key` above is lowercased for matching
-        // purposes only, so it can't be reused here).
-        materialEntryKey: `${first.invoiceNo}__${first.manufacturerName}`,
       };
     }).sort((a, b) => b.date.localeCompare(a.date));
   }, [manufacturerInvoices, rmInwardLogs, tallyPurchaseVouchers, materialLengths]);
@@ -450,7 +484,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   //
   // Any invoice whose Dharam Kanta actual weight differs from the billed
   // Total Weight by this much or more gets auto-flagged for Admin — see
-  // submitMfgInvoice.
+  // saveMfgInvoiceWithAllotment.
   const WEIGHT_VARIANCE_FLAG_KG = 50;
   const blankMfgForm = () => ({
     manufacturerName: '', customerName: customers[0]?.name || '', invoiceNo: '', date: '',
@@ -476,10 +510,156 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const [extractingInvoicePhoto, setExtractingInvoicePhoto] = useState(false);
   const [invoicePhotoError, setInvoicePhotoError] = useState<string | null>(null);
   // Whether the CURRENT form's values came from a successful photo read —
-  // noted on the Admin Notifications entry (see submitMfgInvoice) so Admin
-  // knows to double-check an AI-filled entry against the source invoice a
-  // little more carefully than a fully hand-typed one.
+  // noted on the Admin Notifications entry (see saveMfgInvoiceWithAllotment)
+  // so Admin knows to double-check an AI-filled entry against the source
+  // invoice a little more carefully than a fully hand-typed one.
   const [mfgAiExtracted, setMfgAiExtracted] = useState(false);
+
+  // --- Step 2 of the wizard: bar allotment against inventory ---
+  // Per Vipul's sign-off, this invoice cannot be saved at all until every
+  // material line here is BOTH linked to a real Raw Material and fully
+  // allotted — there is no more separate "save now, post to inventory
+  // later" step. wizardStep 1 is the form above (unchanged); wizardStep 2
+  // is this allotment screen, built fresh from mfgLineItems the moment
+  // "Next" is clicked (see goToAllotmentStep below).
+  const [wizardStep, setWizardStep] = useState<1 | 2>(1);
+  interface MfgAllotmentLine {
+    key: string; // matches the MfgLineItem this allotment is for
+    // '' when this line's material has no linkedRMId yet (or the
+    // RawMaterial it points to no longer exists) — rendered as a hard block
+    // in Step 2, never a pickable dropdown (see Vipul's "no new RM sizes for
+    // now" note — Admin links it in Material Lengths above, or it waits).
+    rmId: string;
+    barLengthMm: string;
+    subMode: LongerPipeSubMode;
+    checkedPartIds: string[];
+    barsPerItem: Record<string, string>;
+    pcsPerItem: Record<string, string>;
+    itemSearch: string;
+    autoAssign: boolean;
+  }
+  const [allotmentLines, setAllotmentLines] = useState<MfgAllotmentLine[]>([]);
+
+  // Same 3-way "is this part cut from this RM" predicate used throughout
+  // App.tsx/Inventory.tsx/MaterialEntry.tsx (customerRMMappings OR
+  // RawMaterial.partId/partIds) — kept identical here so a Part counts as
+  // eligible in exactly the same cases it would in Material Entry.
+  const isPartMappedToRM = (p: Part, rm: RawMaterial): boolean =>
+    p.customerRMMappings?.[rm.customerName] === rm.id || rm.partId === p.id || !!rm.partIds?.includes(p.id);
+  const eligiblePartsForRM = (rmId: string): Part[] => {
+    const rm = rawMaterials.find(r => r.id === rmId);
+    if (!rm) return [];
+    return parts.filter(p => isPartMappedToRM(p, rm));
+  };
+  const searchPartsFor = (rmId: string, search: string) =>
+    eligiblePartsForRM(rmId).filter(
+      p => p.name.toLowerCase().includes(search.toLowerCase()) || p.sapCode.toLowerCase().includes(search.toLowerCase())
+    );
+  const patchAllotmentLine = (key: string, updater: (l: MfgAllotmentLine) => MfgAllotmentLine) => {
+    setAllotmentLines(prev => prev.map(l => (l.key === key ? updater(l) : l)));
+  };
+
+  // Resolves every current mfgLineItems entry to its linked Raw Material
+  // (materialCode -> normalizeMaterialCode -> RMMaterialLength.linkedRMId ->
+  // RawMaterial) and switches to Step 2 — called by the "Next ->" button
+  // once Step 1's own validation passes. Deliberately builds fresh every
+  // time (never reused across a Back-then-Next round trip) since a material
+  // line could have been added, removed or re-picked while back on Step 1.
+  const goToAllotmentStep = () => {
+    const built: MfgAllotmentLine[] = mfgLineItems.map(item => {
+      const codeNorm = normalizeMaterialCode(item.materialCode);
+      const linkedRMId = materialLengths.find(m => normalizeMaterialCode(m.materialCode) === codeNorm)?.linkedRMId;
+      const rm = linkedRMId ? rawMaterials.find(r => r.id === linkedRMId) : undefined;
+      return {
+        key: item.key,
+        rmId: rm ? rm.id : '',
+        barLengthMm: rm ? String(rm.length) : '',
+        subMode: 'whole_bars',
+        checkedPartIds: [],
+        barsPerItem: {},
+        pcsPerItem: {},
+        itemSearch: '',
+        autoAssign: false,
+      };
+    });
+    setAllotmentLines(built);
+    setWizardStep(2);
+  };
+
+  // Mirrors components/MaterialEntry.tsx's own lineComputations — same
+  // validators from services/materialEntry.ts, so Step 2's Save gating here
+  // enforces exactly the same rules (full allotment, no negatives) as the
+  // standalone Longer Pipe entry point does.
+  const allotmentComputations = useMemo(() => {
+    return mfgLineItems.map(item => {
+      const line = allotmentLines.find(l => l.key === item.key);
+      const rm = line ? rawMaterials.find(r => r.id === line.rmId) : undefined;
+      if (!line || !line.rmId || !rm) {
+        return { item, line, rm: undefined, unresolved: true, typed: null as LongerPipeLine | null, error: null as string | null, barsRemaining: 0, unattributedScrapMm: 0 };
+      }
+      const allotments: AllottedItem[] = line.autoAssign ? [] : line.checkedPartIds.map(partId => ({
+        partId,
+        barsAllotted: line.subMode === 'whole_bars' ? parseFloat(line.barsPerItem[partId] || '') || 0 : undefined,
+        piecesAllotted: line.subMode === 'split_pieces' ? parseFloat(line.pcsPerItem[partId] || '') || 0 : undefined,
+      }));
+      const typed: LongerPipeLine = {
+        key: line.key,
+        rmId: line.rmId,
+        barLengthMm: parseFloat(line.barLengthMm) || 0,
+        barsReceived: item.quantityPcs,
+        subMode: line.subMode,
+        allotments,
+        autoAssign: line.autoAssign,
+      };
+      const itemLengthById: Record<string, number> = {};
+      line.checkedPartIds.forEach(id => {
+        const p = parts.find(x => x.id === id);
+        itemLengthById[id] = p?.itemLength || 0;
+      });
+      const error = validateLongerPipeLine(typed, itemLengthById);
+      const barsAllotted = allotments.reduce((s, a) => s + (a.barsAllotted ?? 0), 0);
+      const barsRemaining = typed.barsReceived - barsAllotted;
+      const unattributedScrapMm = computeUnattributedScrapMm(typed, itemLengthById);
+      return { item, line, rm, unresolved: false, typed, error, barsRemaining, unattributedScrapMm };
+    });
+  }, [mfgLineItems, allotmentLines, parts, rawMaterials]);
+
+  const allLinesAllotmentValid = allotmentComputations.length > 0 && allotmentComputations.every(ac => !ac.unresolved && ac.error === null);
+
+  const saveMfgInvoiceWithAllotment = () => {
+    if (!allLinesAllotmentValid) return;
+    const totalWeightKg = mfgForm.totalWeightKg || 0;
+    const actualWeightKg = mfgForm.actualWeightKg || 0;
+    const bothWeightsEntered = totalWeightKg > 0 && actualWeightKg > 0;
+    const weightVarianceKg = bothWeightsEntered ? actualWeightKg - totalWeightKg : 0;
+    const weightFlagged = bothWeightsEntered && Math.abs(weightVarianceKg) >= WEIGHT_VARIANCE_FLAG_KG;
+
+    onSaveManufacturerInvoiceWithAllotment({
+      manufacturerName: mfgForm.manufacturerName,
+      customerName: mfgForm.customerName,
+      invoiceNo: mfgForm.invoiceNo,
+      date: mfgForm.date,
+      totalWeightKg,
+      actualWeightKg,
+      weightFlagged,
+      weightVarianceKg,
+      aiExtracted: mfgAiExtracted,
+      lines: allotmentComputations.map(ac => ({
+        materialName: ac.item.materialName,
+        materialCode: ac.item.materialCode,
+        quantityPcs: ac.item.quantityPcs,
+        ratePerPc: ac.item.ratePerPc,
+        itemValue: ac.item.itemValue,
+        mfgLengthInput: ac.item.mfgLengthInput,
+        rmId: ac.line!.rmId,
+        barLengthMm: ac.typed!.barLengthMm,
+        subMode: ac.line!.subMode,
+        allotments: ac.typed!.allotments,
+        autoAssign: ac.line!.autoAssign,
+      })),
+    });
+    closeMfgForm();
+  };
 
   const updateMfgLineItem = (idx: number, patch: Partial<MfgLineItem>) => {
     setMfgLineItems(prev => prev.map((item, i) => i === idx ? { ...item, ...patch } : item));
@@ -494,6 +674,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const openFreshMfgForm = () => {
     setMfgForm(blankMfgForm());
     setMfgLineItems([blankMfgLineItem()]);
+    setWizardStep(1);
+    setAllotmentLines([]);
     setAddingNewManufacturer(false);
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
@@ -504,6 +686,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   const closeMfgForm = () => {
     setMfgForm(blankMfgForm());
     setMfgLineItems([blankMfgLineItem()]);
+    setWizardStep(1);
+    setAllotmentLines([]);
     setAddingNewManufacturer(false);
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
@@ -513,8 +697,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   };
 
   // Upload a photo of the invoice -> Gemini reads it -> pre-fills the form
-  // below for review. Never writes anything directly; submitMfgInvoice
-  // (triggered by the admin's own "Save" click) is still the only path
+  // below for review. Never writes anything directly; saveMfgInvoiceWithAllotment
+  // (triggered by the admin's own Step 2 "Save" click) is still the only path
   // that saves a record, same as manual entry.
   const handleInvoicePhotoUpload = async (file: File) => {
     setInvoicePhotoError(null);
@@ -623,7 +807,13 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     [mfgMaterialsForSelectedManufacturer]
   );
 
-  const submitMfgInvoice = (e: React.FormEvent) => {
+  // Step 1's "Next ->" — validates and resolves, but never persists
+  // anything: per Vipul's sign-off, an invoice is no longer saveable in two
+  // stages, so there is nothing here left to save yet. All of what used to
+  // happen on Save now happens once, atomically, in
+  // saveMfgInvoiceWithAllotment (Step 2's green Save button) via
+  // onSaveManufacturerInvoiceWithAllotment.
+  const goToStep2 = (e: React.FormEvent) => {
     e.preventDefault();
     if (!isBillDateValid(mfgForm.date)) {
       alert(`Invoice Date must be within the current month (from ${minEntryDateStr} to ${todayDateStr}). Previous months are locked, and future dates aren't allowed.`);
@@ -656,100 +846,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       seenCodesThisSubmission.add(materialCodeTrim);
     }
     setMfgDuplicateError(null);
-
-    // Weight variance is a whole-invoice thing (one vehicle, one Dharam
-    // Kanta weighment) — computed once here and stamped onto every line
-    // item's record, same as the invoice no./date/weights themselves.
-    const totalWeightKg = mfgForm.totalWeightKg || 0;
-    const actualWeightKg = mfgForm.actualWeightKg || 0;
-    const bothWeightsEntered = totalWeightKg > 0 && actualWeightKg > 0;
-    const weightVarianceKg = bothWeightsEntered ? actualWeightKg - totalWeightKg : 0;
-    const weightFlagged = bothWeightsEntered && Math.abs(weightVarianceKg) >= WEIGHT_VARIANCE_FLAG_KG;
-
-    const newInvoices = mfgLineItems.map(item => ({
-      id: genId(),
-      manufacturerName: mfgForm.manufacturerName,
-      customerName: mfgForm.customerName,
-      invoiceNo: mfgForm.invoiceNo,
-      date: mfgForm.date,
-      materialName: item.materialName,
-      materialCode: item.materialCode,
-      quantityPcs: item.quantityPcs,
-      ratePerPc: item.ratePerPc,
-      itemValue: item.itemValue,
-      totalWeightKg,
-      actualWeightKg,
-      weightFlagged,
-      createdAt: new Date().toISOString(),
-    }));
-    setManufacturerInvoices(prev => [...prev, ...newInvoices]);
-
-    // Persist a newly-entered piece length for any material that doesn't
-    // already have one recorded — one per line item, same as before.
-    const newLengths = mfgLineItems.filter(item =>
-      item.mfgLengthInput &&
-      !materialLengths.some(m => m.materialCode.toUpperCase() === item.materialCode.toUpperCase().trim())
-    );
-    if (newLengths.length > 0) {
-      setMaterialLengths(prev => {
-        let next = prev;
-        for (const item of newLengths) {
-          next = [
-            ...next.filter(m => m.materialCode.toUpperCase() !== item.materialCode.toUpperCase().trim()),
-            { materialCode: item.materialCode.trim(), materialName: item.materialName, lengthMm: parseFloat(item.mfgLengthInput) || 0, updatedAt: new Date().toISOString() },
-          ];
-        }
-        return next;
-      });
-    }
-
-    const totalQty = mfgLineItems.reduce((sum, item) => sum + (item.quantityPcs || 0), 0);
-    // Sum of every line item's own Item Value — same figure Admin's Tally
-    // auto-match compares against later (see the `appTotalValue` calc in
-    // the shipments useMemo above), shown here too so Admin can see it the
-    // moment the invoice is entered, not only later in the reconciliation
-    // view. Formatted in the Indian numbering system (lakh/crore grouping),
-    // same convention already used elsewhere on this screen for ₹ amounts.
-    const totalBillValue = mfgLineItems.reduce((sum, item) => sum + (item.itemValue || 0), 0);
-    const totalBillValueFormatted = totalBillValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const aiSuffix = mfgAiExtracted
-      ? (mfgLineItems.length > 1 ? ' — first line auto-filled from photo, please verify against the invoice' : ' — auto-filled from photo, please verify against the invoice')
-      : ' — entered manually';
-    const materialsSummary = mfgLineItems.length === 1
-      ? `${mfgLineItems[0].materialName || 'material'} (${mfgLineItems[0].materialCode || 'no code'})`
-      : `${mfgLineItems.length} materials: ${mfgLineItems.map(i => `${i.materialCode || 'no code'} (${i.quantityPcs} Pcs)`).join(', ')}`;
-    onCreateAlert?.({
-      type: 'rm_cross_bill',
-      invoiceNumber: mfgForm.invoiceNo,
-      customer: mfgForm.customerName,
-      supplier: mfgForm.manufacturerName,
-      quantity: totalQty,
-      itemCount: mfgLineItems.length,
-      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg — Total Bill Value ₹${totalBillValueFormatted}${aiSuffix}`,
-    });
-
-    // Separate, high-visibility alert when the Dharam Kanta actual weight
-    // is off from the invoice's billed weight by WEIGHT_VARIANCE_FLAG_KG
-    // or more — this is the "don't overpay the RM supplier" check, kept as
-    // its own alert type so it's never confused with the routine "invoice
-    // entered" notification above.
-    if (weightFlagged) {
-      onCreateAlert?.({
-        type: 'rm_weight_mismatch',
-        invoiceNumber: mfgForm.invoiceNo,
-        customer: mfgForm.customerName,
-        supplier: mfgForm.manufacturerName,
-        quantity: totalQty,
-        itemCount: mfgLineItems.length,
-        remarks: `${materialsSummary} — Invoice billed ${totalWeightKg} Kg, Dharam Kanta actual ${actualWeightKg} Kg — ${weightVarianceKg > 0 ? 'received MORE than billed by' : 'received LESS than billed by'} ${Math.abs(weightVarianceKg).toFixed(1)} Kg. Review for a supplier debit note.`,
-      });
-    }
-
-    setMfgForm(blankMfgForm());
-    setMfgLineItems([blankMfgLineItem()]);
-    setAddingNewManufacturer(false);
-    setMfgAiExtracted(false);
-    setShowMfgForm(false);
+    goToAllotmentStep();
   };
 
   // Admin-only cleanup for a wrongly/duplicate-entered Manufacturer Invoice
@@ -1068,15 +1165,13 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     </span>
                     {s.usedForMaterialEntry ? (
                       <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">✓ Posted to Inventory</span>
-                    ) : s.eligibleForMaterialEntry && onPostToInventory ? (
-                      <button
-                        type="button"
-                        onClick={() => onPostToInventory(s.materialEntryKey)}
-                        className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm active:scale-95"
-                      >
-                        📥 Post to Inventory / Update Stock
-                      </button>
-                    ) : null}
+                    ) : (
+                      // No action here any more, deliberately — a legacy
+                      // invoice from before this redesign shipped has no
+                      // bridge back into Material Entry (see the
+                      // usedForMaterialEntry comment above).
+                      <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full border bg-slate-50 text-slate-400 border-slate-200">Not posted (legacy invoice)</span>
+                    )}
                   </div>
                 </div>
                 {s.hasWeights && (
@@ -1154,7 +1249,12 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
       {showMfgForm && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-[2rem] shadow-2xl max-w-lg w-full p-8 max-h-[90vh] overflow-y-auto">
-            <h3 className="text-lg font-black text-slate-900 mb-4">Add Manufacturer Invoice</h3>
+            <h3 className="text-lg font-black text-slate-900 mb-1">Add Manufacturer Invoice</h3>
+            <p className="text-[11px] font-black uppercase tracking-widest text-indigo-400 mb-4">
+              {wizardStep === 1 ? 'Step 1 of 2 — Invoice Details' : 'Step 2 of 2 — Allot Bars to Inventory'}
+            </p>
+            {wizardStep === 1 && (
+            <>
             <div className="border-2 border-dashed border-indigo-200 bg-indigo-50/40 rounded-2xl p-4 text-center mb-4">
               <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">Auto-fill from a photo (AI)</p>
               <div className="flex items-center justify-center gap-3">
@@ -1191,7 +1291,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <p className="text-[10px] text-slate-400 mt-2">Reads the invoice and pre-fills the fields below — always review before saving. Only the first line item is read.</p>
               {invoicePhotoError && <p className="text-[11px] font-bold text-rose-600 mt-2">{invoicePhotoError}</p>}
             </div>
-            <form onSubmit={submitMfgInvoice} className="space-y-3">
+            <form onSubmit={goToStep2} className="space-y-3">
               <FormField label="Manufacturer Name">
                 <select
                   required={!addingNewManufacturer}
@@ -1301,8 +1401,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                           // to parsing it straight out of the material name
                           // (e.g. "...60x30x3x4250-AS ROLLED" -> 4250) rather
                           // than showing "Not recorded" when it's plainly right
-                          // there in the name. submitMfgInvoice will persist
-                          // this as the recorded length going forward.
+                          // there in the name. saveMfgInvoiceWithAllotment will
+                          // persist this as the recorded length going forward.
                           const resolvedLength = lengthEntry ? lengthEntry.lengthMm : parsePieceLengthFromMaterialName(v);
                           updateMfgLineItem(idx, { addingNewMaterial: false, materialName: v, materialCode: code, mfgLengthInput: resolvedLength !== null ? String(resolvedLength) : '' });
                         }
@@ -1389,9 +1489,168 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               )}
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={closeMfgForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
-                <button type="submit" className="flex-[2] py-3 bg-slate-900 text-white rounded-xl font-bold text-sm">Save</button>
+                <button type="submit" className="flex-[2] py-3 bg-slate-900 text-white rounded-xl font-bold text-sm">Next →</button>
               </div>
             </form>
+            </>
+            )}
+
+            {wizardStep === 2 && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+                  {mfgForm.manufacturerName} — Invoice {mfgForm.invoiceNo} — every bar received against every material below must be allotted before this invoice can be saved.
+                </p>
+                {allotmentComputations.map((ac, idx) => {
+                  const item = ac.item;
+                  if (ac.unresolved) {
+                    return (
+                      <div key={item.key} className="border-2 border-amber-300 bg-amber-50 rounded-2xl p-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-amber-500 mb-1">Material {idx + 1}: {item.materialName || item.materialCode}</p>
+                        <p className="text-sm font-black text-amber-800">⚠️ "{item.materialName || item.materialCode}" isn't linked to a Raw Material yet.</p>
+                        <p className="text-xs text-amber-700 mt-1">Ask Admin to link it in Material Lengths above before this invoice can be posted.</p>
+                      </div>
+                    );
+                  }
+                  const line = ac.line!;
+                  const rm = ac.rm!;
+                  return (
+                    <div key={item.key} className="border-2 border-slate-100 rounded-2xl p-4 space-y-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Material {idx + 1}: {item.materialName} <span className="text-slate-400 font-mono">({item.materialCode})</span></p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <FormField label="Spec / Raw Material">
+                          <input disabled value={`${rm.size} — ${rm.partName}`} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
+                        </FormField>
+                        <FormField label="Bars Received">
+                          <input disabled value={item.quantityPcs} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
+                        </FormField>
+                      </div>
+                      <FormField label="Bar Length (mm)">
+                        {line.subMode === 'whole_bars' || line.autoAssign ? (
+                          <input disabled value={line.barLengthMm} className="w-full border-2 border-slate-100 bg-slate-50 rounded-xl px-3 py-2 text-sm text-slate-500 font-bold" />
+                        ) : (
+                          <input type="number" value={line.barLengthMm} onChange={(e) => patchAllotmentLine(line.key, l => ({ ...l, barLengthMm: e.target.value }))} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                        )}
+                      </FormField>
+                      {!line.autoAssign && line.subMode === 'whole_bars' && (
+                        <p className="text-[11px] text-slate-400 -mt-2">Bar Length is fixed to this Raw Material's own spec ({rm.length}mm) — it shouldn't change bar to bar. If a real shortage means bars have to be split unevenly across items, switch to "Split by Pieces (Shortage)" below, where Bar Length can be adjusted.</p>
+                      )}
+
+                      <label className="flex items-start gap-2 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={line.autoAssign}
+                          onChange={(e) => patchAllotmentLine(line.key, l => ({ ...l, autoAssign: e.target.checked }))}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          Auto-Assign this size — skip item-wise allotment for this line only. Bars Received goes straight into this Raw Material's shared stock pool, same as before this per-item screen existed; dispatches keep subtracting consumption automatically per item, just like they already do today. If this invoice has another material/line, that one can make its own choice independently.
+                        </span>
+                      </label>
+
+                      {line.autoAssign ? (
+                        <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold text-slate-500">
+                          No item split for this line — {item.quantityPcs} bar(s) will be added to the RM's total stock only.
+                        </div>
+                      ) : (
+                        <>
+                          <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
+                            <span className="text-slate-500">Bars available: {item.quantityPcs}</span>
+                            {line.subMode === 'whole_bars' ? (
+                              <span className={ac.barsRemaining < -0.0001 ? 'text-rose-600' : 'text-slate-700'}>Remaining to allot: {ac.barsRemaining}</span>
+                            ) : (
+                              <span className={ac.unattributedScrapMm < -0.0001 ? 'text-rose-600' : 'text-slate-700'}>Length remaining: {ac.unattributedScrapMm}mm</span>
+                            )}
+                          </div>
+
+                          <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+                            <button
+                              type="button"
+                              onClick={() => patchAllotmentLine(line.key, l => ({ ...l, subMode: 'whole_bars', barLengthMm: String(rm.length) }))}
+                              className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'whole_bars' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
+                            >
+                              Whole Bars per Item
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => patchAllotmentLine(line.key, l => ({ ...l, subMode: 'split_pieces' }))}
+                              className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'split_pieces' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}
+                            >
+                              Split by Pieces (Shortage)
+                            </button>
+                          </div>
+                          {line.subMode === 'split_pieces' && (
+                            <p className="text-[11px] text-slate-400 -mt-1">Use this when very few bars came in and have to be shared across items due to a planning/RM shortage. Enter pieces directly per item — whatever length is left over is logged as one shared, unattributed scrap figure rather than credited to any single item.</p>
+                          )}
+
+                          <FormField label="Search items">
+                            <input value={line.itemSearch} onChange={(e) => patchAllotmentLine(line.key, l => ({ ...l, itemSearch: e.target.value }))} placeholder="Search by name or SAP code…" className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                          </FormField>
+
+                          <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
+                            {searchPartsFor(line.rmId, line.itemSearch).map(p => {
+                              const checked = line.checkedPartIds.includes(p.id);
+                              const barsVal = parseFloat(line.barsPerItem[p.id] || '') || 0;
+                              const pcsVal = parseFloat(line.pcsPerItem[p.id] || '') || 0;
+                              const barLenNum = parseFloat(line.barLengthMm) || 0;
+                              return (
+                                <div key={p.id} className={`p-3 ${checked ? 'bg-indigo-50/40' : ''}`}>
+                                  <label className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() => patchAllotmentLine(line.key, l => ({
+                                        ...l,
+                                        checkedPartIds: l.checkedPartIds.includes(p.id) ? l.checkedPartIds.filter(x => x !== p.id) : [...l.checkedPartIds, p.id],
+                                      }))}
+                                    />
+                                    {p.name} <span className="text-[10px] text-slate-400 font-mono">({p.itemLength || 0}mm)</span>
+                                  </label>
+                                  {checked && line.subMode === 'whole_bars' && (
+                                    <div className="mt-2 flex items-center gap-3 pl-6">
+                                      <input
+                                        type="number"
+                                        placeholder="Bars"
+                                        value={line.barsPerItem[p.id] || ''}
+                                        onChange={(e) => patchAllotmentLine(line.key, l => ({ ...l, barsPerItem: { ...l.barsPerItem, [p.id]: e.target.value } }))}
+                                        className={`border-2 rounded-lg px-2 py-1 text-xs w-24 ${barsVal < 0 ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`}
+                                      />
+                                      <span className="text-[11px] text-slate-500">
+                                        = {barsVal * pcsPerBar(barLenNum, p.itemLength || 0)} Pcs (floor({barLenNum || 0}÷{p.itemLength || 0}))
+                                      </span>
+                                    </div>
+                                  )}
+                                  {checked && line.subMode === 'split_pieces' && (
+                                    <div className="mt-2 flex items-center gap-3 pl-6">
+                                      <input
+                                        type="number"
+                                        placeholder="Pcs"
+                                        value={line.pcsPerItem[p.id] || ''}
+                                        onChange={(e) => patchAllotmentLine(line.key, l => ({ ...l, pcsPerItem: { ...l.pcsPerItem, [p.id]: e.target.value } }))}
+                                        className={`border-2 rounded-lg px-2 py-1 text-xs w-24 ${pcsVal < 0 ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-200'}`}
+                                      />
+                                      <span className="text-[11px] text-slate-500">= {pcsVal * (p.itemLength || 0)}mm consumed</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+
+                      {ac.error && (
+                        <p className="text-[11px] font-bold text-rose-600">⚠ {ac.error}</p>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setWizardStep(1)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">‹ Back</button>
+                  <button type="button" onClick={saveMfgInvoiceWithAllotment} disabled={!allLinesAllotmentValid} className="flex-[2] py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm disabled:opacity-50 disabled:bg-slate-200 disabled:text-slate-400">Save</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

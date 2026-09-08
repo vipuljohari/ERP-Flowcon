@@ -18,7 +18,7 @@ import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
 import ImportLegacyData from './components/ImportLegacyData';
 import ImportIssues from './components/ImportIssues';
-import RMCrossBillCheck from './components/RMCrossBillCheck';
+import RMCrossBillCheck, { MfgInvoiceSubmission } from './components/RMCrossBillCheck';
 import Notifications from './components/Notifications';
 import TrialRMReceiving from './components/TrialRMReceiving';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -49,12 +49,6 @@ const MainApp: React.FC = () => {
   const role = appUser?.role || 'store';
   const isAdmin = role === 'admin';
   const [currentView, setCurrentView] = useState('dashboard');
-  // Set when Store/Admin clicks "Post to Inventory" on an already-posted RM
-  // Cross-Bill invoice — carries that invoice group's key across to
-  // Inventory/MaterialEntry so it opens straight into Longer Pipe mode with
-  // that invoice already pulled in, skipping the "find the right invoice"
-  // picker step. Cleared once MaterialEntry has consumed it.
-  const [pendingMaterialEntryInvoiceKey, setPendingMaterialEntryInvoiceKey] = useState<string | null>(null);
   const [pendingItemDraft, setPendingItemDraft] = useState<{ sapCode: string; name: string; customer?: string } | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [userName, setUserName] = useState(() => appUser?.displayName || localStorage.getItem('autopart_username') || 'Vipul PC');
@@ -1403,8 +1397,6 @@ const MainApp: React.FC = () => {
               materialLengths={rmMaterialLengths}
               onMaterialEntryFinishedPieces={handleMaterialEntryFinishedPieces}
               onMaterialEntryLongerPipe={handleMaterialEntryLongerPipe}
-              pendingMaterialEntryInvoiceKey={pendingMaterialEntryInvoiceKey}
-              onPendingMaterialEntryInvoiceConsumed={() => setPendingMaterialEntryInvoiceKey(null)}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
@@ -1693,6 +1685,7 @@ const MainApp: React.FC = () => {
               crossInvoices={rmCrossInvoices}
               materialLengths={rmMaterialLengths}
               rawMaterials={rawMaterials}
+              parts={cDP}
               customers={customersWithItems}
               rmInwardLogs={rmInwardLogs}
               tallyPurchaseVouchers={tallyPurchaseVouchers}
@@ -1701,10 +1694,7 @@ const MainApp: React.FC = () => {
               setMaterialLengths={setRmMaterialLengths}
               isAdmin={isAdmin}
               onCreateAlert={pushAdminAlert}
-              onPostToInventory={(invoiceKey) => {
-                setPendingMaterialEntryInvoiceKey(invoiceKey);
-                setCurrentView('inventory');
-              }}
+              onSaveManufacturerInvoiceWithAllotment={handleManufacturerInvoiceWithAllotment}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
@@ -1948,6 +1938,184 @@ const MainApp: React.FC = () => {
         type: 'material_entry_scrap', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
         timestamp: finalTs,
         details: `${totalScrapMm.toFixed(0)} mm unattributed leftover across Split-by-Pieces line(s) in this Material Entry — not credited to any single item.`,
+      });
+    }
+  }
+
+  // --- Manufacturer Invoice + Bar Allotment (single-stage RM Cross-Bill
+  // Check) ---
+  // Per Vipul's sign-off, an RM Cross-Bill Manufacturer Invoice can no
+  // longer be saved in two stages ("save now, post to inventory whenever") —
+  // RMCrossBillCheck.tsx's wizard now collects the invoice AND allots every
+  // material's bars to inventory in one sitting, and this is the single
+  // handler that does everything atomically once that wizard's green Save
+  // is clicked: creates the RMManufacturerInvoice records (already stamped
+  // used), persists any new material length, posts RM + Part stock exactly
+  // like handleMaterialEntryLongerPipe above (same "write once, no
+  // auto-mirror" reasoning — handleAddInward/handleAddRMInward are never
+  // called here either), and raises every alert this invoice needs.
+  function handleManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission) {
+    const {
+      manufacturerName, customerName, invoiceNo, date,
+      totalWeightKg, actualWeightKg, weightFlagged, weightVarianceKg,
+      aiExtracted, lines,
+    } = submission;
+    if (lines.length === 0) return;
+    const createdAt = new Date().toISOString();
+    const finalTs = `${date}T12:00:00.000`;
+    const entryId = Math.random().toString(36).substr(2, 9);
+
+    // 1. One RMManufacturerInvoice doc per material line — posted straight
+    // away, unlike the old two-stage design's usedForMaterialEntry: false.
+    const newInvoiceDocs: RMManufacturerInvoice[] = lines.map(line => ({
+      id: Math.random().toString(36).substr(2, 9),
+      manufacturerName, customerName, invoiceNo, date,
+      materialName: line.materialName,
+      materialCode: line.materialCode,
+      quantityPcs: line.quantityPcs,
+      ratePerPc: line.ratePerPc,
+      itemValue: line.itemValue,
+      totalWeightKg, actualWeightKg, weightFlagged,
+      createdAt,
+      usedForMaterialEntry: true,
+      usedForMaterialEntryAt: createdAt,
+    }));
+    setRmManufacturerInvoices(prev => [...prev, ...newInvoiceDocs]);
+
+    // 2. Persist a newly-entered piece length for any material that doesn't
+    // already have one recorded — identical logic to the old submitMfgInvoice.
+    const newLengths = lines.filter(line =>
+      line.mfgLengthInput &&
+      !rmMaterialLengths.some(m => m.materialCode.toUpperCase() === line.materialCode.toUpperCase().trim())
+    );
+    if (newLengths.length > 0) {
+      setRmMaterialLengths(prev => {
+        let next = prev;
+        for (const line of newLengths) {
+          next = [
+            ...next.filter(m => m.materialCode.toUpperCase() !== line.materialCode.toUpperCase().trim()),
+            { materialCode: line.materialCode.trim(), materialName: line.materialName, lengthMm: parseFloat(line.mfgLengthInput) || 0, updatedAt: createdAt },
+          ];
+        }
+        return next;
+      });
+    }
+
+    // 3. Post RM + Part stock from the allotment — same math as
+    // handleMaterialEntryLongerPipe, plus a per-line remarks string (size,
+    // bars received, per-item breakdown) for the richer rm_inward alert
+    // below, per Vipul's explicit ask for "size of tube, total tubes,
+    // alloted qty to which part etc" in that notification.
+    const newInwardLogs: InwardLog[] = [];
+    const newRmInwardLogs: RMInwardLog[] = [];
+    const rmStockDelta: Record<string, number> = {};
+    const partStockDelta: Record<string, number> = {};
+    const perLineRemarks: string[] = [];
+    let totalScrapMm = 0;
+
+    lines.forEach(line => {
+      const rm = rawMaterials.find(r => r.id === line.rmId);
+      if (!rm) return; // shouldn't happen — Step 2 hard-blocks Save while any line is unresolved
+
+      newRmInwardLogs.push({
+        id: Math.random().toString(36).substr(2, 9), rmId: rm.id, rmSize: rm.size,
+        quantity: line.quantityPcs, supplier: manufacturerName, timestamp: finalTs,
+        invoiceNumber: invoiceNo, unit: 'pcs', materialEntryId: entryId,
+        remarks: line.autoAssign ? 'Auto-Assign — added to shared RM stock, not split to specific items' : undefined,
+      });
+      rmStockDelta[rm.id] = (rmStockDelta[rm.id] || 0) + line.quantityPcs;
+
+      const sizeLabel = `${rm.size}x${rm.length}`;
+      if (line.autoAssign) {
+        perLineRemarks.push(`${sizeLabel} (${line.quantityPcs} bars received) — Auto-Assign, added to shared RM stock, not split to specific items.`);
+        return;
+      }
+
+      const itemLengthById: Record<string, number> = {};
+      const itemBreakdown: string[] = [];
+      line.allotments.forEach(a => {
+        const part = parts.find(p => p.id === a.partId);
+        if (!part) return;
+        itemLengthById[a.partId] = part.itemLength || 0;
+        const pcs = line.subMode === 'whole_bars'
+          ? (a.barsAllotted || 0) * pcsPerBar(line.barLengthMm, part.itemLength || 0)
+          : (a.piecesAllotted || 0);
+        if (pcs > 0) {
+          newInwardLogs.push({
+            id: Math.random().toString(36).substr(2, 9), partId: a.partId, partName: part.name,
+            sapCode: part.sapCode, quantity: pcs, supplier: manufacturerName, timestamp: finalTs,
+            invoiceNumber: invoiceNo, materialEntryId: entryId,
+          });
+          partStockDelta[a.partId] = (partStockDelta[a.partId] || 0) + pcs;
+        }
+        if (line.subMode === 'whole_bars' && (a.barsAllotted || 0) > 0) {
+          itemBreakdown.push(`${part.name} — ${a.barsAllotted} bars`);
+        } else if (line.subMode === 'split_pieces' && (a.piecesAllotted || 0) > 0) {
+          itemBreakdown.push(`${part.name} — ${a.piecesAllotted} pcs`);
+        }
+      });
+
+      if (line.subMode === 'split_pieces') {
+        const typedForScrap: LongerPipeLine = {
+          key: line.materialCode, rmId: line.rmId, barLengthMm: line.barLengthMm,
+          barsReceived: line.quantityPcs, subMode: line.subMode, allotments: line.allotments, autoAssign: line.autoAssign,
+        };
+        totalScrapMm += computeUnattributedScrapMm(typedForScrap, itemLengthById);
+      }
+
+      perLineRemarks.push(`${sizeLabel} (${line.quantityPcs} bars received). Allotted: ${itemBreakdown.join('; ')}.`);
+    });
+
+    if (newInwardLogs.length > 0) setInwardLogs(prev => [...newInwardLogs, ...prev]);
+    if (newRmInwardLogs.length > 0) setRmInwardLogs(prev => [...newRmInwardLogs, ...prev]);
+    if (Object.keys(partStockDelta).length > 0) {
+      setParts(prev => prev.map(p => partStockDelta[p.id] ? { ...p, stock: p.stock + partStockDelta[p.id], lastUpdated: finalTs } : p));
+    }
+    if (Object.keys(rmStockDelta).length > 0) {
+      setRawMaterials(prev => prev.map(r => rmStockDelta[r.id] ? { ...r, stock: r.stock + rmStockDelta[r.id] } : r));
+    }
+
+    // 4. Alerts — same routine "invoice entered" + weight-mismatch alerts
+    // submitMfgInvoice used to raise, plus the rm_inward (posted-to-stock)
+    // and material_entry_scrap alerts handleMaterialEntryLongerPipe used to
+    // raise separately — all in one call now that both used to be two.
+    const totalQty = lines.reduce((sum, l) => sum + (l.quantityPcs || 0), 0);
+    const totalBillValue = lines.reduce((sum, l) => sum + (l.itemValue || 0), 0);
+    const totalBillValueFormatted = totalBillValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const aiSuffix = aiExtracted
+      ? (lines.length > 1 ? ' — first line auto-filled from photo, please verify against the invoice' : ' — auto-filled from photo, please verify against the invoice')
+      : ' — entered manually';
+    const materialsSummary = lines.length === 1
+      ? `${lines[0].materialName || 'material'} (${lines[0].materialCode || 'no code'})`
+      : `${lines.length} materials: ${lines.map(l => `${l.materialCode || 'no code'} (${l.quantityPcs} Pcs)`).join(', ')}`;
+
+    pushAdminAlert({
+      type: 'rm_cross_bill',
+      invoiceNumber: invoiceNo, customer: customerName, supplier: manufacturerName,
+      quantity: totalQty, itemCount: lines.length,
+      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg — Total Bill Value ₹${totalBillValueFormatted}${aiSuffix}`,
+    });
+
+    if (weightFlagged) {
+      pushAdminAlert({
+        type: 'rm_weight_mismatch',
+        invoiceNumber: invoiceNo, customer: customerName, supplier: manufacturerName,
+        quantity: totalQty, itemCount: lines.length,
+        remarks: `${materialsSummary} — Invoice billed ${totalWeightKg} Kg, Dharam Kanta actual ${actualWeightKg} Kg — ${weightVarianceKg > 0 ? 'received MORE than billed by' : 'received LESS than billed by'} ${Math.abs(weightVarianceKg).toFixed(1)} Kg. Review for a supplier debit note.`,
+      });
+    }
+
+    pushAdminAlert({
+      type: 'rm_inward', supplier: manufacturerName, invoiceNumber: invoiceNo,
+      timestamp: finalTs, itemCount: lines.length,
+      details: `Material Entry (from RM Cross-Bill invoice) — ${perLineRemarks.join(' | ')}`,
+    });
+
+    if (totalScrapMm > 0.0001) {
+      pushAdminAlert({
+        type: 'material_entry_scrap', supplier: manufacturerName, invoiceNumber: invoiceNo,
+        timestamp: finalTs,
+        details: `${totalScrapMm.toFixed(0)} mm unattributed leftover across Split-by-Pieces line(s) in this Manufacturer Invoice — not credited to any single item.`,
       });
     }
   }

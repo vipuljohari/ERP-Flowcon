@@ -48,11 +48,6 @@ interface InventoryProps {
   materialLengths?: RMMaterialLength[];
   onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
   onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[]) => void;
-  // Set when Store/Admin clicked "Post to Inventory" on an RM Cross-Bill
-  // invoice — opens Material Entry straight into Longer Pipe mode with that
-  // invoice group already pulled in.
-  pendingMaterialEntryInvoiceKey?: string | null;
-  onPendingMaterialEntryInvoiceConsumed?: () => void;
 }
 
 // An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
@@ -92,8 +87,6 @@ const Inventory: React.FC<InventoryProps> = ({
   materialLengths = [],
   onMaterialEntryFinishedPieces,
   onMaterialEntryLongerPipe,
-  pendingMaterialEntryInvoiceKey,
-  onPendingMaterialEntryInvoiceConsumed,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -138,17 +131,6 @@ const Inventory: React.FC<InventoryProps> = ({
     setMaterialEntryRMId(rm.id);
     setShowMaterialEntry(true);
   };
-  // "Post to Inventory" shortcut from RM Cross-Bill Check — jump straight
-  // into Material Entry, Longer Pipe mode, with that invoice already pulled
-  // in. No specific part is pre-selected here (Store picks from whichever
-  // items the RM's own mapping makes eligible) — MaterialEntry.tsx opens
-  // itself past the picker step whenever it's given an initialInvoiceKey.
-  useEffect(() => {
-    if (pendingMaterialEntryInvoiceKey && !readOnly) {
-      setMaterialEntryPart(null);
-      setShowMaterialEntry(true);
-    }
-  }, [pendingMaterialEntryInvoiceKey, readOnly]);
   // Dropdown 2: Customer Filter
   const [selectedCustomer, setSelectedCustomer] = useState<string>('All');
   // Dropdown 3: Visual Layout Template
@@ -1930,8 +1912,6 @@ const Inventory: React.FC<InventoryProps> = ({
           rawMaterials={rawMaterials}
           manufacturerInvoices={manufacturerInvoices}
           materialLengths={materialLengths}
-          initialInvoiceKey={pendingMaterialEntryInvoiceKey}
-          onInitialInvoiceConsumed={onPendingMaterialEntryInvoiceConsumed}
           initialRMId={materialEntryRMId}
           onInitialRMConsumed={() => setMaterialEntryRMId(null)}
           onSubmitFinishedPieces={(header, lines) => {
@@ -1950,7 +1930,6 @@ const Inventory: React.FC<InventoryProps> = ({
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
             setMaterialEntryRMId(null);
-            onPendingMaterialEntryInvoiceConsumed?.();
           }}
         />
       )}

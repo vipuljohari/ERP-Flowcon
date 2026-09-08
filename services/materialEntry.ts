@@ -11,8 +11,6 @@
 // hand in an Admin-only trial sandbox before being built for real — the
 // three hard rules below (full allotment, no negatives, no removing a
 // pulled line) each come from a real mistake found during that testing.
-import { RMManufacturerInvoice, RMMaterialLength } from '../types';
-
 export const pcsPerBar = (barLengthMm: number, itemLengthMm: number): number =>
   itemLengthMm > 0 ? Math.floor(barLengthMm / itemLengthMm) : 0;
 
@@ -130,65 +128,14 @@ export const validateLongerPipeLine = (line: LongerPipeLine, itemLengthById: Rec
     : validateSplitPiecesLine(line, itemLengthById);
 };
 
-// One "invoice" as Material Entry's picker shows it: RMManufacturerInvoice
-// is stored one Firestore doc per material line (correlated only by shared
-// invoiceNo/manufacturerName/date), so every group here is a same-invoiceNo
-// cluster of those docs, not a single document.
-export interface PullableInvoiceGroup {
-  invoiceNo: string;
-  manufacturerName: string;
-  date: string;
-  lines: RMManufacturerInvoice[];
-}
-
 // Material codes are sometimes typed by hand (RM Cross-Bill Check's "+ Add
 // New Material" flow) or read off a photographed invoice, and either way
 // can carry case differences or trailing print artifacts (e.g.
 // "RMSS00000119." with a stray period from the source document's column
 // layout, or "rmss00000119" typed in lowercase) that aren't part of the
 // actual code. Every place that matches one material code against another
-// — recognizing a re-typed material as the same one already on file,
-// deciding whether an invoice is eligible to post/pull — MUST go through
-// this, not a raw `===`, or a real match gets silently missed (confirmed
-// bug: RMCrossBillCheck.tsx's own "Post to Inventory" eligibility check
-// used to compare codes with `===` directly while the rest of that same
-// file already normalized this way, so a manually-typed code that differed
-// only in case from what's on file — matching materialLengths's own
-// case-insensitive dedupe, so no duplicate record was even created — still
-// silently failed the *eligibility* check alone).
+// — recognizing a re-typed material as the same one already on file, or
+// resolving a Manufacturer Invoice line to the RawMaterial it's linked to
+// (see RMCrossBillCheck.tsx's Manufacturer Invoice wizard) — MUST go
+// through this, not a raw `===`, or a real match gets silently missed.
 export const normalizeMaterialCode = (code: string): string => (code || '').trim().replace(/[.\s]+$/, '').toUpperCase();
-
-// Spec-relevance + deployment-cutoff filter for "Pull from Invoice": only
-// show invoices where (a) every line is still unused, (b) the invoice date
-// is on/after this feature's go-live (an invoice older than that was
-// already reconciled under the old rules and must never be silently
-// re-consumed), and (c) at least one line's material code is linked
-// (via RMMaterialLength.linkedRMId) to the RM this particular line is for —
-// an invoice with no matching material must never even appear.
-export const getPullableInvoiceGroups = (
-  invoices: RMManufacturerInvoice[],
-  materialLengths: RMMaterialLength[],
-  targetRMId: string,
-  cutoffDateStr: string
-): PullableInvoiceGroup[] => {
-  const linkedRMIdByCode: Record<string, string | undefined> = {};
-  materialLengths.forEach(ml => { linkedRMIdByCode[normalizeMaterialCode(ml.materialCode)] = ml.linkedRMId; });
-
-  const groups = new Map<string, RMManufacturerInvoice[]>();
-  invoices.forEach(inv => {
-    const key = `${inv.invoiceNo}__${inv.manufacturerName}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(inv);
-  });
-
-  const result: PullableInvoiceGroup[] = [];
-  groups.forEach((lines, key) => {
-    if (lines.some(l => l.usedForMaterialEntry)) return; // any line already used -> whole invoice is done
-    const first = lines[0];
-    if (first.date < cutoffDateStr) return;
-    const hasMatch = lines.some(l => linkedRMIdByCode[normalizeMaterialCode(l.materialCode)] === targetRMId);
-    if (!hasMatch) return;
-    result.push({ invoiceNo: first.invoiceNo, manufacturerName: first.manufacturerName, date: first.date, lines });
-  });
-  return result.sort((a, b) => (a.date < b.date ? 1 : -1));
-};

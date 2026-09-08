@@ -146,11 +146,13 @@ export interface RMManufacturerInvoice {
   tallyBookedAt?: string;
   matchedCrossInvoiceId?: string; // set once a corresponding customer invoice is entered
   createdAt: string;
-  // Set true the moment a Material Entry (Longer Pipe) save pulls this
-  // material line in — irreversible from the UI (see components/MaterialEntry.tsx
-  // and the "Post to Inventory" shortcut in RMCrossBillCheck.tsx). Once true
-  // this line can never be pulled again; if the invoice was booked wrongly
-  // the fix is deleting and re-entering it here, never un-flagging this.
+  // Set true the moment this record is created — every Manufacturer
+  // Invoice going forward is posted to inventory atomically, in the same
+  // save, as part of RMCrossBillCheck.tsx's Manufacturer Invoice wizard
+  // (see App.tsx's handleManufacturerInvoiceWithAllotment). A FALSE here
+  // only ever means a legacy invoice entered under the old two-stage design
+  // before that redesign shipped — there is deliberately no bridge left to
+  // post one of those; the fix is deleting and re-entering it here.
   usedForMaterialEntry?: boolean;
   usedForMaterialEntryAt?: string;
 }
@@ -203,9 +205,11 @@ export interface RMMaterialLength {
   lengthMm: number;
   updatedAt: string;
   // Bridges this manufacturer material code to a real RawMaterial record in
-  // Inventory (RM Master), so Material Entry's "Pull from Invoice" knows
-  // which RM's stock to bump and which Parts (rm.partId/rm.partIds) are
-  // eligible to be cut from it. Admin sets this once per material code, the
+  // Inventory (RM Master), so Step 2 of RM Cross-Bill Check's Manufacturer
+  // Invoice wizard knows which RM's stock to bump and which Parts
+  // (rm.partId/rm.partIds) are eligible to be cut from it — a material with
+  // no link here hard-blocks that invoice's Save (see
+  // RMCrossBillCheck.tsx). Admin sets this once per material code, the
   // same "catalog, first-entry-wins" idiom already used for lengthMm above.
   linkedRMId?: string;
 }

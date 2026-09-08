@@ -9,12 +9,8 @@ import {
   AllottedItem,
   validateLongerPipeLine,
   computeUnattributedScrapMm,
-  getPullableInvoiceGroups,
-  PullableInvoiceGroup,
-  normalizeMaterialCode,
 } from '../services/materialEntry';
 import { getLocalDateStr, correctedNow } from '../services/time';
-import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
 
 // ============================================================
 // Material Entry — RM Receiving (Longer Pipe / Finished Pieces)
@@ -31,10 +27,15 @@ import { MATERIAL_ENTRY_INVOICE_PULL_CUTOFF } from '../constants';
 //    normal case. Both modes are offered; Longer Pipe seeds its first line
 //    from the RM that part is mapped to (RawMaterial.partId/partIds), and
 //    pre-checks that part (+ its siblings) once a Spec/Material is chosen.
-//  - From RM Cross-Bill Check's "Post to Inventory" shortcut (seedPart is
-//    null, initialInvoiceKey is set) — skips straight to Longer Pipe step 2
-//    with every line already pulled from that invoice; only the item
-//    assignment still needs Store's input.
+//  - From a specific Raw Material's own "Material Entry" button on the RM
+//    Inventory (RM-wise) ledger (seedPart is null, initialRMId is set) — a
+//    direct-from-manufacturer buy with no RM Cross-Bill invoice behind it.
+//
+// A Manufacturer Invoice is no longer a way into this screen at all — per
+// Vipul's sign-off, RM Cross-Bill Check's own Manufacturer Invoice wizard
+// now does invoice entry AND bar allotment in one sitting (see
+// RMCrossBillCheck.tsx and App.tsx's handleManufacturerInvoiceWithAllotment),
+// so there is nothing left here to "pull" a manufacturer invoice into.
 // ============================================================
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -77,17 +78,21 @@ interface MaterialEntryProps {
   seedPart: Part | null;
   parts: Part[];
   rawMaterials: RawMaterial[];
+  // No longer read by this component — the "Pull from Invoice" bridge that
+  // used to read these was removed along with the rest of the two-stage
+  // Manufacturer Invoice design (see the file header comment above). Kept
+  // as accepted-but-unused props purely so Inventory.tsx's existing
+  // `<MaterialEntry manufacturerInvoices={...} materialLengths={...}>`
+  // call site doesn't need to change.
   manufacturerInvoices: RMManufacturerInvoice[];
   materialLengths: RMMaterialLength[];
-  initialInvoiceKey?: string | null;
-  onInitialInvoiceConsumed?: () => void;
-  // Third way in, alongside seedPart and initialInvoiceKey: opened directly
-  // from a specific Raw Material's own "Material Entry" button on the RM
-  // Inventory (RM-wise) ledger — a direct-from-manufacturer purchase that
-  // was never booked through RM Cross-Bill Check at all. Skips straight to
-  // Longer Pipe step 2 with one unlocked line seeded to this RM (no invoice
-  // to pull details from, so Store types Supplier/Invoice/Date/Weight/Bill
-  // Value in fresh, same as any manual line).
+  // Second way in, alongside seedPart: opened directly from a specific Raw
+  // Material's own "Material Entry" button on the RM Inventory (RM-wise)
+  // ledger — a direct-from-manufacturer purchase that was never booked
+  // through RM Cross-Bill Check at all. Skips straight to Longer Pipe step 2
+  // with one unlocked line seeded to this RM (no invoice to pull details
+  // from, so Store types Supplier/Invoice/Date/Weight/Bill Value in fresh,
+  // same as any manual line).
   initialRMId?: string | null;
   onInitialRMConsumed?: () => void;
   onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
@@ -99,10 +104,6 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   seedPart,
   parts,
   rawMaterials,
-  manufacturerInvoices,
-  materialLengths,
-  initialInvoiceKey,
-  onInitialInvoiceConsumed,
   initialRMId,
   onInitialRMConsumed,
   onSubmitFinishedPieces,
@@ -131,9 +132,6 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
   const [finishedLines, setFinishedLines] = useState<UIFinishedLine[]>([]);
   const [lines, setLines] = useState<UILongerLine[]>([]);
-  // Set once a Longer Pipe entry is pulled from (or pre-loaded from) an RM
-  // Cross-Bill invoice — used to mark that invoice's lines "used" on Save.
-  const [linkedInvoiceKey, setLinkedInvoiceKey] = useState<string | null>(null);
 
   // A part counts as mapped to an RM via EITHER mechanism this app
   // supports — a per-customer link set on the Part itself
@@ -153,9 +151,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   };
 
   // The RM this Material Entry's part is actually mapped to (normal case,
-  // seedPart set) — seeds the first Longer Pipe line and filters which
-  // invoices "Pull from Invoice" offers to just this spec, exactly like
-  // RM Master's existing partId/partIds mapping already drives elsewhere.
+  // seedPart set) — seeds the first Longer Pipe line, exactly like RM
+  // Master's existing partId/partIds mapping already drives elsewhere.
   const impliedRM = useMemo(() => {
     if (!seedPart) return null;
     return rawMaterials.find(rm => isPartMappedToRM(seedPart, rm)) || null;
@@ -194,7 +191,6 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     setDate(todayDateStr);
     setWeightKg('');
     setBillValue('');
-    setLinkedInvoiceKey(null);
     setFinishedLines([makeFinishedLine(seedPart?.id)]);
     if (seedPart && impliedRM) {
       const eligible = eligiblePartsForRM(impliedRM.id);
@@ -207,82 +203,6 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedPart]);
-
-  // --- Pull from RM Cross-Bill Invoice (searched from within this modal) ---
-  const availableInvoiceGroups: PullableInvoiceGroup[] = useMemo(() => {
-    if (!impliedRM) return [];
-    return getPullableInvoiceGroups(manufacturerInvoices, materialLengths, impliedRM.id, MATERIAL_ENTRY_INVOICE_PULL_CUTOFF);
-  }, [manufacturerInvoices, materialLengths, impliedRM]);
-
-  const buildLinesFromInvoiceGroup = (group: PullableInvoiceGroup): UILongerLine[] =>
-    group.lines.map(line => {
-      // Same normalized match as the eligibility check above — a line that
-      // qualified the whole invoice as pullable must resolve here too, even
-      // if ITS specific code differs from what's on file only by case or
-      // trailing whitespace (see normalizeMaterialCode's comment).
-      const ml = materialLengths.find(m => normalizeMaterialCode(m.materialCode) === normalizeMaterialCode(line.materialCode));
-      const rmId = ml?.linkedRMId || '';
-      const eligible = rmId ? eligiblePartsForRM(rmId) : [];
-      const preCheck = seedPart
-        ? eligible
-            .filter(p => p.id === seedPart.id || seedPart.siblingIds?.includes(p.id) || p.siblingIds?.includes(seedPart.id))
-            .map(p => p.id)
-        : [];
-      return {
-        key: genId(),
-        rmId,
-        barLengthMm: ml ? String(ml.lengthMm) : '',
-        barsReceived: String(line.quantityPcs),
-        subMode: 'whole_bars' as LongerPipeSubMode,
-        checkedPartIds: preCheck,
-        barsPerItem: {},
-        pcsPerItem: {},
-        itemSearch: '',
-        lockedFromInvoice: true,
-        autoAssign: false,
-        pulledFromInvoiceLineId: line.id,
-      };
-    });
-
-  const pullFromInvoiceGroup = (group: PullableInvoiceGroup) => {
-    const hasExistingData = lines.some(l => l.barLengthMm || l.barsReceived || l.checkedPartIds.length > 0);
-    if (hasExistingData && !window.confirm(`Replace the current line(s) with Invoice ${group.invoiceNo}'s materials?`)) return;
-    setSupplier(group.manufacturerName);
-    setInvoiceNo(group.invoiceNo);
-    setDate(group.date);
-    const firstWeight = group.lines.find(l => l.totalWeightKg != null)?.totalWeightKg;
-    setWeightKg(firstWeight != null ? String(firstWeight) : '');
-    setBillValue(String(group.lines.reduce((s, l) => s + (l.itemValue || 0), 0)));
-    setLinkedInvoiceKey(`${group.invoiceNo}__${group.manufacturerName}`);
-    setLines(buildLinesFromInvoiceGroup(group));
-  };
-
-  // --- Jump straight in from RM Cross-Bill Check's "Post to Inventory" ---
-  // Here seedPart is null (no single implied RM to filter by), so this
-  // resolves the invoice group directly by its invoiceNo__manufacturerName
-  // key across ALL manufacturerInvoices, then goes straight to step 2.
-  useEffect(() => {
-    if (!initialInvoiceKey) return;
-    const linesForKey = manufacturerInvoices.filter(inv => `${inv.invoiceNo}__${inv.manufacturerName}` === initialInvoiceKey);
-    if (linesForKey.length === 0) {
-      onInitialInvoiceConsumed?.();
-      return;
-    }
-    const first = linesForKey[0];
-    const group: PullableInvoiceGroup = { invoiceNo: first.invoiceNo, manufacturerName: first.manufacturerName, date: first.date, lines: linesForKey };
-    setEntryMode('longer');
-    setStep(2);
-    setSupplier(group.manufacturerName);
-    setInvoiceNo(group.invoiceNo);
-    setDate(group.date);
-    const firstWeight = group.lines.find(l => l.totalWeightKg != null)?.totalWeightKg;
-    setWeightKg(firstWeight != null ? String(firstWeight) : '');
-    setBillValue(String(group.lines.reduce((s, l) => s + (l.itemValue || 0), 0)));
-    setLinkedInvoiceKey(initialInvoiceKey);
-    setLines(buildLinesFromInvoiceGroup(group));
-    onInitialInvoiceConsumed?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialInvoiceKey]);
 
   // --- Jump straight in from a specific RM's own "Material Entry" button
   // on the RM Inventory (RM-wise) ledger — a direct-from-manufacturer buy
@@ -524,29 +444,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'longer' && step === 1 && (
           <div className="mt-4 space-y-3">
-            {availableInvoiceGroups.length > 0 && (
-              <div className="border-2 border-indigo-100 bg-indigo-50/50 rounded-2xl p-4 space-y-2">
-                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-700">Pull from an existing RM Cross-Bill Invoice</p>
-                <p className="text-[11px] text-indigo-600/80">Fills in the invoice details and one line per material below — only Bars Received and the item assignment still need your input.</p>
-                <div className="space-y-2">
-                  {availableInvoiceGroups.map(group => (
-                    <div key={`${group.invoiceNo}__${group.manufacturerName}`} className="flex items-center justify-between gap-3 bg-white border border-indigo-100 rounded-xl px-3 py-2">
-                      <div>
-                        <p className="text-xs font-bold text-slate-800">{group.manufacturerName} — {group.invoiceNo}</p>
-                        <p className="text-[10px] text-slate-400">{group.lines.map(l => `${l.materialName} (${l.quantityPcs} Pcs)`).join(' · ')}</p>
-                      </div>
-                      <button onClick={() => pullFromInvoiceGroup(group)} className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg font-black uppercase tracking-widest shrink-0">
-                        Use This Invoice
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                {linkedInvoiceKey && (
-                  <p className="text-[11px] font-bold text-emerald-700">✓ Pulled Invoice {invoiceNo} — fields below are filled in; review and continue.</p>
-                )}
-              </div>
-            )}
-            <p className="text-[11px] text-slate-400">{availableInvoiceGroups.length > 0 ? 'Or enter these details manually:' : 'These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here.'} Fields marked * are required.</p>
+            <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here. Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
               <FormField label="Invoice No. *"><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
@@ -754,19 +652,15 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
               <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">Entry Date must be within the current month ({minEntryDateStr} to {todayDateStr}).</p>
             )}
 
-            {/* Step 2 can be reached directly (RM Cross-Bill Check's "Post to
-                Inventory" shortcut jumps straight here, skipping Step 1) with
-                every line fully allotted and Save still disabled, because
-                Save also gates on the Step 1 header fields — most commonly
-                Dharamkanta Weight, since that's the one field the pull
-                shortcut can never auto-fill (it's a physical weighbridge
-                reading, not something on the invoice). Without this message
-                that showed as an unexplained dead grey button — confirmed
-                bug, since Step 2 has no other way to see what Step 1 needs. */}
+            {/* Belt-and-suspenders: Step 2 is normally only reachable via
+                Step 1's own "Next" button, which already gates on
+                headerValid, so this shouldn't be visible in practice — kept
+                as a defensive message rather than an unexplained dead grey
+                Save button, same reasoning as the header-fields check on
+                Step 1 itself. */}
             {isDateValid(date) && !headerValid && (
               <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
                 Can't save yet — click "‹ Back" below to open Invoice Details. Supplier, Invoice No., Total Weight, Total Bill Value and Dharamkanta Weight are all required.
-                {linkedInvoiceKey ? ' Since this was pulled from an RM Cross-Bill invoice, everything else is already filled in — only Dharamkanta Weight (the actual weighbridge slip reading) still needs to be typed in by hand.' : ''}
               </p>
             )}
 
