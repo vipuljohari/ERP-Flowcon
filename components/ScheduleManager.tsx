@@ -4,7 +4,7 @@ import BulkScheduleImport from './BulkScheduleImport';
 
 interface ScheduleManagerProps {
   parts: Part[];
-  onUpdateSchedule: (partId: string, newSchedule: number, customer: string) => void;
+  onUpdateSchedule: (partId: string, newSchedule: number, customer: string, wasFirstEntry: boolean) => void;
   readOnly?: boolean;
   activeCustomer: string;
   onCustomerChange: (customer: string) => void;
@@ -20,6 +20,15 @@ const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
   const key = Object.keys(p.schedules).find(k => k.toUpperCase().trim() === customerName.toUpperCase().trim());
   return key ? p.schedules[key] || 0 : 0;
+};
+
+// Revision Level shown per (part, customer) — see Part.scheduleRevisions in
+// types.ts. Missing entirely, or no key for this customer, means it has
+// never been revised since first set: Revision 0.
+const getCustomerRevision = (p: Part, customerName: string) => {
+  if (!p.scheduleRevisions) return 0;
+  const key = Object.keys(p.scheduleRevisions).find(k => k.toUpperCase().trim() === customerName.toUpperCase().trim());
+  return key ? p.scheduleRevisions[key] || 0 : 0;
 };
 
 const ScheduleManager: React.FC<ScheduleManagerProps> = ({ 
@@ -60,7 +69,8 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
     e.preventDefault();
     if (readOnly || isHistorical) return;
     if (selectedPart && newTarget >= 0) {
-      onUpdateSchedule(selectedPart.id, newTarget, activeCustomer);
+      const wasFirstEntry = getCustomerSchedule(selectedPart, activeCustomer) === 0;
+      onUpdateSchedule(selectedPart.id, newTarget, activeCustomer, wasFirstEntry);
       setShowEditModal(false);
       setSelectedPart(null);
     }
@@ -177,10 +187,10 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
                     </span>
                   </td>
                   <td className="px-8 py-6 text-center">
-                    {p.revisionCount === 0 ? (
+                    {getCustomerRevision(p, activeCustomer) === 0 ? (
                       <span className="text-[10px] bg-slate-100 text-slate-500 px-3 py-1 rounded-full font-black uppercase tracking-tighter">Original</span>
                     ) : (
-                      <span className="text-[10px] bg-amber-50 text-amber-700 px-3 py-1 rounded-full font-black uppercase tracking-tighter">Revision {p.revisionCount}</span>
+                      <span className="text-[10px] bg-amber-50 text-amber-700 px-3 py-1 rounded-full font-black uppercase tracking-tighter">Revision {getCustomerRevision(p, activeCustomer)}</span>
                     )}
                   </td>
                   {!effectiveReadOnly && (

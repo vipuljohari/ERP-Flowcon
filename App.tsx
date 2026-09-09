@@ -603,6 +603,64 @@ const MainApp: React.FC = () => {
     return result;
   }, [sD, parts, sales, inwardLogs, localPartOpeningBalances]);
 
+  // Auto-freeze Opening Balance the first time a given month is viewed —
+  // for RM and for standalone (non-RM-linked) Parts alike. Until this ran,
+  // NEITHER kind of Opening Balance was ever really "frozen": both
+  // resolvedRMOpeningBalances and resolvedPartOpeningBalances above just
+  // simulate forward live, every render, from whatever the last explicit
+  // lock was — carrying forward month to month with no stored value of
+  // their own unless someone used the pencil-edit. That's exactly how a
+  // number could appear to "change on its own": editing an Inward or Sales
+  // entry dated in an EARLIER month retroactively shifts the simulated
+  // carry-forward for every later month, with nothing in the audit log to
+  // show for it, since no explicit correction was ever made. This effect
+  // closes that gap by writing today's simulated value as a real, explicit
+  // override for the current month the first time anyone loads it — after
+  // that, resolvedRMOpeningBalances/resolvedPartOpeningBalances read that
+  // stored value directly instead of re-simulating, so it can only change
+  // again via a deliberate pencil-edit correction (which now always
+  // requires a reason, see commitOpeningBalance/commitRMOpeningBalance in
+  // Inventory.tsx). Deliberately does NOT log an InwardLog audit entry for
+  // this — nothing physical happened and no number actually changed, it's
+  // just locking in what was already being shown.
+  useEffect(() => {
+    const targetMonthKey = `${sD.getFullYear()}-${String(sD.getMonth() + 1).padStart(2, '0')}`;
+
+    const missingRM = rawMaterials.filter(rm => localRMOpeningBalances[`${targetMonthKey}_${rm.id}`] === undefined);
+    if (missingRM.length > 0) {
+      setLocalRMOpeningBalances(prev => {
+        const next = { ...prev };
+        missingRM.forEach(rm => {
+          const key = `${targetMonthKey}_${rm.id}`;
+          if (next[key] !== undefined) return;
+          next[key] = resolvedRMOpeningBalances[rm.id] || '0';
+        });
+        return next;
+      });
+    }
+
+    // Skip RM-linked parts — Inventory.tsx's Item-wise Opening Balance
+    // display never reads a stored value for those (it derives Opening
+    // Balance straight from the mapped RM's own balance instead, see
+    // partComputations in Inventory.tsx), so freezing one here would just
+    // be a dead write nothing ever looks at.
+    const standaloneParts = parts.filter(p => !rawMaterials.some(rm =>
+      (p.customerRMMappings?.[rm.customerName] === rm.id) || (rm.partId === p.id) || (rm.partIds && rm.partIds.includes(p.id))
+    ));
+    const missingParts = standaloneParts.filter(p => localPartOpeningBalances[`${targetMonthKey}_${p.id}`] === undefined);
+    if (missingParts.length > 0) {
+      setLocalPartOpeningBalances(prev => {
+        const next = { ...prev };
+        missingParts.forEach(p => {
+          const key = `${targetMonthKey}_${p.id}`;
+          if (next[key] !== undefined) return;
+          next[key] = resolvedPartOpeningBalances[p.id] || '0';
+        });
+        return next;
+      });
+    }
+  }, [sD, rawMaterials, parts, localRMOpeningBalances, localPartOpeningBalances, resolvedRMOpeningBalances, resolvedPartOpeningBalances, setLocalRMOpeningBalances, setLocalPartOpeningBalances]);
+
   // Synchronize and auto-repair parts mapping for all existing and new master template customers
   const customerNamesKey = useMemo(() => customers.map(c => c.name).join('|'), [customers]);
   
@@ -1003,7 +1061,8 @@ const MainApp: React.FC = () => {
       // Reset Live Schedules for the new month
       setParts(prev => prev.map(p => ({
         ...p,
-        schedules: {}, 
+        schedules: {},
+        scheduleRevisions: {},
         revisionCount: 0,
         lastUpdated: now.toISOString()
       })));
@@ -1251,12 +1310,13 @@ const MainApp: React.FC = () => {
         const stockAtDate = monthRMOpeningPcs + monthReceipts - monthSales;
         const schedulesAtDate = isPastMonth ? (aP ? aP.schedules : {}) : p.schedules;
 
-        return { 
-          ...p, 
-          stock: stockAtDate, 
-          schedules: schedulesAtDate, 
-          revisionCount: isPastMonth ? (aP ? aP.revisionCount : 0) : p.revisionCount, 
-          status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus 
+        return {
+          ...p,
+          stock: stockAtDate,
+          schedules: schedulesAtDate,
+          revisionCount: isPastMonth ? (aP ? aP.revisionCount : 0) : p.revisionCount,
+          scheduleRevisions: isPastMonth ? (aP ? aP.scheduleRevisions : {}) : p.scheduleRevisions,
+          status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus
         };
       }
 
@@ -1301,12 +1361,13 @@ const MainApp: React.FC = () => {
       const stockAtDate = p.stock + dispatchesAfter - receiptsAfter;
       const schedulesAtDate = isPastMonth ? (aP ? aP.schedules : {}) : p.schedules;
 
-      return { 
-        ...p, 
-        stock: stockAtDate, 
-        schedules: schedulesAtDate, 
-        revisionCount: isPastMonth ? (aP ? aP.revisionCount : 0) : p.revisionCount, 
-        status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus 
+      return {
+        ...p,
+        stock: stockAtDate,
+        schedules: schedulesAtDate,
+        revisionCount: isPastMonth ? (aP ? aP.revisionCount : 0) : p.revisionCount,
+        scheduleRevisions: isPastMonth ? (aP ? aP.scheduleRevisions : {}) : p.scheduleRevisions,
+        status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus
       };
     });
   }, [sD, modelFilteredParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
@@ -1449,7 +1510,7 @@ const MainApp: React.FC = () => {
                });
              });
           }} onCreateAlert={pushAdminAlert} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedDate={sD} selectedDateDisplay={sD.toLocaleDateString('en-GB')} />}
-          {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={contextSales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
+          {canAccessView(role, currentView) && currentView === 'sales' && <SalesLog parts={cDP} sales={sales} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isAdmin={isAdmin} auditDate={sD} onDeleteSale={(id) => {
              const sale = sales.find(s => s.id === id);
              if (sale) {
                setSales(prev => prev.filter(s => s.id !== id));
@@ -1468,7 +1529,7 @@ const MainApp: React.FC = () => {
               onDraftConsumed={() => setPendingItemDraft(null)}
               onAdd={(p) => {
                 const newPartId = Math.random().toString(36).substr(2, 9);
-                const newPart = { ...p, id: newPartId, stock: 0, inward: 0, revisionCount: 0, lastUpdated: new Date().toISOString(), status: 'Out of Stock', schedules: {} } as Part;
+                const newPart = { ...p, id: newPartId, stock: 0, inward: 0, revisionCount: 0, lastUpdated: new Date().toISOString(), status: 'Out of Stock', schedules: {}, scheduleRevisions: {} } as Part;
                 setParts(prev => {
                   const withNew = [...prev, newPart];
                   // Sibling links are always symmetric — a brand-new part has no
@@ -1697,7 +1758,15 @@ const MainApp: React.FC = () => {
               onSaveManufacturerInvoiceWithAllotment={handleManufacturerInvoiceWithAllotment}
             />
           )}
-          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust) => setParts(prev => prev.map(p => p.id === id ? { ...p, schedules: { ...p.schedules, [cust]: val }, revisionCount: p.revisionCount + 1 } : p))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
+          {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust, wasFirstEntry) => setParts(prev => prev.map(p => {
+            if (p.id !== id) return p;
+            const priorRevision = p.scheduleRevisions?.[cust] ?? 0;
+            // First-ever entry of a schedule (previously 0/unset) starts at
+            // Revision 0; only a genuine change to an existing commitment
+            // counts as a revision. See Part.scheduleRevisions in types.ts.
+            const nextRevision = wasFirstEntry ? 0 : priorRevision + 1;
+            return { ...p, schedules: { ...p.schedules, [cust]: val }, scheduleRevisions: { ...p.scheduleRevisions, [cust]: nextRevision }, revisionCount: p.revisionCount + 1 };
+          }))} activeCustomer={activeCustomer} onCustomerChange={setActiveCustomer} customers={customersWithItems} isHistorical={isH} selectedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} isAdmin={isAdmin} onBulkUpdateSchedules={handleBulkUpdateSchedules} onCreateAlert={pushAdminAlert} />}
           </ErrorBoundary>
         </div>
       </main>
@@ -2142,6 +2211,7 @@ const MainApp: React.FC = () => {
       lastUpdated: new Date().toISOString(),
       status: 'Out of Stock',
       schedules: {},
+      scheduleRevisions: {},
     } as Part));
 
     for (let i = 0; i < built.length; i += CHUNK_SIZE) {
@@ -2170,15 +2240,23 @@ const MainApp: React.FC = () => {
       const changes = byPart.get(p.id);
       if (!changes) return p;
       const nextSchedules = { ...p.schedules };
+      const nextRevisions = { ...p.scheduleRevisions };
       let changed = false;
       changes.forEach(c => {
-        if (nextSchedules[c.customerName] !== c.qty) {
+        const priorVal = nextSchedules[c.customerName] || 0;
+        if (priorVal !== c.qty) {
           nextSchedules[c.customerName] = c.qty;
+          // Same first-entry-vs-revision rule as the single-schedule edit
+          // path above: a customer with no prior (or zero) commitment is
+          // getting set for the first time this cycle — Revision 0 — not a
+          // revision of something that didn't exist yet.
+          const priorRevision = nextRevisions[c.customerName] ?? 0;
+          nextRevisions[c.customerName] = priorVal === 0 ? 0 : priorRevision + 1;
           changed = true;
         }
       });
       if (!changed) return p;
-      return { ...p, schedules: nextSchedules, revisionCount: p.revisionCount + 1 };
+      return { ...p, schedules: nextSchedules, scheduleRevisions: nextRevisions, revisionCount: p.revisionCount + 1 };
     }));
   }
 };

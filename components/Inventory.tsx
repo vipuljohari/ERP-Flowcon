@@ -500,9 +500,24 @@ const Inventory: React.FC<InventoryProps> = ({
     const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
     const monthDisplay = selectedDate.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
     const actionTimestamp = new Date().toISOString();
-    const remark = `[OPENING_BALANCE_SET:${newVal}|PREV:${currentOpening}] Item Opening Balance set to ${newVal} Pcs from Previous ${currentOpening} Pcs (${deltaStr} Pcs) for ${part?.mappedCustomers?.join(', ') || 'Customer'} (${part?.size || 'Item'}) [${monthDisplay}]`;
 
-    if (window.confirm(`Audit Action: Adjust Item Opening Balance for ${monthDisplay}?\n\nItem: ${part?.name || 'Item'}\nTarget Balance: ${newVal} Pcs\nPrevious Balance: ${currentOpening} Pcs\nCorrection: ${deltaStr} Pcs\n\nThis locks Opening Balance at ${newVal} Pcs for ${monthDisplay}. It will carry forward automatically to future months unless audited again.`)) {
+    // A reason is now mandatory for every manual correction — without this,
+    // the audit trail only ever showed the mechanical "set to X from
+    // previous Y" text, with no record of WHY a person overrode the number
+    // (a physical stock count, fixing a duplicate entry, etc.). Loops until
+    // non-empty text is given or the admin cancels outright.
+    let reasonInput: string | null = '';
+    while (true) {
+      reasonInput = window.prompt(`Reason for this correction (required):\n\nItem: ${part?.name || 'Item'}\nTarget Balance: ${newVal} Pcs (was ${currentOpening} Pcs, ${deltaStr} Pcs)`, reasonInput || '');
+      if (reasonInput === null) return; // cancelled — abort the whole correction
+      if (reasonInput.trim()) break;
+      window.alert('A reason is required to correct Opening Balance.');
+    }
+    const reason = reasonInput.trim();
+
+    const remark = `[OPENING_BALANCE_SET:${newVal}|PREV:${currentOpening}] Item Opening Balance set to ${newVal} Pcs from Previous ${currentOpening} Pcs (${deltaStr} Pcs) for ${part?.mappedCustomers?.join(', ') || 'Customer'} (${part?.size || 'Item'}) [${monthDisplay}] — Reason: ${reason}`;
+
+    if (window.confirm(`Audit Action: Adjust Item Opening Balance for ${monthDisplay}?\n\nItem: ${part?.name || 'Item'}\nTarget Balance: ${newVal} Pcs\nPrevious Balance: ${currentOpening} Pcs\nCorrection: ${deltaStr} Pcs\nReason: ${reason}\n\nThis locks Opening Balance at ${newVal} Pcs for ${monthDisplay}. It will carry forward automatically to future months unless audited again.`)) {
       if (propSetPartOpeningBalances) {
         propSetPartOpeningBalances(prev => {
           const updated = { ...prev, [overrideKey]: newVal.toString() };
@@ -551,9 +566,21 @@ const Inventory: React.FC<InventoryProps> = ({
 
     const unitLabel = rm && isSheetRM(rm) ? 'Kg' : 'Pipes';
     const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
-    const remark = `[RM_OPENING_BALANCE_SET:${newVal}|PREV:${currentOpeningPipes}] RM Opening Balance set to ${newVal} ${unitLabel} from Previous ${currentOpeningPipes} ${unitLabel} (${deltaStr} ${unitLabel}) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${monthDisplay}]`;
 
-    if (window.confirm(`Audit Action: Adjust Raw Material Opening Balance for ${monthDisplay}?\n\nTarget Balance: ${newVal} ${unitLabel}\nPrevious Balance: ${currentOpeningPipes} ${unitLabel}\nCorrection: ${deltaStr} ${unitLabel}`)) {
+    // Same mandatory-reason rule as commitOpeningBalance above, for RM's
+    // own Opening Balance correction.
+    let reasonInput: string | null = '';
+    while (true) {
+      reasonInput = window.prompt(`Reason for this correction (required):\n\nRaw Material: ${rm?.size || 'RM'} (${rm?.customerName || 'Customer'})\nTarget Balance: ${newVal} ${unitLabel} (was ${currentOpeningPipes} ${unitLabel}, ${deltaStr} ${unitLabel})`, reasonInput || '');
+      if (reasonInput === null) return; // cancelled — abort the whole correction
+      if (reasonInput.trim()) break;
+      window.alert('A reason is required to correct Raw Material Opening Balance.');
+    }
+    const reason = reasonInput.trim();
+
+    const remark = `[RM_OPENING_BALANCE_SET:${newVal}|PREV:${currentOpeningPipes}] RM Opening Balance set to ${newVal} ${unitLabel} from Previous ${currentOpeningPipes} ${unitLabel} (${deltaStr} ${unitLabel}) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${monthDisplay}] — Reason: ${reason}`;
+
+    if (window.confirm(`Audit Action: Adjust Raw Material Opening Balance for ${monthDisplay}?\n\nTarget Balance: ${newVal} ${unitLabel}\nPrevious Balance: ${currentOpeningPipes} ${unitLabel}\nCorrection: ${deltaStr} ${unitLabel}\nReason: ${reason}`)) {
       if (propSetRMOpeningBalances) {
         propSetRMOpeningBalances(prev => {
           const updated = { ...prev, [overrideKey]: newVal.toString() };

@@ -81,6 +81,19 @@ export interface Part {
   schedules: Record<string, number>; // Mapping: { 'SKH-PRITHLA': 500, 'SKH-JAIPUR': 300 }
   mappedCustomers: string[]; // List of customer names this part belongs to
   revisionCount: number;
+  // Per-customer Monthly Schedule revision counter (Revision Level shown on
+  // the Monthly Schedule screen). Keyed like `schedules` — one entry per
+  // customer this part is scheduled for. A customer with no key yet (or a
+  // part with no scheduleRevisions object at all) is treated as Revision 0 —
+  // i.e. the schedule has never been revised since it was first set this
+  // month. Reset to {} alongside `schedules` at month rollover, since a new
+  // month's targets are a fresh commitment cycle, not a revision of last
+  // month's. Superseded `revisionCount` (below) for this purpose — that
+  // field bumped on every save including the very first entry of a new
+  // cycle, which is why Revision Level used to start at 1, 3, 5, etc.
+  // instead of 0. `revisionCount` is left in place, untouched, since old
+  // archived months already carry it and nothing else reads it.
+  scheduleRevisions?: Record<string, number>;
   minThreshold: number;
   status: StockStatus;
   lastUpdated: string;

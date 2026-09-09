@@ -114,50 +114,25 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     return raw.replace(/\[(RM_)?OPENING_BALANCE_SET:[^\]]+\]\s*/g, '').trim() || 'Opening Inventory Correction';
   };
 
-  const allLogsWithAudits = useMemo(() => {
-    const combined = [...logs];
-    if (localRMOpeningBalances && Object.keys(localRMOpeningBalances).length > 0) {
-      Object.entries(localRMOpeningBalances).forEach(([key, valStr]) => {
-        if (!valStr) return;
-        const val = parseFloat(valStr);
-        if (isNaN(val)) return;
-
-        let mK = `${auditDate.getFullYear()}-${String(auditDate.getMonth() + 1).padStart(2, '0')}`;
-        let rmId = key;
-        if (key.includes('_')) {
-          const partsArr = key.split('_');
-          if (partsArr.length >= 2) {
-            mK = partsArr[0];
-            rmId = partsArr.slice(1).join('_');
-          }
-        }
-
-        const rm = rawMaterials.find(r => r.id === rmId);
-        const part = parts.find(p => p.id === rm?.partId || (rm?.customerName && p.customerRMMappings?.[rm.customerName] === rm.id));
-
-        const alreadyExists = logs.some(
-          l => (l.remarks?.includes(`[RM_OPENING_BALANCE_SET:${val}]`) || l.remarks?.includes(`[OPENING_BALANCE_SET:${val}]`)) &&
-               (l.partId === part?.id || l.partId === rm?.partId)
-        );
-
-        if (!alreadyExists) {
-          const dateStr = `${mK}-01T00:00:00.000Z`;
-          const unitLabel = rm && isSheetRM(rm) ? 'Kg' : 'Pipes';
-          combined.push({
-            id: `audit_local_rm_${key}`,
-            partId: part?.id || rm?.partId || 'audit_rm',
-            partName: rm ? `${rm.customerName} - ${rm.size}` : (part?.name || 'Opening Balance Override'),
-            sapCode: part?.sapCode || 'RM-AUDIT',
-            quantity: val,
-            supplier: 'ADMIN_AUDIT',
-            timestamp: dateStr,
-            remarks: `[RM_OPENING_BALANCE_SET:${val}|PREV:0] RM Opening Balance set to ${val} ${unitLabel} from Previous 0 ${unitLabel} (+${val} ${unitLabel}) for ${rm?.customerName || 'Customer'} (${rm?.size || 'RM'}) [${mK}]`
-          });
-        }
-      });
-    }
-    return combined;
-  }, [logs, localRMOpeningBalances, rawMaterials, parts, auditDate]);
+  // This used to also synthesize a fake "opening balance" log entry for
+  // every key in localRMOpeningBalances, to backfill visibility for
+  // corrections made before onAddInward-based audit logging existed. Now
+  // that every real correction (commitOpeningBalance/commitRMOpeningBalance
+  // in Inventory.tsx) always writes a real, properly-dated `logs` entry via
+  // onAddInward, that synthesis was pure liability: App.tsx passes this
+  // component the ALREADY-RESOLVED per-month balance (resolvedRMOpeningBalances
+  // — one flat value per RM, no month embedded in its keys), but the
+  // synthesis logic was written expecting the raw multi-month override map
+  // (keys like "2026-09_<rmId>"). Since a bare RM id never contains an
+  // underscore, `key.includes('_')` was always false here, so `mK` always
+  // fell back to whatever month is currently being viewed — meaning EVERY
+  // RM's balance got stamped as "set today, from Previous 0" for whichever
+  // month you happened to have open, every time, regardless of whether any
+  // real correction happened that month. That's what made RM Opening
+  // Balance look like it "auto-freezes every month" when it doesn't, and
+  // why the date-range filter here looked unreliable — confirmed bug, now
+  // just returning the real, already-logged entries directly.
+  const allLogsWithAudits = logs;
 
   const filteredLogs = useMemo(() => {
     const start = new Date(startDate);
