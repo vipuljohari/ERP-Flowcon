@@ -290,8 +290,16 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
           .filter((l: any) => l.rmId === rm.id)
           .reduce((sum: number, l: any) => sum + (l.quantity || 0), 0);
 
+        // Stock deduction must net out dispatches to EVERY customer this RM
+        // is shared with (rmMatchesCustomer), not just the one currently
+        // selected in "Viewing Performance For" — mirrors Inventory.tsx's
+        // own Sheet Kg ledger (its closingBalanceKg calc) exactly. Using
+        // `filteredSales` here (activeCustomer-only) used to leave other
+        // customers' consumption of the same shared RM out of the
+        // deduction, making Stock read higher here than the real,
+        // all-customers figure Inventory RM-wise shows.
         const totalSalesKg = linkedParts.reduce((sum, item) => {
-          const salesQty = filteredSales.filter(s => s.partId === item.id).reduce((s, sale) => s + sale.quantity, 0);
+          const salesQty = sales.filter(s => s.partId === item.id && rmMatchesCustomer(rm, s.customer)).reduce((s, sale) => s + sale.quantity, 0);
           return sum + salesQty * rmKgPerPart(item);
         }, 0);
 
@@ -342,77 +350,35 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         };
       }
 
-      // --- Tube RM: fixed-length bar, tracked in pipes/meters/Kg (unchanged). ---
+      // --- Tube RM: fixed-length bar, tracked in pipes/meters/Kg. ---
       // Standard RM pipe details
       const rmLength = rm.length || 6000;
       const rmStandardMeters = rmLength / 1000;
       const pipeWeight = (rmLength * (rm.weightPer1000 || 0)) / 1000;
 
-      // 1. Raw Material Inward matching this month
-      const monthRMInwardPipes = actualInwardLogs
-        .filter((l: any) => l.rmId === rm.id)
-        .reduce((sum: number, l: any) => sum + l.quantity, 0);
-      const monthRMInwardKg = parseFloat((monthRMInwardPipes * pipeWeight).toFixed(2));
-      const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
-
-      // 3. Compute RM consumed so far: dispatches (Sales) + scrap of those dispatches
-      let totalSalesMeters = 0;
-      let totalSalesScrapMeters = 0;
-      let totalSalesScrapKg = 0;
-
-      linkedParts.forEach(item => {
-        const salesQty = filteredSales
-          .filter(s => s.partId === item.id)
-          .reduce((sum, s) => sum + s.quantity, 0);
-
-        let lengthFactorMeters = 0;
-        if (item.itemLength && item.itemLength > 0) {
-          lengthFactorMeters = item.itemLength / 1000;
-        } else if (item.itemWeight && item.itemWeight > 0 && rm.weightPer1000 > 0) {
-          lengthFactorMeters = (item.itemWeight / (rm.weightPer1000 / 1000)) / 1000;
-        }
-
-        const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
-        const itemMeters = salesQty * lengthFactorMeters;
-
-        let scrapMmPerPipe = 0;
-        let yieldFactor = 0;
-        if (item.hasCustomScrap) {
-          scrapMmPerPipe = item.customScrapMm || 0;
-          if (itemLengthMm > 0) {
-            yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
-          }
-        } else {
-          if (itemLengthMm > 0) {
-            yieldFactor = Math.floor(rmLength / itemLengthMm);
-            scrapMmPerPipe = rmLength % itemLengthMm;
-          }
-        }
-
-        let pipesUsed = 0;
-        if (yieldFactor > 0) {
-          pipesUsed = Math.ceil(salesQty / yieldFactor);
-        } else if (rmStandardMeters > 0 && salesQty > 0) {
-          pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
-        }
-
-        const itemScrapMeters = pipesUsed * (scrapMmPerPipe / 1000);
-        const itemScrapKg = itemScrapMeters * (rm.weightPer1000 || 0);
-
-        totalSalesMeters += itemMeters;
-        totalSalesScrapMeters += itemScrapMeters;
-        totalSalesScrapKg += itemScrapKg;
-      });
-
-      // 4. Calculate actual RM closing stock as of date: (opening + inward - dispatched - scrap)
-      const opBalancePipesStr = actualOpeningBalances[rm.id] || '0';
-      const openingBalancePipes = parseFloat(opBalancePipesStr);
-      const openingBalanceKg = parseFloat((openingBalancePipes * pipeWeight).toFixed(2));
-      const openingBalanceMeters = openingBalancePipes * rmStandardMeters;
-
-      const closingBalanceMeters = parseFloat((openingBalanceMeters + monthRMInwardMeters - totalSalesMeters - totalSalesScrapMeters).toFixed(2));
-      const closingBalancePipes = rmStandardMeters > 0 ? parseFloat((closingBalanceMeters / rmStandardMeters).toFixed(1)) : 0;
-      const closingBalanceKg = parseFloat((openingBalanceKg + monthRMInwardKg - (totalSalesMeters * (rm.weightPer1000 || 0)) - totalSalesScrapKg).toFixed(2));
+      // Actual RM closing stock as of date — reuses the same canonical
+      // computeRMStockAsOnDate() the "Available Stock" figure above already
+      // uses (see the comment on availableStockByPartId), instead of the ad
+      // hoc per-customer version this block used to compute inline. That
+      // inline version only netted out `filteredSales` — dispatches to
+      // whichever ONE customer is currently selected in "Viewing Performance
+      // For" — against the shared opening balance + inward, so whenever an
+      // RM (or the parts cut from it) is shared across more than one
+      // customer, dispatches to every OTHER customer sharing it were left
+      // out of the deduction entirely, making Stock here read higher than
+      // the real, all-customers figure Inventory RM-wise shows (confirmed
+      // bug: a shared RM showed a positive "Stock: … m" here while
+      // Inventory RM-wise correctly showed 0 Pipes, because this calc was
+      // only netting one of the customers sharing that RM). Passing the
+      // full `sales` array (not `filteredSales`) lets computeRMStockAsOnDate
+      // net out every customer the RM is actually mapped to via
+      // rmMatchesCustomer, matching Inventory's own math exactly.
+      const { closingBalancePipes: rawClosingBalancePipes, closingBalanceMeters: rawClosingBalanceMeters } = computeRMStockAsOnDate(
+        rm, linkedParts, actualInwardLogs, sales, actualOpeningBalances[rm.id] || '0'
+      );
+      const closingBalanceMeters = parseFloat(rawClosingBalanceMeters.toFixed(2));
+      const closingBalancePipes = parseFloat(rawClosingBalancePipes.toFixed(1));
+      const closingBalanceKg = parseFloat((closingBalanceMeters * (rm.weightPer1000 || 0)).toFixed(2));
 
       // 5. Calculate total Raw Material required to fulfill the remaining balance monthly schedule
       let totalTargetMetersNeeded = 0;
@@ -507,7 +473,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       // Sorted by Kg short (not meters) so Tube and Sheet Metal deficits —
       // which don't share a meters/pipes unit — rank together sensibly.
     }).sort((a, b) => b.totalKgShort - a.totalKgShort);
-  }, [parts, rawMaterials, activeCustomer, filteredSales, rmInwardLogs, localRMOpeningBalances]);
+  }, [parts, rawMaterials, activeCustomer, filteredSales, sales, rmInwardLogs, localRMOpeningBalances]);
 
   const stats: InventoryStats = {
     totalValue: parts.reduce((acc, p) => acc + (p.stock * p.rate), 0),
