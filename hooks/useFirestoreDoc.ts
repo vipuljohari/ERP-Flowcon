@@ -8,13 +8,31 @@ import { enqueueWrites } from '../services/offlineQueue';
  * Like useFirestoreArray, but for a single settings-style document (e.g. a
  * map of RM opening balances) rather than a collection of records. Behaves
  * like useState — reads live, writes go straight to Firestore.
+ *
+ * Third return value: `loaded` — false until the FIRST real onSnapshot
+ * callback has arrived (whether or not the document actually exists yet).
+ * Until then, `data` is just this hook's not-yet-synced `defaultValue`
+ * (usually `{}`), which looks IDENTICAL to "the document is genuinely
+ * empty." Any caller that scans `data` to decide what to write back —
+ * e.g. "fill in every key that's missing" — MUST wait for `loaded` before
+ * doing that, or it will treat every real, already-stored key as "missing"
+ * on a render that simply beat the Firestore listener, and then overwrite
+ * the whole document (this hook's setter does a full replace, not a
+ * per-field merge) with a reconstructed map that's missing everything that
+ * hadn't loaded yet. This was a real bug (10-Sep-26): App.tsx's Opening
+ * Balance auto-freeze effect ran before rmOpeningBalances/
+ * partOpeningBalances had loaded, saw every item as "missing" a current-
+ * month override, and wiped out real stored corrections (including
+ * same-day pencil-edits) with freshly re-simulated values. Fixed by gating
+ * that effect on this flag — see App.tsx.
  */
 export function useFirestoreDoc<T extends Record<string, any>>(
   collectionName: string,
   docId: string,
   defaultValue: T
-): [T, (update: T | ((prev: T) => T)) => void] {
+): [T, (update: T | ((prev: T) => T)) => void, boolean] {
   const [data, setDataLocal] = useState<T>(defaultValue);
+  const [loaded, setLoaded] = useState(false);
   const dataRef = useRef<T>(defaultValue);
   useEffect(() => { dataRef.current = data; }, [data]);
 
@@ -26,6 +44,10 @@ export function useFirestoreDoc<T extends Record<string, any>>(
           setDataLocal(snap.data() as T);
         }
         // If it doesn't exist yet, keep the default — first write will create it.
+        // Either way, this is now a confirmed real read of the document's
+        // current server state — flip loaded so callers that need to tell
+        // "not synced yet" apart from "genuinely empty" can safely proceed.
+        setLoaded(true);
       },
       (err) => console.error(`Firestore doc subscription failed for ${collectionName}/${docId}:`, err)
     );
@@ -51,5 +73,5 @@ export function useFirestoreDoc<T extends Record<string, any>>(
     [collectionName, docId]
   );
 
-  return [data, setData];
+  return [data, setData, loaded];
 }

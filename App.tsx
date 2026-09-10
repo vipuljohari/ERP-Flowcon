@@ -161,7 +161,7 @@ const MainApp: React.FC = () => {
   // device/session. Never written to by the fully-automatic Tally sync;
   // only human-initiated entries push here. See pushAdminAlert below.
   const [adminAlerts, setAdminAlerts] = useFirestoreArray<AdminAlert>('adminAlerts');
-  const [localRMOpeningBalances, setLocalRMOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
+  const [localRMOpeningBalances, setLocalRMOpeningBalances, rmOpeningBalancesLoaded] = useFirestoreDoc<Record<string, string>>('settings', 'rmOpeningBalances', {});
   // Item-wise (Part) opening balances — same idea as RM's above: a stored,
   // month-keyed override map, NOT a live-recomputed value. Previously,
   // Item-wise Opening Balance was recalculated from p.stock and the
@@ -178,7 +178,7 @@ const MainApp: React.FC = () => {
   // onAddInward) — that's just a visible audit-trail record (and nudges
   // live stock by the correction delta), never read back to determine the
   // override value itself, so it can't reintroduce the old bug.
-  const [localPartOpeningBalances, setLocalPartOpeningBalances] = useFirestoreDoc<Record<string, string>>('settings', 'partOpeningBalances', {});
+  const [localPartOpeningBalances, setLocalPartOpeningBalances, partOpeningBalancesLoaded] = useFirestoreDoc<Record<string, string>>('settings', 'partOpeningBalances', {});
 
   // Single source of truth for display order across the WHOLE app — the
   // Admin's sortOrder (set via the reorder pencil icon) applies everywhere
@@ -624,6 +624,21 @@ const MainApp: React.FC = () => {
   // this — nothing physical happened and no number actually changed, it's
   // just locking in what was already being shown.
   useEffect(() => {
+    // CRITICAL — do not remove: this effect decides what's "missing" by
+    // reading localRMOpeningBalances/localPartOpeningBalances, but
+    // useFirestoreDoc starts both at {} until their first real Firestore
+    // snapshot arrives. Running this before that snapshot lands would see
+    // EVERY item as missing its current-month override and overwrite the
+    // whole stored document (a full replace, not a per-field merge) with
+    // freshly re-simulated values — silently erasing real stored corrections,
+    // including one made moments earlier from a pencil-edit whose own write
+    // hadn't round-tripped back yet. This is exactly what happened in
+    // production on 10-Sep-26: Opening Balance corrections were wiped out by
+    // this race on a later page load (e.g. opening the app on a different
+    // device before this doc had finished loading). Do not let this effect
+    // run before both docs have confirmed-loaded.
+    if (!rmOpeningBalancesLoaded || !partOpeningBalancesLoaded) return;
+
     const targetMonthKey = `${sD.getFullYear()}-${String(sD.getMonth() + 1).padStart(2, '0')}`;
 
     const missingRM = rawMaterials.filter(rm => localRMOpeningBalances[`${targetMonthKey}_${rm.id}`] === undefined);
@@ -659,7 +674,7 @@ const MainApp: React.FC = () => {
         return next;
       });
     }
-  }, [sD, rawMaterials, parts, localRMOpeningBalances, localPartOpeningBalances, resolvedRMOpeningBalances, resolvedPartOpeningBalances, setLocalRMOpeningBalances, setLocalPartOpeningBalances]);
+  }, [sD, rawMaterials, parts, localRMOpeningBalances, localPartOpeningBalances, resolvedRMOpeningBalances, resolvedPartOpeningBalances, setLocalRMOpeningBalances, setLocalPartOpeningBalances, rmOpeningBalancesLoaded, partOpeningBalancesLoaded]);
 
   // Synchronize and auto-repair parts mapping for all existing and new master template customers
   const customerNamesKey = useMemo(() => customers.map(c => c.name).join('|'), [customers]);
