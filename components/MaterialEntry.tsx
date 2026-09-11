@@ -51,6 +51,13 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ lab
   </div>
 );
 
+// Shown under Supplier/Invoice No. when "Camera Upload only" mode has
+// locked them — Store/PPC can see what the photo read but can't change it;
+// only Admin can, in the RM Approvals screen.
+const LockedFieldNote: React.FC = () => (
+  <p className="text-[9px] font-bold text-indigo-500 mt-1 px-1">🔒 Auto-filled from photo — locked. If this is wrong, Admin will correct it in RM Approvals.</p>
+);
+
 // Same visual pattern as RMCrossBillCheck.tsx's "Auto-fill from a photo
 // (AI)" block, reused here for both Finished Pieces and Longer Pipe. A
 // shared component (not copy-pasted twice) since the two Camera Upload
@@ -153,6 +160,16 @@ interface MaterialEntryProps {
   // suggestion and the Admin-only editor below; harmless if omitted.
   dimensionTolerances?: DimensionTolerance[];
   setDimensionTolerances?: (update: DimensionTolerance[] | ((prev: DimensionTolerance[]) => DimensionTolerance[])) => void;
+  // Universal RM Receiving entry-mode switch — Admin sets this once, from
+  // the top of the RM Approvals screen, and it applies here AND to RM
+  // Cross-Bill Check's Manufacturer Invoice wizard at the same time (not a
+  // per-screen control anymore). Both default true so existing behavior is
+  // preserved on deploy. When cameraEnabled is true and manualEnabled is
+  // false ("Camera Upload only"), Supplier and Invoice No. lock to whatever
+  // the photo read — Store/PPC can't hand-edit them; only Admin can correct
+  // them afterwards, in the RM Approvals screen, before approving.
+  cameraEnabled?: boolean;
+  manualEnabled?: boolean;
 }
 
 const MaterialEntry: React.FC<MaterialEntryProps> = ({
@@ -167,7 +184,15 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   isAdmin = false,
   dimensionTolerances = [],
   setDimensionTolerances,
+  cameraEnabled = true,
+  manualEnabled = true,
 }) => {
+  // "Camera Upload only" — Manual Entry is switched off, so Store/PPC have
+  // no way to type Supplier/Invoice No. themselves; those two fields lock to
+  // whatever the photo read (or stay blank/wrong until Admin fixes them in
+  // the RM Approvals screen). Every other field here stays freely editable
+  // either way — this lock is deliberately narrow, per Vipul's ask.
+  const cameraOnlyMode = cameraEnabled && !manualEnabled;
   // Same "current calendar month only, no back-dating or future-dating"
   // rule already enforced elsewhere in Inventory.tsx — copied verbatim.
   const todayDateStr = useMemo(() => getLocalDateStr(), []);
@@ -498,17 +523,25 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'pieces' && step === 1 && (
           <div className="mt-4 space-y-3">
-            <CameraUploadBlock
-              inputIdPrefix="me-pieces"
-              extracting={extractingPhoto}
-              error={photoError}
-              note={null}
-              onFile={(f) => handleMaterialPhotoUpload(f, 'pieces')}
-            />
+            {cameraEnabled && (
+              <CameraUploadBlock
+                inputIdPrefix="me-pieces"
+                extracting={extractingPhoto}
+                error={photoError}
+                note={null}
+                onFile={(f) => handleMaterialPhotoUpload(f, 'pieces')}
+              />
+            )}
             <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several different finished parts, enter Total Weight and Total Bill Value once here. Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
-              <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-              <FormField label="Invoice No. *"><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Supplier *">
+                <input value={supplier} disabled={cameraOnlyMode} onChange={(e) => setSupplier(e.target.value)} className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-slate-200'}`} />
+                {cameraOnlyMode && <LockedFieldNote />}
+              </FormField>
+              <FormField label="Invoice No. *">
+                <input value={invoiceNo} disabled={cameraOnlyMode} onChange={(e) => setInvoiceNo(e.target.value)} className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-slate-200'}`} />
+                {cameraOnlyMode && <LockedFieldNote />}
+              </FormField>
             </div>
             <label className="flex items-start gap-2 text-xs font-bold text-slate-600 -mt-1 px-1">
               <input type="checkbox" checked={bookedInUnit1} onChange={(e) => setBookedInUnit1(e.target.checked)} className="mt-0.5" />
@@ -571,8 +604,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
             <div className="flex gap-2 pt-2">
               <button onClick={() => setStep(1)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-              <button onClick={saveFinishedPieces} disabled={!finishedLinesValid} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
-                Save
+              <button onClick={saveFinishedPieces} disabled={!finishedLinesValid} className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+                Post for Approval
               </button>
             </div>
           </div>
@@ -580,13 +613,15 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'longer' && step === 1 && (
           <div className="mt-4 space-y-3">
-            <CameraUploadBlock
-              inputIdPrefix="me-longer"
-              extracting={extractingPhoto}
-              error={photoError}
-              note={rmMatchNote}
-              onFile={(f) => handleMaterialPhotoUpload(f, 'longer')}
-            />
+            {cameraEnabled && (
+              <CameraUploadBlock
+                inputIdPrefix="me-longer"
+                extracting={extractingPhoto}
+                error={photoError}
+                note={rmMatchNote}
+                onFile={(f) => handleMaterialPhotoUpload(f, 'longer')}
+              />
+            )}
             {isAdmin && (
               <div className="border border-slate-200 rounded-xl">
                 <button type="button" onClick={() => setShowToleranceEditor(v => !v)} className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
@@ -617,8 +652,14 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
             )}
             <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here. Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
-              <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
-              <FormField label="Invoice No. *"><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
+              <FormField label="Supplier *">
+                <input value={supplier} disabled={cameraOnlyMode} onChange={(e) => setSupplier(e.target.value)} className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-slate-200'}`} />
+                {cameraOnlyMode && <LockedFieldNote />}
+              </FormField>
+              <FormField label="Invoice No. *">
+                <input value={invoiceNo} disabled={cameraOnlyMode} onChange={(e) => setInvoiceNo(e.target.value)} className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-slate-200'}`} />
+                {cameraOnlyMode && <LockedFieldNote />}
+              </FormField>
             </div>
             <label className="flex items-start gap-2 text-xs font-bold text-slate-600 -mt-1 px-1">
               <input type="checkbox" checked={bookedInUnit1} onChange={(e) => setBookedInUnit1(e.target.checked)} className="mt-0.5" />
@@ -840,8 +881,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
             <div className="flex gap-2 pt-2">
               <button onClick={() => setStep(1)} className="px-4 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">‹ Back</button>
-              <button onClick={saveLongerPipe} disabled={!allLinesValid} className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
-                Save
+              <button onClick={saveLongerPipe} disabled={!allLinesValid} className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+                Post for Approval
               </button>
             </div>
           </div>

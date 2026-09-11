@@ -100,6 +100,16 @@ interface RMCrossBillCheckProps {
   // design entirely — per Vipul's sign-off, an invoice can no longer be
   // saved without also allotting its bars to inventory in the same sitting.
   onSaveManufacturerInvoiceWithAllotment: (submission: MfgInvoiceSubmission) => void;
+  // Universal RM Receiving entry-mode switch — Admin sets this once, from
+  // the top of the RM Approvals screen, and it applies here AND to Material
+  // Entry's Finished Pieces / Longer Pipe at the same time. Both default
+  // true so existing behavior is preserved on deploy. When cameraEnabled is
+  // true and manualEnabled is false ("Camera Upload only"), Manufacturer
+  // Name and Invoice No. lock to whatever the photo read — Store/PPC can't
+  // hand-edit them; only Admin can correct them, in the RM Approvals screen,
+  // before approving.
+  cameraEnabled?: boolean;
+  manualEnabled?: boolean;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -183,6 +193,13 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ lab
   </div>
 );
 
+// Shown under Manufacturer Name/Invoice No. when "Camera Upload only" mode
+// has locked them — Store/PPC can see what the photo read but can't change
+// it; only Admin can, in the RM Approvals screen.
+const LockedFieldNote: React.FC = () => (
+  <p className="text-[9px] font-bold text-indigo-500 mt-1 px-1">🔒 Auto-filled from photo — locked. If this is wrong, Admin will correct it in RM Approvals.</p>
+);
+
 // Loose name matching for the Tally auto-match below — same tiered idea as
 // the Tally Connector's own findMatchingCustomer (exact, then substring
 // either direction), since "Tube Investments of India Ltd" typed by Store
@@ -222,7 +239,14 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   tallyPurchaseVouchers,
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
   onCreateAlert, onSaveManufacturerInvoiceWithAllotment,
+  cameraEnabled = true, manualEnabled = true,
 }) => {
+  // "Camera Upload only" — Manual Entry is switched off, so Store/PPC have
+  // no way to type Manufacturer Name/Invoice No. themselves; those two
+  // fields lock to whatever the photo read (or stay blank/wrong until Admin
+  // fixes them in the RM Approvals screen). Every other field on this form
+  // stays freely editable either way — deliberately narrow, per Vipul's ask.
+  const cameraOnlyMode = cameraEnabled && !manualEnabled;
   const [showMfgForm, setShowMfgForm] = useState(false);
   const [showCrossForm, setShowCrossForm] = useState(false);
   // Hard-block guards: a repeat submit of the same invoice number (for the
@@ -657,10 +681,23 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     });
   }, [mfgLineItems, allotmentLines, parts, rawMaterials]);
 
-  const allLinesAllotmentValid = allotmentComputations.length > 0 && allotmentComputations.every(ac => !ac.unresolved && ac.error === null);
+  // Relaxed from the old "every line must resolve to a real RM" hard block:
+  // an unresolved line (no Linked Raw Material yet) no longer blocks Save
+  // outright — it's staged as a red "Not Matched" entry for Admin to resolve
+  // in the RM Approval Queue instead, per Vipul's sign-off ("if app can't
+  // auto match... the store can still have a button to send the data to
+  // admin for approval. but this time the color will change from orange to
+  // red"). Post for Approval follows Vipul's color coding for Store/PPC:
+  // orange when every line resolved and ready, red when at least one line is
+  // Not Matched — green is reserved for Admin's own Approve & Post action in
+  // the RM Approval Queue. A RESOLVED line still can't have a validation
+  // error (negative allotment, over-allotment, etc.) — that's a data-entry
+  // mistake, not a matching problem, so it still blocks Save.
+  const hasUnresolvedAllotmentLine = allotmentComputations.some(ac => ac.unresolved);
+  const canPostForApproval = allotmentComputations.length > 0 && allotmentComputations.every(ac => ac.unresolved || ac.error === null);
 
   const saveMfgInvoiceWithAllotment = () => {
-    if (!allLinesAllotmentValid) return;
+    if (!canPostForApproval) return;
     const totalWeightKg = mfgForm.totalWeightKg || 0;
     const actualWeightKg = mfgForm.actualWeightKg || 0;
     const bothWeightsEntered = totalWeightKg > 0 && actualWeightKg > 0;
@@ -684,11 +721,14 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         ratePerPc: ac.item.ratePerPc,
         itemValue: ac.item.itemValue,
         mfgLengthInput: ac.item.mfgLengthInput,
-        rmId: ac.line!.rmId,
-        barLengthMm: ac.typed!.barLengthMm,
-        subMode: ac.line!.subMode,
-        allotments: ac.typed!.allotments,
-        autoAssign: ac.line!.autoAssign,
+        // Unresolved lines carry no real RM/allotment yet — rmId '' is what
+        // marks this a "Not Matched" line for the RM Approval Queue, where
+        // Admin picks the right RM Master size and finishes the allotment.
+        rmId: ac.unresolved ? '' : ac.line!.rmId,
+        barLengthMm: ac.unresolved ? 0 : ac.typed!.barLengthMm,
+        subMode: ac.unresolved ? 'whole_bars' : ac.line!.subMode,
+        allotments: ac.unresolved ? [] : ac.typed!.allotments,
+        autoAssign: ac.unresolved ? false : ac.line!.autoAssign,
       })),
     });
     closeMfgForm();
@@ -1288,6 +1328,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             </p>
             {wizardStep === 1 && (
             <>
+            {cameraEnabled && (
             <div className="border-2 border-dashed border-indigo-200 bg-indigo-50/40 rounded-2xl p-4 text-center mb-4">
               <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">Auto-fill from a photo (AI)</p>
               <div className="flex items-center justify-center gap-3">
@@ -1324,10 +1365,12 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               <p className="text-[10px] text-slate-400 mt-2">Reads the invoice and pre-fills the fields below — always review before saving. Only the first line item is read.</p>
               {invoicePhotoError && <p className="text-[11px] font-bold text-rose-600 mt-2">{invoicePhotoError}</p>}
             </div>
+            )}
             <form onSubmit={goToStep2} className="space-y-3">
               <FormField label="Manufacturer Name">
                 <select
                   required={!addingNewManufacturer}
+                  disabled={cameraOnlyMode}
                   value={addingNewManufacturer ? NEW_OPTION : mfgForm.manufacturerName}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -1343,7 +1386,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                       setMfgForm({ ...mfgForm, manufacturerName: v });
                     }
                   }}
-                  className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+                  className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-slate-200'}`}
                 >
                   <option value="">Select manufacturer</option>
                   {knownManufacturerNames.map(name => <option key={name} value={name}>{name}</option>)}
@@ -1351,15 +1394,18 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 </select>
                 {addingNewManufacturer && (
                   <div className="mt-2">
-                    <input required autoFocus placeholder="e.g. Tube Investments of India Ltd" value={mfgForm.manufacturerName}
+                    <input required autoFocus disabled={cameraOnlyMode} placeholder="e.g. Tube Investments of India Ltd" value={mfgForm.manufacturerName}
                       onChange={(e) => setMfgForm({ ...mfgForm, manufacturerName: e.target.value })}
-                      className="w-full border-2 border-emerald-200 bg-emerald-50/40 rounded-xl px-3 py-2 text-sm" />
-                    <button type="button" onClick={() => { setAddingNewManufacturer(false); setMfgForm({ ...mfgForm, manufacturerName: '' }); }}
-                      className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 mt-1 px-1">
-                      ‹ Back to list
-                    </button>
+                      className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-emerald-200 bg-emerald-50/40'}`} />
+                    {!cameraOnlyMode && (
+                      <button type="button" onClick={() => { setAddingNewManufacturer(false); setMfgForm({ ...mfgForm, manufacturerName: '' }); }}
+                        className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 mt-1 px-1">
+                        ‹ Back to list
+                      </button>
+                    )}
                   </div>
                 )}
+                {cameraOnlyMode && <LockedFieldNote />}
               </FormField>
               <FormField label="Cross-Invoicing Customer">
                 <select required value={mfgForm.customerName} onChange={(e) => setMfgForm({ ...mfgForm, customerName: e.target.value })}
@@ -1370,9 +1416,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               </FormField>
               <div className="grid grid-cols-2 gap-3">
                 <FormField label="Invoice No">
-                  <input required placeholder="Invoice No" value={mfgForm.invoiceNo}
+                  <input required disabled={cameraOnlyMode} placeholder="Invoice No" value={mfgForm.invoiceNo}
                     onChange={(e) => { setMfgForm({ ...mfgForm, invoiceNo: e.target.value }); setMfgDuplicateError(null); }}
-                    className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                    className={`w-full border-2 rounded-xl px-3 py-2 text-sm ${cameraOnlyMode ? 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed' : 'border-slate-200'}`} />
+                  {cameraOnlyMode && <LockedFieldNote />}
                 </FormField>
                 <FormField label="Date">
                   <input required type="date" min={minEntryDateStr} max={todayDateStr} value={mfgForm.date}
@@ -1537,10 +1584,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                   const item = ac.item;
                   if (ac.unresolved) {
                     return (
-                      <div key={item.key} className="border-2 border-amber-300 bg-amber-50 rounded-2xl p-4">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-amber-500 mb-1">Material {idx + 1}: {item.materialName || item.materialCode}</p>
-                        <p className="text-sm font-black text-amber-800">⚠️ "{item.materialName || item.materialCode}" isn't linked to a Raw Material yet.</p>
-                        <p className="text-xs text-amber-700 mt-1">Ask Admin to link it in Material Lengths above before this invoice can be posted.</p>
+                      <div key={item.key} className="border-2 border-rose-300 bg-rose-50 rounded-2xl p-4">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-rose-500 mb-1">Material {idx + 1}: {item.materialName || item.materialCode} — Not Matched</p>
+                        <p className="text-sm font-black text-rose-800">⚠️ "{item.materialName || item.materialCode}" isn't linked to a Raw Material yet.</p>
+                        <p className="text-xs text-rose-700 mt-1">You can still send this for approval — it'll show Admin as "Not Matched" (red) so they can pick the right RM Master size and finish the allotment themselves. Or ask Admin to link it in Material Lengths above first, then re-enter it here matched.</p>
                       </div>
                     );
                   }
@@ -1680,7 +1727,14 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
 
                 <div className="flex gap-3 pt-2">
                   <button type="button" onClick={() => setWizardStep(1)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">‹ Back</button>
-                  <button type="button" onClick={saveMfgInvoiceWithAllotment} disabled={!allLinesAllotmentValid} className="flex-[2] py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm disabled:opacity-50 disabled:bg-slate-200 disabled:text-slate-400">Save</button>
+                  <button
+                    type="button"
+                    onClick={saveMfgInvoiceWithAllotment}
+                    disabled={!canPostForApproval}
+                    className={`flex-[2] py-3 text-white rounded-xl font-bold text-sm disabled:opacity-50 disabled:bg-slate-200 disabled:text-slate-400 ${hasUnresolvedAllotmentLine ? 'bg-rose-600' : 'bg-amber-500'}`}
+                  >
+                    {hasUnresolvedAllotmentLine ? 'Post for Approval — Not Matched' : 'Post for Approval'}
+                  </button>
                 </div>
               </div>
             )}

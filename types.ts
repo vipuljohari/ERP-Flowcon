@@ -239,6 +239,20 @@ export interface RMMaterialLength {
 // aren't uniform across sizes (see services/dimensionTolerance.ts), so
 // each nominal size's accepted alternates are spelled out by Admin rather
 // than guessed from a general rule.
+// Admin-only global settings.rmEntryMode doc — the Camera Upload / Manual
+// Entry switch Admin controls from the top of the RM Approvals screen. One
+// universal setting, not per-screen: it governs RM Cross-Bill Check's
+// Manufacturer Invoice wizard AND Material Entry's Finished Pieces / Longer
+// Pipe all at once — whatever Admin sets applies to all 3. When cameraEnabled
+// is true and manualEnabled is false ("camera upload only"), Invoice No. and
+// Supplier/Manufacturer Name lock to whatever the photo read — Store/PPC
+// can't hand-edit them; only Admin can correct them, in the RM Approvals
+// screen, before approving.
+export interface RMEntryModeSettings {
+  cameraEnabled: boolean;
+  manualEnabled: boolean;
+}
+
 export interface DimensionTolerance {
   id: string;
   field: 'OD' | 'Thickness';
@@ -386,4 +400,116 @@ export interface MonthlyArchive {
   monthKey: string; // e.g., "2024-11"
   displayName: string; // e.g., "Nov 2024"
   parts: Part[];
+}
+
+// --- RM Receiving Approval Gate ---
+// Store/PPC can no longer post an RM receiving entry straight to inventory
+// from any of the 3 places that used to write directly (RM Cross-Bill
+// Check's Manufacturer Invoice wizard, and Material Entry's Longer Pipe /
+// Finished Pieces modes) — every one of them now stages a PendingRMEntry
+// instead. The real posting logic (App.tsx's handleMaterialEntryFinishedPieces
+// / handleMaterialEntryLongerPipe / handleManufacturerInvoiceWithAllotment)
+// is UNCHANGED and still does the actual writes to parts/rawMaterials/
+// InwardLog/RMInwardLog/RMManufacturerInvoice — it just now only runs once,
+// when Admin approves a pending entry, instead of the moment Store/PPC
+// clicks Save. This is deliberate reuse, not a rewrite: the same
+// already-validated math and alerts fire either way, just later.
+export type PendingRMEntryType = 'finished_pieces' | 'longer_pipe' | 'manufacturer_invoice';
+
+// 'pending' = normal, everything resolved to a real RM/Item, orange "Post
+// for Approval" in the UI. 'not_matched' = at least one line/material
+// couldn't be resolved automatically (camera couldn't match a photographed
+// size, or a material code has no linkedRMId yet) — red in the UI, and
+// Admin must specify which RM Master size (Longer Pipe/Manufacturer
+// Invoice) or Item Master size (Finished Pieces / CTL cut pieces) it's
+// actually for before it can be approved. 'approved'/'rejected' are
+// terminal — an approved entry has already been posted for real by the
+// handler above; a rejected one never will be.
+export type PendingRMEntryStatus = 'pending' | 'not_matched' | 'approved' | 'rejected';
+
+// Kept intentionally loose/duplicated rather than importing component-level
+// line/submission shapes into this file (RMCrossBillCheck.tsx already
+// imports FROM types.ts — importing back from it here would be a real
+// circular import). These fields are structurally compatible with
+// services/materialEntry.ts's MaterialEntryHeader/FinishedPieceLine/
+// LongerPipeLine and RMCrossBillCheck.tsx's MfgInvoiceSubmission — any
+// object built to match those types also satisfies these, so App.tsx's
+// staging handlers can pass them straight through without a cast.
+export interface PendingMaterialEntryHeader {
+  supplierName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg?: number;
+  totalBillValue?: number;
+  dharamkantaWeightKg?: number;
+  invoiceBookedInUnit1: boolean;
+}
+export interface PendingFinishedPieceLine {
+  key: string;
+  partId: string;
+  quantity: number;
+}
+export interface PendingAllottedItem {
+  partId: string;
+  barsAllotted?: number;
+  piecesAllotted?: number;
+}
+export interface PendingLongerPipeLine {
+  key: string;
+  rmId: string; // '' when Not Matched — Admin must fill this in before approving
+  barLengthMm: number;
+  barsReceived: number;
+  subMode: 'whole_bars' | 'split_pieces';
+  allotments: PendingAllottedItem[];
+  pulledFromInvoiceLineId?: string;
+  autoAssign?: boolean;
+}
+export interface PendingMfgInvoiceLine {
+  materialName: string;
+  materialCode: string;
+  quantityPcs: number;
+  ratePerPc: number;
+  itemValue: number;
+  mfgLengthInput: string;
+  rmId: string; // '' when Not Matched
+  barLengthMm: number;
+  subMode: 'whole_bars' | 'split_pieces';
+  allotments: PendingAllottedItem[];
+  autoAssign: boolean;
+}
+export interface PendingMfgInvoiceSubmission {
+  manufacturerName: string;
+  customerName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg: number;
+  actualWeightKg: number;
+  weightFlagged: boolean;
+  weightVarianceKg: number;
+  aiExtracted: boolean;
+  lines: PendingMfgInvoiceLine[];
+}
+
+export interface PendingRMEntry {
+  id: string;
+  entryType: PendingRMEntryType;
+  status: PendingRMEntryStatus;
+  submittedAt: string;
+  submittedBy: string; // display name
+  submittedByRole: UserRole;
+  // Exactly one of these is set, matching entryType.
+  finishedPiecesPayload?: { header: PendingMaterialEntryHeader; lines: PendingFinishedPieceLine[] };
+  longerPipePayload?: { header: PendingMaterialEntryHeader; lines: PendingLongerPipeLine[] };
+  manufacturerInvoicePayload?: PendingMfgInvoiceSubmission;
+  // Free-text summary for the queue list — part/RM names, quantities — so
+  // Admin doesn't have to expand every card to see what's in it.
+  summary: string;
+  notMatchedReason?: string; // set when status === 'not_matched'
+  // Photo of the source invoice, once Dropbox archival exists — the path it
+  // was saved to (Apps/Flowcon-Schedule-Export/Unit 2/Inwards/<MMM YY>/<Supplier>/...).
+  // Not populated by this phase of the feature yet.
+  photoDropboxPath?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectionReason?: string;
 }

@@ -53,6 +53,12 @@ interface InventoryProps {
   // MaterialEntry.tsx; Inventory.tsx itself doesn't use it.
   dimensionTolerances?: DimensionTolerance[];
   setDimensionTolerances?: (update: DimensionTolerance[] | ((prev: DimensionTolerance[]) => DimensionTolerance[])) => void;
+  // Universal RM Receiving entry-mode switch — see App.tsx's
+  // rmEntryModeSettings (Admin sets it from the RM Approvals screen, not
+  // here). Passed straight through to MaterialEntry.tsx; Inventory.tsx
+  // itself doesn't use it.
+  cameraEnabled?: boolean;
+  manualEnabled?: boolean;
 }
 
 // An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
@@ -94,6 +100,8 @@ const Inventory: React.FC<InventoryProps> = ({
   onMaterialEntryLongerPipe,
   dimensionTolerances = [],
   setDimensionTolerances,
+  cameraEnabled = true,
+  manualEnabled = true,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -1949,6 +1957,8 @@ const Inventory: React.FC<InventoryProps> = ({
           isAdmin={isAdmin}
           dimensionTolerances={dimensionTolerances}
           setDimensionTolerances={setDimensionTolerances}
+          cameraEnabled={cameraEnabled}
+          manualEnabled={manualEnabled}
           initialRMId={materialEntryRMId}
           onInitialRMConsumed={() => setMaterialEntryRMId(null)}
           onSubmitFinishedPieces={(header, lines) => {

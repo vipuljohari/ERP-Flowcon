@@ -20,6 +20,7 @@ import ImportLegacyData from './components/ImportLegacyData';
 import ImportIssues from './components/ImportIssues';
 import RMCrossBillCheck, { MfgInvoiceSubmission } from './components/RMCrossBillCheck';
 import Notifications from './components/Notifications';
+import RMApprovalQueue from './components/RMApprovalQueue';
 import TrialRMReceiving from './components/TrialRMReceiving';
 import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -28,7 +29,7 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, canAccessView } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, RMEntryModeSettings, canAccessView } from './types';
 import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
@@ -152,6 +153,7 @@ const MainApp: React.FC = () => {
   const [rawMaterials, setRawMaterials] = useFirestoreArray<RawMaterial>('rawMaterials');
   const [rmInwardLogs, setRmInwardLogs] = useFirestoreArray<RMInwardLog>('rmInwardLogs');
   const [rmManufacturerInvoices, setRmManufacturerInvoices] = useFirestoreArray<RMManufacturerInvoice>('rmManufacturerInvoices');
+  const [pendingRMEntries, setPendingRMEntries] = useFirestoreArray<PendingRMEntry>('pendingRMEntries');
   const [rmCrossInvoices, setRmCrossInvoices] = useFirestoreArray<RMCustomerCrossInvoice>('rmCustomerCrossInvoices');
   const [rmMaterialLengths, setRmMaterialLengths] = useFirestoreArray<RMMaterialLength>('rmMaterialLengths', [], (m) => m.materialCode);
   // Admin-editable tolerance table for Material Entry's Camera Upload — see
@@ -159,6 +161,22 @@ const MainApp: React.FC = () => {
   // table rather than a formula. Seeded once with Vipul's 11-Sep-26 rules;
   // Admin can add more from Material Entry's "Dimension Tolerances" editor.
   const [dimensionTolerances, setDimensionTolerances] = useFirestoreArray<DimensionTolerance>('dimensionTolerances', SEED_DIMENSION_TOLERANCES);
+  // Admin on/off switch for Material Entry's Camera Upload (both Finished
+  // Pieces and Longer Pipe) — defaults to true so this ships already
+  // turned on, matching what Vipul asked Camera Upload to do; Admin can
+  // switch Store/PPC back to manual-only entry per Material Entry's own
+  // toggle (see components/MaterialEntry.tsx).
+  // Universal RM Receiving entry-mode switch — one setting, not per-screen.
+  // Admin sets this from the top of the RM Approvals screen; it governs RM
+  // Cross-Bill Check's Manufacturer Invoice wizard AND Material Entry's
+  // Finished Pieces / Longer Pipe all at once. If both ever end up off
+  // (shouldn't happen from the UI, but defends against a bad manual
+  // Firestore edit), fail safe to Manual Entry rather than locking
+  // Store/PPC out of entry entirely.
+  const [rmEntryModeSettings, setRmEntryModeSettings] = useFirestoreDoc<RMEntryModeSettings>('settings', 'rmEntryMode', { cameraEnabled: true, manualEnabled: true });
+  const rmEntryBothOff = rmEntryModeSettings.cameraEnabled === false && rmEntryModeSettings.manualEnabled === false;
+  const rmEntryCameraEnabled = rmEntryBothOff ? false : rmEntryModeSettings.cameraEnabled !== false;
+  const rmEntryManualEnabled = rmEntryBothOff ? true : rmEntryModeSettings.manualEnabled !== false;
   // Written only by the Tally Connector script on the 24x7 server (Admin
   // SDK, hourly) — never by the app, so the setter is never used here.
   const [tallyPurchaseVouchers] = useFirestoreArray<RMPurchaseVoucher>('rmPurchaseVouchers');
@@ -1406,7 +1424,7 @@ const MainApp: React.FC = () => {
           </div>
         ))}
       </div>
-      <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} pendingAlertsCount={adminAlerts.filter(a => !a.verified && !a.flagged).length} />
+      <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} pendingAlertsCount={adminAlerts.filter(a => !a.verified && !a.flagged).length} pendingRMApprovalsCount={pendingRMEntries.filter(e => e.status === 'pending' || e.status === 'not_matched').length} />
       <main className="flex-1 md:ml-64 p-6 pt-20 md:p-10 relative text-left">
         <div className="max-w-7xl mx-auto">
           <div className="flex justify-between items-start mb-8 text-left">
@@ -1478,10 +1496,12 @@ const MainApp: React.FC = () => {
               manufacturerInvoices={rmManufacturerInvoices}
               setManufacturerInvoices={setRmManufacturerInvoices}
               materialLengths={rmMaterialLengths}
-              onMaterialEntryFinishedPieces={handleMaterialEntryFinishedPieces}
-              onMaterialEntryLongerPipe={handleMaterialEntryLongerPipe}
+              onMaterialEntryFinishedPieces={stageMaterialEntryFinishedPieces}
+              onMaterialEntryLongerPipe={stageMaterialEntryLongerPipe}
               dimensionTolerances={dimensionTolerances}
               setDimensionTolerances={setDimensionTolerances}
+              cameraEnabled={rmEntryCameraEnabled}
+              manualEnabled={rmEntryManualEnabled}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
@@ -1750,6 +1770,21 @@ const MainApp: React.FC = () => {
             />
           )}
           {isAdmin && currentView === 'notifications' && <Notifications alerts={adminAlerts} onVerify={verifyAdminAlert} onFlag={flagAdminAlert} />}
+          {isAdmin && currentView === 'rm_approvals' && (
+            <RMApprovalQueue
+              entries={pendingRMEntries}
+              parts={parts}
+              rawMaterials={rawMaterials}
+              isAdmin={isAdmin}
+              onApprove={approvePendingRMEntry}
+              onUpdate={updatePendingRMEntry}
+              onReject={rejectPendingRMEntry}
+              cameraEnabled={rmEntryModeSettings.cameraEnabled !== false}
+              manualEnabled={rmEntryModeSettings.manualEnabled !== false}
+              onSetCameraEnabled={(v: boolean) => setRmEntryModeSettings(prev => ({ ...prev, cameraEnabled: v }))}
+              onSetManualEnabled={(v: boolean) => setRmEntryModeSettings(prev => ({ ...prev, manualEnabled: v }))}
+            />
+          )}
           {isAdmin && currentView === 'user_master' && <UserMaster />}
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}
@@ -1779,7 +1814,9 @@ const MainApp: React.FC = () => {
               setMaterialLengths={setRmMaterialLengths}
               isAdmin={isAdmin}
               onCreateAlert={pushAdminAlert}
-              onSaveManufacturerInvoiceWithAllotment={handleManufacturerInvoiceWithAllotment}
+              onSaveManufacturerInvoiceWithAllotment={stageManufacturerInvoiceWithAllotment}
+              cameraEnabled={rmEntryCameraEnabled}
+              manualEnabled={rmEntryManualEnabled}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust, wasFirstEntry) => setParts(prev => prev.map(p => {
@@ -2211,6 +2248,73 @@ const MainApp: React.FC = () => {
         details: `${totalScrapMm.toFixed(0)} mm unattributed leftover across Split-by-Pieces line(s) in this Manufacturer Invoice — not credited to any single item.`,
       });
     }
+  }
+
+  // --- RM Receiving Approval Gate ---
+  // Store/PPC no longer post an RM receiving entry straight to inventory
+  // from any of the 3 places above — they stage a PendingRMEntry instead.
+  // None of the functions below touch parts/rawMaterials/InwardLog/
+  // RMInwardLog/RMManufacturerInvoice — they only push a PendingRMEntry. The
+  // real posting still happens in handleMaterialEntryFinishedPieces/
+  // handleMaterialEntryLongerPipe/handleManufacturerInvoiceWithAllotment
+  // above, called only from approvePendingRMEntry below once Admin approves.
+  const pushPendingRMEntry = (entry: Omit<PendingRMEntry, 'id' | 'submittedAt' | 'submittedBy' | 'submittedByRole'>) => {
+    const newEntry: PendingRMEntry = {
+      id: Math.random().toString(36).substr(2, 9),
+      submittedAt: getLocalISOString(),
+      submittedBy: appUser?.displayName || userName,
+      submittedByRole: role,
+      ...entry,
+    };
+    setPendingRMEntries(prev => [newEntry, ...prev]);
+  };
+
+  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[]) {
+    if (lines.length === 0) return;
+    const partNames = lines.map(l => { const p = parts.find(x => x.id === l.partId); return `${p?.name || l.partId} (${l.quantity} Pcs)`; });
+    pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}` });
+  }
+
+  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[]) {
+    if (lines.length === 0) return;
+    const lineSummaries = lines.map(l => { const rm = rawMaterials.find(r => r.id === l.rmId); return `${rm ? rm.size : 'RM'} (${l.barsReceived} bars)`; });
+    pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}` });
+  }
+
+  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission) {
+    if (submission.lines.length === 0) return;
+    const unresolvedLines = submission.lines.filter(l => !l.rmId);
+    const isNotMatched = unresolvedLines.length > 0;
+    const materialsSummary = submission.lines.map(l => `${l.materialCode || l.materialName || 'material'} (${l.quantityPcs} Pcs)`).join(', ');
+    pushPendingRMEntry({
+      entryType: 'manufacturer_invoice', status: isNotMatched ? 'not_matched' : 'pending',
+      manufacturerInvoicePayload: submission,
+      summary: `Manufacturer Invoice — ${submission.manufacturerName} — ${submission.invoiceNo} — ${materialsSummary}`,
+      notMatchedReason: isNotMatched ? `${unresolvedLines.length} material(s) have no linked Raw Material yet: ${unresolvedLines.map(l => l.materialCode || l.materialName).join(', ')}. Admin must specify which RM Master size to book against before this can be approved.` : undefined,
+    });
+  }
+
+  function approvePendingRMEntry(entry: PendingRMEntry) {
+    if (entry.entryType === 'finished_pieces' && entry.finishedPiecesPayload) {
+      handleMaterialEntryFinishedPieces(entry.finishedPiecesPayload.header, entry.finishedPiecesPayload.lines as FinishedPieceLine[]);
+    } else if (entry.entryType === 'longer_pipe' && entry.longerPipePayload) {
+      const lines = entry.longerPipePayload.lines;
+      if (lines.some(l => !l.rmId)) return;
+      handleMaterialEntryLongerPipe(entry.longerPipePayload.header, lines as LongerPipeLine[]);
+    } else if (entry.entryType === 'manufacturer_invoice' && entry.manufacturerInvoicePayload) {
+      const lines = entry.manufacturerInvoicePayload.lines;
+      if (lines.some(l => !l.rmId)) return;
+      handleManufacturerInvoiceWithAllotment(entry.manufacturerInvoicePayload as MfgInvoiceSubmission);
+    } else { return; }
+    setPendingRMEntries(prev => prev.map(e => e.id === entry.id ? { ...e, status: 'approved', reviewedAt: getLocalISOString(), reviewedBy: appUser?.displayName || userName } : e));
+  }
+
+  function updatePendingRMEntry(id: string, updater: (e: PendingRMEntry) => PendingRMEntry) {
+    setPendingRMEntries(prev => prev.map(e => e.id === id ? updater(e) : e));
+  }
+
+  function rejectPendingRMEntry(id: string, reason: string) {
+    setPendingRMEntries(prev => prev.map(e => e.id === id ? { ...e, status: 'rejected', reviewedAt: getLocalISOString(), reviewedBy: appUser?.displayName || userName, rejectionReason: reason } : e));
   }
 
   // Bulk Item Master upload (Admin only, see components/BulkItemImport.tsx).

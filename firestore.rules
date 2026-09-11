@@ -97,6 +97,24 @@ service cloud.firestore {
       allow write: if isAdmin() || myRole() == 'store';
     }
 
+    // --- RM Receiving Approval Gate ---
+    // Store/PPC/Accounts no longer write directly to parts/rawMaterials/
+    // inwardLogs/rmInwardLogs/rmManufacturerInvoices for an RM receiving
+    // entry (RM Cross-Bill's Manufacturer Invoice, or Material Entry's
+    // Finished Pieces / Longer Pipe) — they stage a PendingRMEntry here
+    // instead, and only Admin's approval actually posts to those
+    // collections (as Admin, which isAdmin() already permits everywhere
+    // above). Any role that can reach the Inventory or RM Cross-Bill screen
+    // needs create access here so their "Post for Approval" button can
+    // actually write the staged entry; only Admin may edit, approve/mark-
+    // approved, reject, or delete one, since the RM Approvals screen is
+    // Admin-only in the app itself.
+    match /pendingRMEntries/{entryId} {
+      allow read: if isActive();
+      allow create: if isAdmin() || myRole() == 'store' || myRole() == 'accounts' || myRole() == 'ppc';
+      allow update, delete: if isAdmin();
+    }
+
     match /customers/{customerId} {
       allow read: if isActive();
       allow write: if isAdmin() || myRole() == 'accounts';

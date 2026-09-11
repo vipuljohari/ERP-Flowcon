@@ -14,6 +14,7 @@ interface SidebarProps {
   userName: string;
   onUserNameChange: (name: string) => void;
   pendingAlertsCount?: number;
+  pendingRMApprovalsCount?: number;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -27,7 +28,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onInstall,
   userName,
   onUserNameChange,
-  pendingAlertsCount = 0
+  pendingAlertsCount = 0,
+  pendingRMApprovalsCount = 0
 }) => {
   const isAdmin = role === 'admin';
   const company = useActiveCompany();
@@ -74,6 +76,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   // Admin-only management items, always pinned at the end.
   if (isAdmin) {
     navItems.push(
+      { id: 'rm_approvals', label: pendingRMApprovalsCount > 0 ? `RM Approvals (${pendingRMApprovalsCount})` : 'RM Approvals', icon: '🗂️' },
       { id: 'notifications', label: pendingAlertsCount > 0 ? `Notifications (${pendingAlertsCount})` : 'Notifications', icon: '🔔' },
       { id: 'user_master', label: 'User Master', icon: '👤' },
       { id: 'company_master', label: 'Company Master', icon: '🏭' },
