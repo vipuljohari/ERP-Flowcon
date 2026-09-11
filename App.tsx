@@ -1435,9 +1435,10 @@ const MainApp: React.FC = () => {
               customers={customersWithItems}
               forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})}
               selectedDate={sD} 
-              rawMaterials={modelFilteredRawMaterials} 
+              rawMaterials={modelFilteredRawMaterials}
               localRMOpeningBalances={resolvedRMOpeningBalances}
               rmInwardLogs={contextRmInwardLogs}
+              inwardLogs={contextInwardLogs}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inventory' && (

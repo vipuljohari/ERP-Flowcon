@@ -1,6 +1,6 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
-import { Part, Sale, InventoryStats, Customer, RawMaterial } from '../types';
+import { Part, Sale, InventoryStats, Customer, RawMaterial, InwardLog } from '../types';
 import ReportGenerator from './ReportGenerator';
 import { useBrandName } from '../contexts/CompanyContext';
 import { isSheetRM, rmKgPerPart, rmMatchesCustomer, partsSharingRM, partsPerRMUnit, computeRMStockAsOnDate } from '../services/rmYield';
@@ -29,9 +29,25 @@ interface DashboardProps {
   rawMaterials?: RawMaterial[];
   localRMOpeningBalances?: Record<string, string>;
   rmInwardLogs?: any[];
+  // Part-level inward (this-month, same filtering App.tsx already applies
+  // as contextInwardLogs) — only needed for the "shares an RM with other
+  // parts that aren't declared Siblings" fallback below. Optional so any
+  // other caller of Dashboard that doesn't pass it just keeps the old
+  // (less accurate) behavior for that one fallback case instead of
+  // breaking outright.
+  inwardLogs?: InwardLog[];
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMonthDisplay, activeCustomer, onCustomerChange, customers, selectedDate, rawMaterials, localRMOpeningBalances, rmInwardLogs }) => {
+// Same synthetic-delta marker as App.tsx's isAuditDeltaRemark — an
+// Opening Balance audit correction writes one of these alongside the RM/
+// Item settings write purely to leave an audit-trail entry, never a real
+// physical receipt. Must be excluded here for the same reason App.tsx and
+// Inventory.tsx's partComputations exclude it: otherwise an audit
+// correction would double as if goods had actually arrived.
+const isAuditDeltaRemark = (remarks?: string) =>
+  !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
+
+const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMonthDisplay, activeCustomer, onCustomerChange, customers, selectedDate, rawMaterials, localRMOpeningBalances, rmInwardLogs, inwardLogs }) => {
   const brandName = useBrandName();
   const [triggerReport, setTriggerReport] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
@@ -160,10 +176,33 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       // Bottom Rail (dedicated bars) plus LH/RH (a separate dedicated
       // allotment) — dividing evenly by siblings.length would misattribute
       // Bottom Rail's own dedicated stock as if it were pooled with LH/RH.
-      // Fall back to the part's own live `stock` field in that case, same
-      // as the Item-wise Inventory screen's "Refer RM Inventory" fallback.
       const isSiblingSplit = siblings.length > 1 && siblings.every(sp => sp.id === p.id || (p.siblingIds || []).includes(sp.id));
-      if (siblings.length > 1 && !isSiblingSplit) return;
+      if (siblings.length > 1 && !isSiblingSplit) {
+        // Ambiguous shared-RM case — mirrors Inventory.tsx's
+        // partComputations fallback for the exact same situation (its
+        // "openingBalValue" branch when a mapped RM exists but the group
+        // isn't a declared sibling split): this part's own slice of the
+        // RM's Opening Balance, carried forward by this part's OWN
+        // receipts/sales this month — not the pooled RM figure (which
+        // wouldn't mean anything split evenly here), and — this was the
+        // actual 11-Sep-26 bug — NOT the part's raw `stock` field either.
+        // `stock` is a running counter that has no way to learn about an
+        // Opening Balance correction made on the RM ledger, so it silently
+        // drifted away from what the Ledger (the source of truth) shows
+        // the moment anyone corrected it there. Keep this in sync with
+        // Inventory.tsx's partComputations if that formula ever changes.
+        const yieldFactor = partsPerRMUnit(p, rm);
+        const openingBalUnits = parseFloat(localRMOpeningBalances?.[rm.id] || '0');
+        const openingBalValue = Math.round(openingBalUnits * yieldFactor);
+        const ownReceiptsThisMonth = (inwardLogs || [])
+          .filter(l => l.partId === p.id && !isAuditDeltaRemark(l.remarks))
+          .reduce((sum, l) => sum + l.quantity, 0);
+        const ownSalesThisMonth = sales
+          .filter(s => s.partId === p.id)
+          .reduce((sum, s) => sum + s.quantity, 0);
+        map.set(p.id, Math.round(openingBalValue + ownReceiptsThisMonth - ownSalesThisMonth));
+        return;
+      }
       const { closingBalancePipes } = computeRMStockAsOnDate(
         rm,
         siblings,
@@ -175,7 +214,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       map.set(p.id, Math.round((closingBalancePipes * yieldFactor) / siblings.length));
     });
     return map;
-  }, [parts, rawMaterials, rmInwardLogs, sales, localRMOpeningBalances]);
+  }, [parts, rawMaterials, rmInwardLogs, sales, localRMOpeningBalances, inwardLogs]);
 
   // --- BUSINESS LOGIC: Commitment-Based Shortage Alerts ---
   const shortageAnalysis = useMemo(() => {
