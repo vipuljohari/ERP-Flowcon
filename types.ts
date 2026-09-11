@@ -227,6 +227,26 @@ export interface RMMaterialLength {
   linkedRMId?: string;
 }
 
+// One admin-editable tolerance rule: a manufacturer's invoice/tag often
+// states a measured dimension slightly under the RM's own nominal spec
+// (normal manufacturing tolerance, e.g. a "45mm OD" tube's invoice reads
+// "44.45"), and Material Entry's photo auto-fill needs to still recognise
+// that as the same Raw Material rather than missing the match entirely.
+// `field` says which dimension this rule is for — OD (round tube only) or
+// Thickness (round or square/rectangular) — since the two are read from
+// different positions in an RM's free-text `size` string. `acceptedValues`
+// is an explicit list, not a formula/percentage: real tolerance bands
+// aren't uniform across sizes (see services/dimensionTolerance.ts), so
+// each nominal size's accepted alternates are spelled out by Admin rather
+// than guessed from a general rule.
+export interface DimensionTolerance {
+  id: string;
+  field: 'OD' | 'Thickness';
+  nominal: number;
+  acceptedValues: number[];
+  updatedAt: string;
+}
+
 // 'tube' = the original RM shape (a fixed-length bar, tracked by
 // length + weight/1000mm). 'sheet' = new RM shape for sheet metal, where
 // the delivered sheet size varies every time (2500x1250, 1500x3000,

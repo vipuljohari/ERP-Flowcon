@@ -28,7 +28,8 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, canAccessView } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, canAccessView } from './types';
+import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
@@ -153,6 +154,11 @@ const MainApp: React.FC = () => {
   const [rmManufacturerInvoices, setRmManufacturerInvoices] = useFirestoreArray<RMManufacturerInvoice>('rmManufacturerInvoices');
   const [rmCrossInvoices, setRmCrossInvoices] = useFirestoreArray<RMCustomerCrossInvoice>('rmCustomerCrossInvoices');
   const [rmMaterialLengths, setRmMaterialLengths] = useFirestoreArray<RMMaterialLength>('rmMaterialLengths', [], (m) => m.materialCode);
+  // Admin-editable tolerance table for Material Entry's Camera Upload — see
+  // services/dimensionTolerance.ts for why this is an explicit lookup
+  // table rather than a formula. Seeded once with Vipul's 11-Sep-26 rules;
+  // Admin can add more from Material Entry's "Dimension Tolerances" editor.
+  const [dimensionTolerances, setDimensionTolerances] = useFirestoreArray<DimensionTolerance>('dimensionTolerances', SEED_DIMENSION_TOLERANCES);
   // Written only by the Tally Connector script on the 24x7 server (Admin
   // SDK, hourly) — never by the app, so the setter is never used here.
   const [tallyPurchaseVouchers] = useFirestoreArray<RMPurchaseVoucher>('rmPurchaseVouchers');
@@ -1474,6 +1480,8 @@ const MainApp: React.FC = () => {
               materialLengths={rmMaterialLengths}
               onMaterialEntryFinishedPieces={handleMaterialEntryFinishedPieces}
               onMaterialEntryLongerPipe={handleMaterialEntryLongerPipe}
+              dimensionTolerances={dimensionTolerances}
+              setDimensionTolerances={setDimensionTolerances}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {

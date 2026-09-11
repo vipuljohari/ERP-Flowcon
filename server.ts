@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
-import { handleInsights, handleChat, handleExtractInvoice, handleCreateUser, handleUpdateUser } from "./services/apiHandlers";
+import { handleInsights, handleChat, handleExtractInvoice, handleExtractMaterialEntryPhoto, handleArchivePhoto, handleCreateUser, handleUpdateUser } from "./services/apiHandlers";
 
 // The actual route logic (Gemini calls, Admin-only user management) lives
 // in services/apiHandlers.ts, shared with the Vercel Serverless Functions
@@ -32,6 +32,8 @@ async function startServer() {
     app.post("/api/gemini/insights", (req, res) => handleInsights(req, res));
     app.post("/api/gemini/chat", (req, res) => handleChat(req, res));
     app.post("/api/gemini/extractInvoice", (req, res) => handleExtractInvoice(req, res));
+    app.post("/api/gemini/extractMaterialEntryPhoto", (req, res) => handleExtractMaterialEntryPhoto(req, res));
+    app.post("/api/dropbox/archivePhoto", (req, res) => handleArchivePhoto(req, res));
     app.post("/api/admin/createUser", (req, res) => handleCreateUser(req, res));
     app.post("/api/admin/updateUser", (req, res) => handleUpdateUser(req, res));
 

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength } from '../types';
+import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance } from '../types';
 import { CATEGORIES } from '../constants';
 import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate } from '../services/rmYield';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
@@ -48,6 +48,11 @@ interface InventoryProps {
   materialLengths?: RMMaterialLength[];
   onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
   onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[]) => void;
+  // Camera Upload's dimension-tolerance table (Material Entry) — see
+  // services/dimensionTolerance.ts. Passed straight through to
+  // MaterialEntry.tsx; Inventory.tsx itself doesn't use it.
+  dimensionTolerances?: DimensionTolerance[];
+  setDimensionTolerances?: (update: DimensionTolerance[] | ((prev: DimensionTolerance[]) => DimensionTolerance[])) => void;
 }
 
 // An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
@@ -87,6 +92,8 @@ const Inventory: React.FC<InventoryProps> = ({
   materialLengths = [],
   onMaterialEntryFinishedPieces,
   onMaterialEntryLongerPipe,
+  dimensionTolerances = [],
+  setDimensionTolerances,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -1939,6 +1946,9 @@ const Inventory: React.FC<InventoryProps> = ({
           rawMaterials={rawMaterials}
           manufacturerInvoices={manufacturerInvoices}
           materialLengths={materialLengths}
+          isAdmin={isAdmin}
+          dimensionTolerances={dimensionTolerances}
+          setDimensionTolerances={setDimensionTolerances}
           initialRMId={materialEntryRMId}
           onInitialRMConsumed={() => setMaterialEntryRMId(null)}
           onSubmitFinishedPieces={(header, lines) => {

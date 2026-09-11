@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Part, RawMaterial, RMManufacturerInvoice, RMMaterialLength } from '../types';
+import { Part, RawMaterial, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance } from '../types';
 import {
   pcsPerBar,
   MaterialEntryHeader,
@@ -11,6 +11,10 @@ import {
   computeUnattributedScrapMm,
 } from '../services/materialEntry';
 import { getLocalDateStr, correctedNow } from '../services/time';
+import { readAndCompressPhoto } from '../services/photo';
+import { extractMaterialEntryPhoto } from '../services/gemini';
+import { archivePhotoToDropbox, buildArchiveFileName } from '../services/dropboxArchive';
+import { suggestMatchingRawMaterials } from '../services/dimensionTolerance';
 
 // ============================================================
 // Material Entry — RM Receiving (Longer Pipe / Finished Pieces)
@@ -44,6 +48,51 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ lab
   <div>
     <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1 px-1">{label}</label>
     {children}
+  </div>
+);
+
+// Same visual pattern as RMCrossBillCheck.tsx's "Auto-fill from a photo
+// (AI)" block, reused here for both Finished Pieces and Longer Pipe. A
+// shared component (not copy-pasted twice) since the two Camera Upload
+// entry points need to stay identical in behavior.
+const CameraUploadBlock: React.FC<{
+  inputIdPrefix: string;
+  extracting: boolean;
+  error: string | null;
+  note: string | null;
+  onFile: (file: File) => void;
+}> = ({ inputIdPrefix, extracting, error, note, onFile }) => (
+  <div className="border-2 border-dashed border-indigo-200 bg-indigo-50/40 rounded-2xl p-4 text-center">
+    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">Camera Upload — Auto-fill from a photo (AI)</p>
+    <div className="flex items-center justify-center gap-3">
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        id={`${inputIdPrefix}-camera`}
+        className="hidden"
+        disabled={extracting}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ''; }}
+      />
+      <label htmlFor={`${inputIdPrefix}-camera`} className={`inline-flex items-center gap-2 px-4 py-2 bg-white border-2 border-indigo-200 rounded-xl text-xs font-black text-indigo-700 ${extracting ? 'cursor-wait opacity-70' : 'cursor-pointer hover:border-indigo-500'}`}>
+        📷 Use Camera
+      </label>
+      <input
+        type="file"
+        accept="image/*"
+        id={`${inputIdPrefix}-upload`}
+        className="hidden"
+        disabled={extracting}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ''; }}
+      />
+      <label htmlFor={`${inputIdPrefix}-upload`} className={`inline-flex items-center gap-2 px-4 py-2 bg-white border-2 border-indigo-200 rounded-xl text-xs font-black text-indigo-700 ${extracting ? 'cursor-wait opacity-70' : 'cursor-pointer hover:border-indigo-500'}`}>
+        📁 Upload Photo
+      </label>
+    </div>
+    {extracting && <p className="text-xs font-bold text-indigo-600 mt-3">⏳ Reading invoice photo…</p>}
+    <p className="text-[10px] text-slate-400 mt-2">Reads the invoice and pre-fills the fields below — always review before saving. The photo is also saved to Dropbox for your records either way.</p>
+    {error && <p className="text-[11px] font-bold text-rose-600 mt-2">{error}</p>}
+    {note && <p className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 mt-2 text-left">{note}</p>}
   </div>
 );
 
@@ -98,6 +147,12 @@ interface MaterialEntryProps {
   onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
   onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[]) => void;
   onClose: () => void;
+  isAdmin?: boolean;
+  // Camera Upload's dimension-tolerance table — see
+  // services/dimensionTolerance.ts. Only used for the Longer Pipe RM
+  // suggestion and the Admin-only editor below; harmless if omitted.
+  dimensionTolerances?: DimensionTolerance[];
+  setDimensionTolerances?: (update: DimensionTolerance[] | ((prev: DimensionTolerance[]) => DimensionTolerance[])) => void;
 }
 
 const MaterialEntry: React.FC<MaterialEntryProps> = ({
@@ -109,6 +164,9 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   onSubmitFinishedPieces,
   onSubmitLongerPipe,
   onClose,
+  isAdmin = false,
+  dimensionTolerances = [],
+  setDimensionTolerances,
 }) => {
   // Same "current calendar month only, no back-dating or future-dating"
   // rule already enforced elsewhere in Inventory.tsx — copied verbatim.
@@ -129,6 +187,77 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   const [weightKg, setWeightKg] = useState('');
   const [billValue, setBillValue] = useState('');
   const [dharamkantaWeightKg, setDharamkantaWeightKg] = useState('');
+
+  // --- Camera Upload (both modes) ---
+  // Reads a photo of the supplier's invoice and pre-fills the header above
+  // — Supplier/Invoice No./Date/Total Weight/Total Bill Value — same
+  // "always review before Save" convention as RM Cross-Bill Check's own
+  // photo auto-fill. Dharamkanta Weight is never touched by this — it's a
+  // physical weighbridge slip, always typed in by hand. Every captured
+  // photo is also archived to Dropbox (fire-and-forget, never blocks this
+  // form) regardless of whether the AI could read it.
+  const [extractingPhoto, setExtractingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [rmMatchNote, setRmMatchNote] = useState<string | null>(null);
+
+  const handleMaterialPhotoUpload = async (file: File, mode: 'pieces' | 'longer') => {
+    setPhotoError(null);
+    setRmMatchNote(null);
+    setExtractingPhoto(true);
+    try {
+      const { base64, mimeType } = await readAndCompressPhoto(file);
+      // Fire-and-forget — never awaited into the extraction's own
+      // success/failure path, and archivePhotoToDropbox itself swallows
+      // its own errors (see that file). A photo the AI can't read is still
+      // worth keeping in the archive.
+      archivePhotoToDropbox(base64, mimeType, buildArchiveFileName(supplier || 'unknown', invoiceNo || 'pending'));
+
+      const extracted = await extractMaterialEntryPhoto(base64, mimeType);
+      setSupplier(prev => extracted.supplierName || prev);
+      setInvoiceNo(prev => extracted.invoiceNo || prev);
+      if (extracted.date) setDate(extracted.date);
+      if (extracted.totalWeightKg > 0) setWeightKg(String(extracted.totalWeightKg));
+      if (extracted.totalBillValue > 0) setBillValue(String(extracted.totalBillValue));
+
+      if (mode === 'longer') {
+        const matches = suggestMatchingRawMaterials(
+          { odMm: extracted.odMm, thicknessMm: extracted.thicknessMm, lengthMm: extracted.lengthMm },
+          rawMaterials,
+          dimensionTolerances
+        );
+        if (matches.length > 0 && lines[0]) {
+          const best = matches[0];
+          const firstLineKey = lines[0].key;
+          setLineRM(firstLineKey, best.id);
+          if (extracted.quantityPcs > 0) {
+            patchLine(firstLineKey, l => ({ ...l, barsReceived: String(extracted.quantityPcs) }));
+          }
+          setRmMatchNote(`Matched to ${best.size} — ${best.partName} from the photo (${extracted.materialDescription || 'no description read'}). Verify before saving — you can change it above.`);
+        } else if (extracted.materialDescription) {
+          setRmMatchNote(`Couldn't confidently match "${extracted.materialDescription}" to a Raw Material — pick it by hand below. If this size recurs, ask Admin to add its tolerance under "Dimension Tolerances".`);
+        }
+      }
+    } catch (err: any) {
+      setPhotoError(err?.message || 'Could not read this photo — enter the details manually below.');
+    } finally {
+      setExtractingPhoto(false);
+    }
+  };
+
+  // --- Admin-only Dimension Tolerances editor ---
+  const [showToleranceEditor, setShowToleranceEditor] = useState(false);
+  const [newTolerance, setNewTolerance] = useState<{ field: 'OD' | 'Thickness'; nominal: string; acceptedValues: string }>({ field: 'Thickness', nominal: '', acceptedValues: '' });
+  const addTolerance = () => {
+    const nominal = parseFloat(newTolerance.nominal);
+    const acceptedValues = newTolerance.acceptedValues.split(',').map(s => parseFloat(s.trim())).filter(n => Number.isFinite(n));
+    if (!Number.isFinite(nominal) || acceptedValues.length === 0 || !setDimensionTolerances) return;
+    setDimensionTolerances(prev => [
+      ...prev.filter(t => !(t.field === newTolerance.field && t.nominal === nominal)),
+      { id: `${newTolerance.field.toLowerCase()}-${nominal}`, field: newTolerance.field, nominal, acceptedValues, updatedAt: new Date().toISOString() },
+    ]);
+    setNewTolerance({ field: 'Thickness', nominal: '', acceptedValues: '' });
+  };
+  const removeTolerance = (id: string) => setDimensionTolerances?.(prev => prev.filter(t => t.id !== id));
 
   const [finishedLines, setFinishedLines] = useState<UIFinishedLine[]>([]);
   const [lines, setLines] = useState<UILongerLine[]>([]);
@@ -369,6 +498,13 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'pieces' && step === 1 && (
           <div className="mt-4 space-y-3">
+            <CameraUploadBlock
+              inputIdPrefix="me-pieces"
+              extracting={extractingPhoto}
+              error={photoError}
+              note={null}
+              onFile={(f) => handleMaterialPhotoUpload(f, 'pieces')}
+            />
             <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several different finished parts, enter Total Weight and Total Bill Value once here. Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
@@ -444,6 +580,41 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'longer' && step === 1 && (
           <div className="mt-4 space-y-3">
+            <CameraUploadBlock
+              inputIdPrefix="me-longer"
+              extracting={extractingPhoto}
+              error={photoError}
+              note={rmMatchNote}
+              onFile={(f) => handleMaterialPhotoUpload(f, 'longer')}
+            />
+            {isAdmin && (
+              <div className="border border-slate-200 rounded-xl">
+                <button type="button" onClick={() => setShowToleranceEditor(v => !v)} className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <span>Dimension Tolerances ({dimensionTolerances.length})</span>
+                  <span>{showToleranceEditor ? '▲' : '▼'}</span>
+                </button>
+                {showToleranceEditor && (
+                  <div className="border-t border-slate-200 p-3 space-y-2">
+                    <p className="text-[11px] text-slate-400">What a measured OD/Thickness can be invoiced as for a given nominal size, so Camera Upload still recognises it as the right Raw Material. e.g. nominal Thickness 2 accepting 1.8, 1.9.</p>
+                    {dimensionTolerances.map(t => (
+                      <div key={t.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700">
+                        <span>{t.field} {t.nominal} → accepts {t.acceptedValues.join(', ')}</span>
+                        <button type="button" onClick={() => removeTolerance(t.id)} className="text-rose-500 hover:text-rose-700 text-[10px] font-black uppercase">Remove</button>
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-2 pt-1">
+                      <select value={newTolerance.field} onChange={(e) => setNewTolerance({ ...newTolerance, field: e.target.value as 'OD' | 'Thickness' })} className="border-2 border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold">
+                        <option value="Thickness">Thickness</option>
+                        <option value="OD">OD</option>
+                      </select>
+                      <input type="number" placeholder="Nominal" value={newTolerance.nominal} onChange={(e) => setNewTolerance({ ...newTolerance, nominal: e.target.value })} className="w-20 border-2 border-slate-200 rounded-lg px-2 py-1.5 text-xs" />
+                      <input placeholder="Accepts (e.g. 1.8, 1.9)" value={newTolerance.acceptedValues} onChange={(e) => setNewTolerance({ ...newTolerance, acceptedValues: e.target.value })} className="flex-1 border-2 border-slate-200 rounded-lg px-2 py-1.5 text-xs" />
+                      <button type="button" onClick={addTolerance} className="px-3 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black uppercase">Add</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <p className="text-[11px] text-slate-400">These invoice details apply to the whole bill — even if it covers several items at different bar lengths, enter Total Weight and Total Bill Value once here. Fields marked * are required.</p>
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Supplier *"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm" /></FormField>
@@ -478,6 +649,9 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'longer' && step === 2 && (
           <div className="mt-4 space-y-4">
+            {rmMatchNote && (
+              <p className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-2 text-left">{rmMatchNote}</p>
+            )}
             {lines.map((line, idx) => {
               const lc = lineComputations[idx];
               const rm = rawMaterials.find(r => r.id === line.rmId);

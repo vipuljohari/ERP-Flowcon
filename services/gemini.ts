@@ -75,6 +75,38 @@ export const extractInvoiceFromPhoto = (imageBase64: string, mimeType: string): 
 export const extractCustomerInvoiceFromPhoto = (imageBase64: string, mimeType: string): Promise<ExtractedCustomerInvoiceFields> =>
   callExtractInvoice(imageBase64, mimeType, 'customer');
 
+export interface ExtractedMaterialEntryFields {
+  supplierName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg: number;
+  totalBillValue: number;
+  materialDescription: string;
+  odMm: number;
+  thicknessMm: number;
+  lengthMm: number;
+  quantityPcs: number;
+}
+
+// Reads a photo of a Raw Material supplier's invoice for Material Entry's
+// Camera Upload — see services/apiHandlers.ts's handleExtractMaterialEntryPhoto
+// for the field-by-field extraction rules. Always review/correct the
+// result in the form before saving — this never writes anything on its
+// own, and any Raw Material it suggests (via services/dimensionTolerance.ts)
+// stays a fully editable dropdown pick, never an auto-lock.
+export const extractMaterialEntryPhoto = async (imageBase64: string, mimeType: string): Promise<ExtractedMaterialEntryFields> => {
+  const response = await fetch("/api/gemini/extractMaterialEntryPhoto", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageBase64, mimeType }),
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData.error || `HTTP error ${response.status}`);
+  }
+  return response.json();
+};
+
 export const chatWithAI = async (
   message: string,
   parts: Part[],
