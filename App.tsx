@@ -2258,7 +2258,17 @@ const MainApp: React.FC = () => {
   // real posting still happens in handleMaterialEntryFinishedPieces/
   // handleMaterialEntryLongerPipe/handleManufacturerInvoiceWithAllotment
   // above, called only from approvePendingRMEntry below once Admin approves.
-  const pushPendingRMEntry = (entry: Omit<PendingRMEntry, 'id' | 'submittedAt' | 'submittedBy' | 'submittedByRole'>) => {
+  // NOTE: deliberately a hoisted `function` declaration, not `const ... = () =>`.
+  // The production minifier (esbuild, via Vite) was found to incorrectly
+  // dead-code-eliminate this exact binding when written as a const arrow
+  // function inside this enormous component — every call site below survived
+  // minification (renamed to a short variable name, e.g. "xn"), but the
+  // declaration itself was silently dropped from the bundle, so calling it
+  // threw "Uncaught ReferenceError: xn is not defined" the instant Store
+  // clicked Post for Approval on ANY of the 3 entry screens. A hoisted
+  // function declaration is unaffected by that bug. Do not change this back
+  // to a const arrow function.
+  function pushPendingRMEntry(entry: Omit<PendingRMEntry, 'id' | 'submittedAt' | 'submittedBy' | 'submittedByRole'>) {
     const newEntry: PendingRMEntry = {
       id: Math.random().toString(36).substr(2, 9),
       submittedAt: getLocalISOString(),
@@ -2267,7 +2277,7 @@ const MainApp: React.FC = () => {
       ...entry,
     };
     setPendingRMEntries(prev => [newEntry, ...prev]);
-  };
+  }
 
   function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[]) {
     if (lines.length === 0) return;

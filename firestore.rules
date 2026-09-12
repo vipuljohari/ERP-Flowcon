@@ -115,6 +115,20 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    // Dimension Tolerances — what a measured OD/Thickness can be invoiced as
+    // for a given nominal size, so Camera Upload still recognises it as the
+    // right Raw Material (see MaterialEntry.tsx). Every active role that can
+    // reach Material Entry needs to read this (Store/PPC included — Camera
+    // Upload's photo-matching logic runs for them too), but only Admin edits
+    // the list (the editor UI itself is admin-only). This collection had NO
+    // rule at all before — it fell under the deny-all catch-all below, which
+    // is why Store's session logged "Missing or insufficient permissions"
+    // for it.
+    match /dimensionTolerances/{docId} {
+      allow read: if isActive();
+      allow write: if isAdmin();
+    }
+
     match /customers/{customerId} {
       allow read: if isActive();
       allow write: if isAdmin() || myRole() == 'accounts';
