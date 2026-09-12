@@ -7,7 +7,11 @@
 // never allowed to block or even visibly interrupt a real Material Entry
 // save over a Dropbox hiccup (expired token, network blip, quota). Errors
 // still go to the console so a genuinely broken setup is diagnosable.
-export const archivePhotoToDropbox = async (imageBase64: string, mimeType: string, fileName: string): Promise<void> => {
+//
+// Returns the Dropbox path the photo was actually saved to (so a caller can
+// link it to the record it belongs to, e.g. PendingRMEntry.photoDropboxPath
+// in the RM Approval Queue), or null if the archive failed — never throws.
+export const archivePhotoToDropbox = async (imageBase64: string, mimeType: string, fileName: string): Promise<string | null> => {
   try {
     const response = await fetch('/api/dropbox/archivePhoto', {
       method: 'POST',
@@ -18,8 +22,11 @@ export const archivePhotoToDropbox = async (imageBase64: string, mimeType: strin
       const errData = await response.json().catch(() => ({}));
       throw new Error(errData.error || `HTTP error ${response.status}`);
     }
+    const result = await response.json().catch(() => ({} as any));
+    return result?.path || null;
   } catch (error) {
     console.error('Dropbox photo archive failed (non-fatal — Material Entry save is unaffected):', error);
+    return null;
   }
 };
 

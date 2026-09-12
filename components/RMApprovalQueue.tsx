@@ -393,9 +393,15 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
 
               {isOpen && (
                 <div className="space-y-4 pt-2 border-t border-slate-100">
-                  <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-2 text-[11px] font-bold text-amber-700">
-                    No photo attached yet — camera upload for this entry type, and Dropbox archival, are a follow-up to this build. Verify against the physical invoice/paper bill for now.
-                  </div>
+                  {e.photoDropboxPath ? (
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2 text-[11px] font-bold text-emerald-700">
+                      📷 Source photo archived to Dropbox — {e.photoDropboxPath}
+                    </div>
+                  ) : (
+                    <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-2 text-[11px] font-bold text-amber-700">
+                      No photo attached — this entry was submitted without using Camera Upload (or the photo failed to archive). Verify against the physical invoice/paper bill for now.
+                    </div>
+                  )}
 
                   {e.entryType === 'finished_pieces' && e.finishedPiecesPayload && (
                     <div className="space-y-3">

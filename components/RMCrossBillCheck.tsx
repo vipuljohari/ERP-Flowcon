@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial, Part } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 import { getLocalDateStr, correctedNow } from '../services/time';
+import { archivePhotoToDropbox, buildArchiveFileName } from '../services/dropboxArchive';
 import {
   normalizeMaterialCode,
   pcsPerBar,
@@ -99,7 +100,7 @@ interface RMCrossBillCheckProps {
   // "save invoice, then separately Pull from Invoice into Material Entry"
   // design entirely — per Vipul's sign-off, an invoice can no longer be
   // saved without also allotting its bars to inventory in the same sitting.
-  onSaveManufacturerInvoiceWithAllotment: (submission: MfgInvoiceSubmission) => void;
+  onSaveManufacturerInvoiceWithAllotment: (submission: MfgInvoiceSubmission, photoDropboxPath?: string) => void;
   // Universal RM Receiving entry-mode switch — Admin sets this once, from
   // the top of the RM Approvals screen, and it applies here AND to Material
   // Entry's Finished Pieces / Longer Pipe at the same time. Both default
@@ -571,6 +572,11 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   // so Admin knows to double-check an AI-filled entry against the source
   // invoice a little more carefully than a fully hand-typed one.
   const [mfgAiExtracted, setMfgAiExtracted] = useState(false);
+  // Dropbox path the current form's source photo was archived to (see
+  // handleInvoicePhotoUpload) — carried onto the PendingRMEntry on save so
+  // it shows up on the RM Approvals screen. null until a photo is actually
+  // used for this invoice, or if the archive upload itself failed.
+  const [mfgPhotoDropboxPath, setMfgPhotoDropboxPath] = useState<string | null>(null);
 
   // --- Step 2 of the wizard: bar allotment against inventory ---
   // Per Vipul's sign-off, this invoice cannot be saved at all until every
@@ -730,7 +736,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         allotments: ac.unresolved ? [] : ac.typed!.allotments,
         autoAssign: ac.unresolved ? false : ac.line!.autoAssign,
       })),
-    });
+    }, mfgPhotoDropboxPath || undefined);
     closeMfgForm();
   };
 
@@ -753,6 +759,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
     setMfgAiExtracted(false);
+    setMfgPhotoDropboxPath(null);
     setMfgDuplicateError(null);
     setShowMfgForm(true);
   };
@@ -765,6 +772,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingInvoicePhoto(false);
     setInvoicePhotoError(null);
     setMfgAiExtracted(false);
+    setMfgPhotoDropboxPath(null);
     setMfgDuplicateError(null);
     setShowMfgForm(false);
   };
@@ -778,6 +786,15 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingInvoicePhoto(true);
     try {
       const { base64, mimeType } = await readAndCompressInvoicePhoto(file);
+      // Fire-and-forget archive to Dropbox (same "Unit 2/Inwards" folder and
+      // fire-and-forget convention as Material Entry's own camera upload) —
+      // never awaited into the AI-extraction path below, so a slow or failed
+      // Dropbox upload never blocks or breaks reading the invoice. The
+      // resolved path (once the upload actually completes) is captured so it
+      // can be attached to this entry on save, letting Admin find the photo
+      // again in the RM Approvals screen instead of only in Dropbox itself.
+      archivePhotoToDropbox(base64, mimeType, buildArchiveFileName(mfgForm.manufacturerName || 'unknown', mfgForm.invoiceNo || 'pending'))
+        .then(path => { if (path) setMfgPhotoDropboxPath(path); });
       const extracted = await extractInvoiceFromPhoto(base64, mimeType);
 
       const extractedManufacturer = extracted.manufacturerName.trim();

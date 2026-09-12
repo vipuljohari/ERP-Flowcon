@@ -151,8 +151,8 @@ interface MaterialEntryProps {
   // same as any manual line).
   initialRMId?: string | null;
   onInitialRMConsumed?: () => void;
-  onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[]) => void;
-  onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[]) => void;
+  onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string) => void;
+  onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string) => void;
   onClose: () => void;
   isAdmin?: boolean;
   // Camera Upload's dimension-tolerance table — see
@@ -224,6 +224,11 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   const [extractingPhoto, setExtractingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [rmMatchNote, setRmMatchNote] = useState<string | null>(null);
+  // Dropbox path the archived photo landed at (see handleMaterialPhotoUpload
+  // below) — carried onto the PendingRMEntry on save so it shows up on the
+  // RM Approvals screen. This component unmounts on close (see Inventory.tsx),
+  // so this naturally resets for the next entry without an explicit reset.
+  const [materialPhotoDropboxPath, setMaterialPhotoDropboxPath] = useState<string | null>(null);
 
   const handleMaterialPhotoUpload = async (file: File, mode: 'pieces' | 'longer') => {
     setPhotoError(null);
@@ -235,7 +240,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
       // success/failure path, and archivePhotoToDropbox itself swallows
       // its own errors (see that file). A photo the AI can't read is still
       // worth keeping in the archive.
-      archivePhotoToDropbox(base64, mimeType, buildArchiveFileName(supplier || 'unknown', invoiceNo || 'pending'));
+      archivePhotoToDropbox(base64, mimeType, buildArchiveFileName(supplier || 'unknown', invoiceNo || 'pending'))
+        .then(path => { if (path) setMaterialPhotoDropboxPath(path); });
 
       const extracted = await extractMaterialEntryPhoto(base64, mimeType);
       setSupplier(prev => extracted.supplierName || prev);
@@ -486,12 +492,12 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
       .filter(l => l.partId && (parseFloat(l.qty) || 0) > 0)
       .map(l => ({ key: l.key, partId: l.partId, quantity: parseFloat(l.qty) || 0 }));
     if (outLines.length === 0) return;
-    onSubmitFinishedPieces(buildHeader(), outLines);
+    onSubmitFinishedPieces(buildHeader(), outLines, materialPhotoDropboxPath || undefined);
   };
 
   const saveLongerPipe = () => {
     if (!allLinesValid) return;
-    onSubmitLongerPipe(buildHeader(), lineComputations.map(lc => lc.typed));
+    onSubmitLongerPipe(buildHeader(), lineComputations.map(lc => lc.typed), materialPhotoDropboxPath || undefined);
   };
 
   const searchPartsFor = (rmId: string, search: string) =>

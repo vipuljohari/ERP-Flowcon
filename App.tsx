@@ -2279,19 +2279,19 @@ const MainApp: React.FC = () => {
     setPendingRMEntries(prev => [newEntry, ...prev]);
   }
 
-  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[]) {
+  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string) {
     if (lines.length === 0) return;
     const partNames = lines.map(l => { const p = parts.find(x => x.id === l.partId); return `${p?.name || l.partId} (${l.quantity} Pcs)`; });
-    pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}` });
+    pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoDropboxPath });
   }
 
-  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[]) {
+  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string) {
     if (lines.length === 0) return;
     const lineSummaries = lines.map(l => { const rm = rawMaterials.find(r => r.id === l.rmId); return `${rm ? rm.size : 'RM'} (${l.barsReceived} bars)`; });
-    pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}` });
+    pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoDropboxPath });
   }
 
-  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission) {
+  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photoDropboxPath?: string) {
     if (submission.lines.length === 0) return;
     const unresolvedLines = submission.lines.filter(l => !l.rmId);
     const isNotMatched = unresolvedLines.length > 0;
@@ -2301,6 +2301,7 @@ const MainApp: React.FC = () => {
       manufacturerInvoicePayload: submission,
       summary: `Manufacturer Invoice — ${submission.manufacturerName} — ${submission.invoiceNo} — ${materialsSummary}`,
       notMatchedReason: isNotMatched ? `${unresolvedLines.length} material(s) have no linked Raw Material yet: ${unresolvedLines.map(l => l.materialCode || l.materialName).join(', ')}. Admin must specify which RM Master size to book against before this can be approved.` : undefined,
+      photoDropboxPath,
     });
   }
 
