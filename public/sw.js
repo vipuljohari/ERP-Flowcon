@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'flowcon-v8';
+const CACHE_NAME = 'flowcon-v9';
 const OFFLINE_URL = 'index.html';
 
 // Assets to cache immediately on install - using relative paths
