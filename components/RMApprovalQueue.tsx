@@ -365,7 +365,14 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
           const isOpen = expandedId === e.id;
           const editable = e.status === 'pending' || e.status === 'not_matched';
           return (
-            <div key={e.id} className={`bg-white rounded-[1.75rem] shadow-sm border border-l-4 ${meta.border} border-slate-100 p-6 space-y-4`}>
+            <div
+              key={e.id}
+              className={`bg-white rounded-[1.75rem] p-6 space-y-4 border-l-4 ${meta.border} transition-all ${
+                isOpen
+                  ? 'border-2 border-indigo-300 shadow-lg ring-2 ring-indigo-100'
+                  : 'border border-slate-100 shadow-sm'
+              }`}
+            >
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -388,7 +395,7 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                   </button>
                   {editable && isAdmin && (
                     <>
-                      <button onClick={() => startRejecting(e.id)} className="px-5 py-2.5 border-2 border-slate-300 text-slate-500 hover:bg-slate-50 rounded-xl font-black uppercase text-[10px] tracking-widest">Reject</button>
+                      <button onClick={() => startRejecting(e.id)} className="px-5 py-2.5 border-2 border-rose-300 text-rose-600 hover:bg-rose-50 rounded-xl font-black uppercase text-[10px] tracking-widest">Reject</button>
                       <button
                         onClick={() => onApprove(e)}
                         disabled={!canApprove(e)}

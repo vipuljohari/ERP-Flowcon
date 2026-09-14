@@ -1968,10 +1968,16 @@ const MainApp: React.FC = () => {
     }));
     // Deliberately no RM-side effect at all — Finished Pieces means nothing
     // bar-shaped was received (e.g. a job-work vendor already did the cutting).
+    // Item-by-item breakdown (name + qty), same convention as the RM
+    // Cross-Bill Manufacturer Invoice alert's materialsSummary — a bare
+    // "N item(s) received" gave Admin nothing to actually cross-check.
+    const itemsSummary = newLogs.length === 1
+      ? `${newLogs[0].partName} (${newLogs[0].quantity} Pcs)`
+      : `${newLogs.length} items: ${newLogs.map(l => `${l.partName} (${l.quantity} Pcs)`).join(', ')}`;
     pushAdminAlert({
       type: 'item_inward', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
       timestamp: finalTs, itemCount: newLogs.length,
-      details: `Material Entry — Finished Pieces: ${newLogs.length} item(s) received. Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
+      details: `Material Entry — Finished Pieces: ${itemsSummary}. Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
     });
   }
 
@@ -1983,11 +1989,18 @@ const MainApp: React.FC = () => {
     const rmStockDelta: Record<string, number> = {};
     const partStockDelta: Record<string, number> = {};
     const pulledInvoiceLineIds: string[] = [];
+    // Per-line size + bars + allotment breakdown for the Admin notification
+    // below — same convention as the RM Cross-Bill Manufacturer Invoice
+    // alert's perLineRemarks, so "RM Inward Entry" notifications read the
+    // same way whether the Material Entry came in through this screen or
+    // was pulled from an invoice.
+    const perLineRemarks: string[] = [];
     let totalScrapMm = 0;
 
     lines.forEach(line => {
       const rm = rawMaterials.find(r => r.id === line.rmId);
       if (!rm) return;
+      const sizeLabel = `${rm.size}x${line.barLengthMm}`;
 
       newRmInwardLogs.push({
         id: Math.random().toString(36).substr(2, 9), rmId: rm.id, rmSize: rm.size,
@@ -2006,11 +2019,13 @@ const MainApp: React.FC = () => {
       // `line.allotments` merely being empty, so this stays correct even if
       // that ever stops being guaranteed upstream.
       if (line.autoAssign) {
+        perLineRemarks.push(`${sizeLabel} (${line.barsReceived} bars received) — Auto-Assign, added to shared RM stock, not split to specific items.`);
         if (line.pulledFromInvoiceLineId) pulledInvoiceLineIds.push(line.pulledFromInvoiceLineId);
         return;
       }
 
       const itemLengthById: Record<string, number> = {};
+      const itemBreakdown: string[] = [];
       line.allotments.forEach(a => {
         const part = parts.find(p => p.id === a.partId);
         if (!part) return;
@@ -2018,19 +2033,26 @@ const MainApp: React.FC = () => {
         const pcs = line.subMode === 'whole_bars'
           ? (a.barsAllotted || 0) * pcsPerBar(line.barLengthMm, part.itemLength || 0)
           : (a.piecesAllotted || 0);
-        if (pcs <= 0) return;
-        newInwardLogs.push({
-          id: Math.random().toString(36).substr(2, 9), partId: a.partId, partName: part.name,
-          sapCode: part.sapCode, quantity: pcs, supplier: header.supplierName, timestamp: finalTs,
-          invoiceNumber: header.invoiceNo, materialEntryId: entryId,
-          invoiceBookedInUnit1: header.invoiceBookedInUnit1,
-        });
-        partStockDelta[a.partId] = (partStockDelta[a.partId] || 0) + pcs;
+        if (pcs > 0) {
+          newInwardLogs.push({
+            id: Math.random().toString(36).substr(2, 9), partId: a.partId, partName: part.name,
+            sapCode: part.sapCode, quantity: pcs, supplier: header.supplierName, timestamp: finalTs,
+            invoiceNumber: header.invoiceNo, materialEntryId: entryId,
+            invoiceBookedInUnit1: header.invoiceBookedInUnit1,
+          });
+          partStockDelta[a.partId] = (partStockDelta[a.partId] || 0) + pcs;
+        }
+        if (line.subMode === 'whole_bars' && (a.barsAllotted || 0) > 0) {
+          itemBreakdown.push(`${part.name} — ${a.barsAllotted} bars`);
+        } else if (line.subMode === 'split_pieces' && (a.piecesAllotted || 0) > 0) {
+          itemBreakdown.push(`${part.name} — ${a.piecesAllotted} pcs`);
+        }
       });
 
       if (line.subMode === 'split_pieces') {
         totalScrapMm += computeUnattributedScrapMm(line, itemLengthById);
       }
+      perLineRemarks.push(`${sizeLabel} (${line.barsReceived} bars received). Allotted: ${itemBreakdown.length > 0 ? itemBreakdown.join('; ') : 'nothing yet'}.`);
       if (line.pulledFromInvoiceLineId) pulledInvoiceLineIds.push(line.pulledFromInvoiceLineId);
     });
 
@@ -2061,7 +2083,7 @@ const MainApp: React.FC = () => {
     pushAdminAlert({
       type: 'rm_inward', supplier: header.supplierName, invoiceNumber: header.invoiceNo,
       timestamp: finalTs, itemCount: lines.length,
-      details: `Material Entry — Longer Pipe: ${lines.length} line(s), Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
+      details: `Material Entry — Longer Pipe: ${perLineRemarks.join(' | ')} Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
     });
     if (totalScrapMm > 0.0001) {
       pushAdminAlert({
@@ -2223,7 +2245,11 @@ const MainApp: React.FC = () => {
       type: 'rm_cross_bill',
       invoiceNumber: invoiceNo, customer: customerName, supplier: manufacturerName,
       quantity: totalQty, itemCount: lines.length,
-      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg — Total Bill Value ₹${totalBillValueFormatted}${aiSuffix}`,
+      // Total Weight is the invoice's own printed figure; Dharamkanta is the
+      // actual weighbridge reading for this vehicle — showing both here
+      // matches the Finished Pieces / Longer Pipe notifications, which
+      // already show both (Vipul, 14-Sep-26).
+      remarks: `Manufacturer Invoice — ${materialsSummary} — Total Weight ${totalWeightKg} Kg (Dharamkanta ${actualWeightKg} Kg) — Total Bill Value ₹${totalBillValueFormatted}${aiSuffix}`,
     });
 
     if (weightFlagged) {
