@@ -192,75 +192,95 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
 
         {line.rmId && (
           <>
-            <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
-              <span className="text-slate-500">Bars: {line.barsReceived}</span>
-              {line.subMode === 'whole_bars' ? (
-                <span className={barsRemaining < -0.0001 || barsRemaining > 0.0001 ? 'text-rose-600' : 'text-slate-700'}>Remaining to allot: {barsRemaining}</span>
-              ) : (
-                <span className={unattributedScrapMm < -0.0001 ? 'text-rose-600' : 'text-slate-700'}>Length remaining: {unattributedScrapMm}mm</span>
-              )}
-            </div>
+            <label className="flex items-start gap-2 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2">
+              <input
+                type="checkbox"
+                checked={!!line.autoAssign}
+                onChange={(e) => onPatch({ autoAssign: e.target.checked })}
+                className="mt-0.5"
+              />
+              <span>
+                Auto-Assign this size — skip item-wise allotment for this line. Bars Received goes straight into this Raw Material's shared stock pool instead of being split across specific items; dispatches keep subtracting consumption automatically per item, same as before this per-item screen existed. Use this to correct a line Store allotted entirely to one item when this Raw Material is really shared across several (e.g. this 45×2×5710mm size is mapped to 7 items) — check this box instead of manually re-splitting the bars yourself.
+              </span>
+            </label>
 
-            <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
-              <button onClick={() => onPatch({ subMode: 'whole_bars' })} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'whole_bars' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}>Whole Bars per Item</button>
-              <button onClick={() => onPatch({ subMode: 'split_pieces' })} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'split_pieces' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}>Split by Pieces</button>
-            </div>
+            {line.autoAssign ? (
+              <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold text-slate-500">
+                No item split for this line — {line.barsReceived} bar(s) will be added to the Raw Material's total stock only.
+              </div>
+            ) : (
+              <>
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2 text-xs font-bold flex justify-between">
+                  <span className="text-slate-500">Bars: {line.barsReceived}</span>
+                  {line.subMode === 'whole_bars' ? (
+                    <span className={barsRemaining < -0.0001 || barsRemaining > 0.0001 ? 'text-rose-600' : 'text-slate-700'}>Remaining to allot: {barsRemaining}</span>
+                  ) : (
+                    <span className={unattributedScrapMm < -0.0001 ? 'text-rose-600' : 'text-slate-700'}>Length remaining: {unattributedScrapMm}mm</span>
+                  )}
+                </div>
 
-            <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
-              {eligiblePartsForRM(line.rmId).map(p => {
-                const existing = line.allotments.find(a => a.partId === p.id);
-                const checked = !!existing;
-                const barsVal = existing?.barsAllotted ?? 0;
-                const pcsVal = existing?.piecesAllotted ?? 0;
-                const barLenNum = line.barLengthMm;
-                return (
-                  <div key={p.id} className={`p-3 ${checked ? 'bg-indigo-50/40' : ''}`}>
-                    <label className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          if (checked) {
-                            onPatch({ allotments: line.allotments.filter(a => a.partId !== p.id) });
-                          } else {
-                            onPatch({ allotments: [...line.allotments, { partId: p.id, barsAllotted: 0, piecesAllotted: 0 }] });
-                          }
-                        }}
-                      />
-                      {p.name} <span className="text-[10px] text-slate-400 font-mono">({p.itemLength || 0}mm)</span>
-                    </label>
-                    {checked && line.subMode === 'whole_bars' && (
-                      <div className="mt-2 flex items-center gap-3 pl-6">
-                        <input
-                          type="number"
-                          value={barsVal}
-                          onChange={(e) => {
-                            const v = parseFloat(e.target.value) || 0;
-                            onPatch({ allotments: line.allotments.map(a => a.partId === p.id ? { ...a, barsAllotted: v } : a) });
-                          }}
-                          className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
-                        />
-                        <span className="text-[11px] text-slate-500">= {barsVal * pcsPerBar(barLenNum, p.itemLength || 0)} Pcs</span>
+                <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+                  <button onClick={() => onPatch({ subMode: 'whole_bars' })} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'whole_bars' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}>Whole Bars per Item</button>
+                  <button onClick={() => onPatch({ subMode: 'split_pieces' })} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest ${line.subMode === 'split_pieces' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}>Split by Pieces</button>
+                </div>
+
+                <div className="max-h-56 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
+                  {eligiblePartsForRM(line.rmId).map(p => {
+                    const existing = line.allotments.find(a => a.partId === p.id);
+                    const checked = !!existing;
+                    const barsVal = existing?.barsAllotted ?? 0;
+                    const pcsVal = existing?.piecesAllotted ?? 0;
+                    const barLenNum = line.barLengthMm;
+                    return (
+                      <div key={p.id} className={`p-3 ${checked ? 'bg-indigo-50/40' : ''}`}>
+                        <label className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              if (checked) {
+                                onPatch({ allotments: line.allotments.filter(a => a.partId !== p.id) });
+                              } else {
+                                onPatch({ allotments: [...line.allotments, { partId: p.id, barsAllotted: 0, piecesAllotted: 0 }] });
+                              }
+                            }}
+                          />
+                          {p.name} <span className="text-[10px] text-slate-400 font-mono">({p.itemLength || 0}mm)</span>
+                        </label>
+                        {checked && line.subMode === 'whole_bars' && (
+                          <div className="mt-2 flex items-center gap-3 pl-6">
+                            <input
+                              type="number"
+                              value={barsVal}
+                              onChange={(e) => {
+                                const v = parseFloat(e.target.value) || 0;
+                                onPatch({ allotments: line.allotments.map(a => a.partId === p.id ? { ...a, barsAllotted: v } : a) });
+                              }}
+                              className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
+                            />
+                            <span className="text-[11px] text-slate-500">= {barsVal * pcsPerBar(barLenNum, p.itemLength || 0)} Pcs</span>
+                          </div>
+                        )}
+                        {checked && line.subMode === 'split_pieces' && (
+                          <div className="mt-2 flex items-center gap-3 pl-6">
+                            <input
+                              type="number"
+                              value={pcsVal}
+                              onChange={(e) => {
+                                const v = parseFloat(e.target.value) || 0;
+                                onPatch({ allotments: line.allotments.map(a => a.partId === p.id ? { ...a, piecesAllotted: v } : a) });
+                              }}
+                              className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
+                            />
+                            <span className="text-[11px] text-slate-500">= {pcsVal * (p.itemLength || 0)}mm consumed</span>
+                          </div>
+                        )}
                       </div>
-                    )}
-                    {checked && line.subMode === 'split_pieces' && (
-                      <div className="mt-2 flex items-center gap-3 pl-6">
-                        <input
-                          type="number"
-                          value={pcsVal}
-                          onChange={(e) => {
-                            const v = parseFloat(e.target.value) || 0;
-                            onPatch({ allotments: line.allotments.map(a => a.partId === p.id ? { ...a, piecesAllotted: v } : a) });
-                          }}
-                          className="border-2 border-slate-200 rounded-lg px-2 py-1 text-xs w-24"
-                        />
-                        <span className="text-[11px] text-slate-500">= {pcsVal * (p.itemLength || 0)}mm consumed</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
