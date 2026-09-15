@@ -272,8 +272,22 @@ const MainApp: React.FC = () => {
 
   const modelFilteredRawMaterials = useMemo(() => {
     if (activeModel === 'All') return sortedRawMaterials;
-    return sortedRawMaterials.filter(rm => rmMatchesCustomer(rm, activeCustomer) && rm.model === activeModel);
-  }, [sortedRawMaterials, activeCustomer, activeModel]);
+    return sortedRawMaterials.filter(rm => {
+      if (rmMatchesCustomer(rm, activeCustomer) && rm.model === activeModel) return true;
+      // Fallback: an RM that is directly mapped (RM Master's item-mapping
+      // picker — rm.partId/rm.partIds) to a Part that itself is confirmed to
+      // belong to the active customer+model counts too, even if the RM's own
+      // separate `model` tag was never set/kept in sync with that mapping.
+      // Without this, a correctly-linked RM silently drops out of every
+      // screen under a Model filter (Inventory Ledger's Opening Balance and
+      // Plant Balance in particular), and the affected part falls back to a
+      // stale/incorrect stored Opening Balance instead of its real
+      // RM-derived figure — this is the bug Vipul hit with U-TUBE/80x40x5
+      // and again with A-POST LH/RH under the "3DX" filter.
+      const mappedParts = sortedParts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
+      return mappedParts.some(p => p.customerModels?.[activeCustomer] === activeModel);
+    });
+  }, [sortedRawMaterials, sortedParts, activeCustomer, activeModel]);
 
   // customers loads asynchronously from Firestore — it's empty for a moment
   // when the app first opens, so the line above picks "no customer" before

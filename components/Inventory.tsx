@@ -704,8 +704,14 @@ const Inventory: React.FC<InventoryProps> = ({
 
       const mappedRMs = rawMaterials.filter(rm => {
         const matchesCustomer = selectedCustomer === 'All' || rmMatchesCustomer(rm, selectedCustomer);
-        const isLinked = rmAllCustomers(rm).some(cust => Object.keys(p.customerRMMappings || {}).some(k => k.toUpperCase().trim() === cust.toUpperCase().trim() && p.customerRMMappings?.[k] === rm.id)) || (rm.partId === p.id) || (rm.partIds && rm.partIds.includes(p.id));
-        return matchesCustomer && isLinked;
+        const isDirectlyLinked = (rm.partId === p.id) || (rm.partIds && rm.partIds.includes(p.id));
+        const isLinked = rmAllCustomers(rm).some(cust => Object.keys(p.customerRMMappings || {}).some(k => k.toUpperCase().trim() === cust.toUpperCase().trim() && p.customerRMMappings?.[k] === rm.id)) || isDirectlyLinked;
+        // An RM directly mapped to this Part (RM Master's item-mapping
+        // picker) counts regardless of the RM's own customer tag, same as
+        // the Model-filter fix in App.tsx's modelFilteredRawMaterials — a
+        // real, direct link should never silently disappear just because a
+        // separate tag field on the RM wasn't kept in sync.
+        return (matchesCustomer || isDirectlyLinked) && isLinked;
       });
 
       const allMappedRMsForPart = rawMaterials.filter(rm => {
