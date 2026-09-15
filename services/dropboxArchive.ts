@@ -11,12 +11,15 @@
 // Returns the Dropbox path the photo was actually saved to (so a caller can
 // link it to the record it belongs to, e.g. PendingRMEntry.photoDropboxPath
 // in the RM Approval Queue), or null if the archive failed — never throws.
-export const archivePhotoToDropbox = async (imageBase64: string, mimeType: string, fileName: string): Promise<string | null> => {
+// `folder` (optional) is a month-bucket subfolder, e.g. "Sep 26" — see
+// buildArchiveMonthFolder below. Omitted/blank keeps photos in the flat
+// "Unit 2/Inwards" root (back-compat with any older caller).
+export const archivePhotoToDropbox = async (imageBase64: string, mimeType: string, fileName: string, folder?: string): Promise<string | null> => {
   try {
     const response = await fetch('/api/dropbox/archivePhoto', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64, mimeType, fileName }),
+      body: JSON.stringify({ imageBase64, mimeType, fileName, folder }),
     });
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}));
@@ -30,12 +33,48 @@ export const archivePhotoToDropbox = async (imageBase64: string, mimeType: strin
   }
 };
 
-// Builds a stable, sortable, filesystem-safe filename for an archived
-// Material Entry photo: <supplier>_<invoiceNo>_<timestamp> — Dropbox's own
-// `autorename: true` (see handleArchivePhoto) covers the rare collision.
-export const buildArchiveFileName = (supplierName: string, invoiceNo: string): string => {
-  const clean = (s: string) => (s || 'unknown').trim().replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40);
+// Keeps letters, digits, spaces, dots and hyphens (readable, matches how
+// Vipul writes supplier names/invoice numbers by hand — e.g. "A.S.T Pipe
+// Limited", "AST-D-26-27-2514") and only strips characters Dropbox/Windows
+// actually can't store in a filename, instead of collapsing everything
+// non-alphanumeric to underscores. Trims a trailing dot/space (Windows
+// forbids both at the end of a filename).
+const cleanForFileName = (s: string, fallback: string): string => {
+  const trimmed = (s || '').trim();
+  if (!trimmed) return fallback;
+  return trimmed
+    .replace(/[\/\\:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 60) || fallback;
+};
+
+// "YYYY-MM-DD" -> "10.09.26" (DD.MM.YY, matching how Vipul writes dates).
+// Falls back to today when the date is missing/unparseable — parsed from
+// the string's own components (not `new Date(dateStr)`) so this can't shift
+// a day due to local timezone conversion.
+const formatDateForFileName = (dateStr?: string): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  if (m) return `${m[3]}.${m[2]}.${m[1].slice(2)}`;
   const now = new Date();
-  const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-  return `${clean(supplierName)}_${clean(invoiceNo)}_${ts}`;
+  return `${String(now.getDate()).padStart(2, '0')}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getFullYear()).slice(2)}`;
+};
+
+// "YYYY-MM-DD" -> "Sep 26" (MMM YY) — the month-bucket subfolder name under
+// "Unit 2/Inwards". Same manual parsing as formatDateForFileName, for the
+// same timezone-safety reason.
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const buildArchiveMonthFolder = (dateStr?: string): string => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  if (m) return `${MONTH_NAMES[parseInt(m[2], 10) - 1]} ${m[1].slice(2)}`;
+  const now = new Date();
+  return `${MONTH_NAMES[now.getMonth()]} ${String(now.getFullYear()).slice(2)}`;
+};
+
+// Builds a stable, sortable filename for an archived inward invoice photo:
+// <Supplier Name>_<Invoice No>_<DD.MM.YY> — e.g.
+// "A.S.T Pipe Limited_AST-D-26-27-2514_10.09.26". Dropbox's own
+// `autorename: true` (see handleArchivePhoto) covers the rare collision
+// (e.g. two photos of the same invoice re-uploaded).
+export const buildArchiveFileName = (supplierName: string, invoiceNo: string, dateStr?: string): string => {
+  return `${cleanForFileName(supplierName, 'Unknown Supplier')}_${cleanForFileName(invoiceNo, 'Pending')}_${formatDateForFileName(dateStr)}`;
 };

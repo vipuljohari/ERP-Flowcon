@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial, Part } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 import { getLocalDateStr, correctedNow } from '../services/time';
-import { archivePhotoToDropbox, buildArchiveFileName } from '../services/dropboxArchive';
+import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from '../services/dropboxArchive';
 import {
   normalizeMaterialCode,
   pcsPerBar,
@@ -786,26 +786,43 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setExtractingInvoicePhoto(true);
     try {
       const { base64, mimeType } = await readAndCompressInvoicePhoto(file);
-      // Fire-and-forget archive to Dropbox (same "Unit 2/Inwards" folder and
-      // fire-and-forget convention as Material Entry's own camera upload) —
-      // never awaited into the AI-extraction path below, so a slow or failed
-      // Dropbox upload never blocks or breaks reading the invoice. The
-      // resolved path (once the upload actually completes) is captured so it
-      // can be attached to this entry on save, letting Admin find the photo
-      // again in the RM Approvals screen instead of only in Dropbox itself.
-      archivePhotoToDropbox(base64, mimeType, buildArchiveFileName(mfgForm.manufacturerName || 'unknown', mfgForm.invoiceNo || 'pending'))
-        .then(path => { if (path) setMfgPhotoDropboxPath(path); });
-      const extracted = await extractInvoiceFromPhoto(base64, mimeType);
+      let extracted: Awaited<ReturnType<typeof extractInvoiceFromPhoto>> | null = null;
+      try {
+        extracted = await extractInvoiceFromPhoto(base64, mimeType);
+      } finally {
+        // Archive regardless of whether the AI could read the photo (fire-
+        // and-forget — same "Unit 2/Inwards" convention as Material Entry's
+        // own camera upload, never awaited into the extraction path above,
+        // so a slow/failed Dropbox upload never blocks reading the
+        // invoice). Named from whatever the extraction found, falling back
+        // to what's already typed into the form, then "Unknown
+        // Supplier"/"Pending" — so the archived file lands under its real
+        // Supplier_InvoiceNo_Date name and month folder in the normal case.
+        // The resolved path (once the upload actually completes) is
+        // captured so it can be attached to this entry on save, letting
+        // Admin find the photo again in the RM Approvals screen instead of
+        // only in Dropbox itself.
+        const archiveSupplier = extracted?.manufacturerName || mfgForm.manufacturerName;
+        const archiveInvoiceNo = extracted?.invoiceNo || mfgForm.invoiceNo;
+        const archiveDate = extracted?.date || mfgForm.date;
+        archivePhotoToDropbox(
+          base64, mimeType,
+          buildArchiveFileName(archiveSupplier, archiveInvoiceNo, archiveDate),
+          buildArchiveMonthFolder(archiveDate)
+        ).then(path => { if (path) setMfgPhotoDropboxPath(path); });
+      }
+      if (!extracted) return;
+      const ex = extracted;
 
-      const extractedManufacturer = extracted.manufacturerName.trim();
+      const extractedManufacturer = ex.manufacturerName.trim();
       const matchedManufacturer = knownManufacturerNames.find(
         n => n.toLowerCase() === extractedManufacturer.toLowerCase()
       );
       const resolvedManufacturerName = matchedManufacturer || extractedManufacturer;
       setAddingNewManufacturer(!matchedManufacturer && !!extractedManufacturer);
 
-      const extractedMaterial = extracted.materialName.trim();
-      const extractedCode = extracted.materialCode.trim();
+      const extractedMaterial = ex.materialName.trim();
+      const extractedCode = ex.materialCode.trim();
       const materialsForResolvedManufacturer = resolvedManufacturerName
         ? manufacturerInvoices.filter(m => m.manufacturerName.trim().toLowerCase() === resolvedManufacturerName.toLowerCase())
         : [];
@@ -835,8 +852,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         ...prev,
         manufacturerName: resolvedManufacturerName,
         customerName: prev.customerName || customers[0]?.name || '',
-        invoiceNo: extracted.invoiceNo.trim(),
-        date: extracted.date.trim(),
+        invoiceNo: ex.invoiceNo.trim(),
+        date: ex.date.trim(),
       }));
       // Only the first line item is read from a photo (see the note next
       // to Upload Photo below) — it fills line 1; any additional materials
@@ -845,9 +862,9 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         key: genId(),
         materialName: resolvedMaterialName,
         materialCode: resolvedCode,
-        quantityPcs: extracted.quantityPcs,
-        ratePerPc: extracted.ratePerPc,
-        itemValue: extracted.itemValue,
+        quantityPcs: ex.quantityPcs,
+        ratePerPc: ex.ratePerPc,
+        itemValue: ex.itemValue,
         addingNewMaterial: !matchedMaterial && !!(extractedMaterial || extractedCode),
         mfgLengthInput: resolvedLength !== null && resolvedLength !== undefined ? String(resolvedLength) : '',
       }]);

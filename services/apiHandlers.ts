@@ -516,7 +516,7 @@ const ARCHIVE_PHOTO_FOLDER = "/Unit 2/Inwards";
 
 export async function handleArchivePhoto(req: MinimalRequest, res: MinimalResponse) {
   try {
-    const { imageBase64, mimeType, fileName } = req.body || {};
+    const { imageBase64, mimeType, fileName, folder } = req.body || {};
     if (!imageBase64 || !fileName) {
       res.status(400).json({ error: "Missing imageBase64 or fileName." });
       return;
@@ -524,8 +524,18 @@ export async function handleArchivePhoto(req: MinimalRequest, res: MinimalRespon
     const accessToken = await getDropboxAccessToken();
     const buffer = Buffer.from(imageBase64, "base64");
     const ext = mimeType === "image/png" ? "png" : "jpg";
-    const safeName = String(fileName).replace(/[^A-Za-z0-9_.-]/g, "_");
-    const path = `${ARCHIVE_PHOTO_FOLDER}/${safeName}.${ext}`;
+    // Keep the same readable characters the filename builder allows
+    // client-side (letters, digits, spaces, dots, hyphens) — only strip
+    // what Dropbox/Windows genuinely can't store in a path segment.
+    const safeName = String(fileName).replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
+    // Month-bucket subfolder (e.g. "Sep 26"), passed from the client via
+    // buildArchiveMonthFolder — Dropbox creates it automatically on first
+    // upload, no separate "create folder" call needed. Falls back to the
+    // flat root for any older caller that doesn't send one.
+    const safeFolder = folder ? String(folder).replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_").trim() : "";
+    const path = safeFolder
+      ? `${ARCHIVE_PHOTO_FOLDER}/${safeFolder}/${safeName}.${ext}`
+      : `${ARCHIVE_PHOTO_FOLDER}/${safeName}.${ext}`;
 
     const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
       method: "POST",

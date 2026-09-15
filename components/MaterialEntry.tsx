@@ -13,7 +13,7 @@ import {
 import { getLocalDateStr, correctedNow } from '../services/time';
 import { readAndCompressPhoto } from '../services/photo';
 import { extractMaterialEntryPhoto } from '../services/gemini';
-import { archivePhotoToDropbox, buildArchiveFileName } from '../services/dropboxArchive';
+import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from '../services/dropboxArchive';
 import { suggestMatchingRawMaterials } from '../services/dimensionTolerance';
 
 // ============================================================
@@ -236,23 +236,38 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     setExtractingPhoto(true);
     try {
       const { base64, mimeType } = await readAndCompressPhoto(file);
-      // Fire-and-forget — never awaited into the extraction's own
-      // success/failure path, and archivePhotoToDropbox itself swallows
-      // its own errors (see that file). A photo the AI can't read is still
-      // worth keeping in the archive.
-      archivePhotoToDropbox(base64, mimeType, buildArchiveFileName(supplier || 'unknown', invoiceNo || 'pending'))
-        .then(path => { if (path) setMaterialPhotoDropboxPath(path); });
-
-      const extracted = await extractMaterialEntryPhoto(base64, mimeType);
-      setSupplier(prev => extracted.supplierName || prev);
-      setInvoiceNo(prev => extracted.invoiceNo || prev);
-      if (extracted.date) setDate(extracted.date);
-      if (extracted.totalWeightKg > 0) setWeightKg(String(extracted.totalWeightKg));
-      if (extracted.totalBillValue > 0) setBillValue(String(extracted.totalBillValue));
+      let extracted: Awaited<ReturnType<typeof extractMaterialEntryPhoto>> | null = null;
+      try {
+        extracted = await extractMaterialEntryPhoto(base64, mimeType);
+      } finally {
+        // Archive regardless of whether the AI could read the photo (fire-
+        // and-forget — never awaited into the extraction's own success/
+        // failure path, and archivePhotoToDropbox itself swallows its own
+        // errors, see that file). Named from whatever the extraction found,
+        // falling back to what's already typed into the form, then
+        // "Unknown Supplier"/"Pending" — so the archived file lands under
+        // its real Supplier_InvoiceNo_Date name and month folder in the
+        // normal case, instead of always as "unknown_pending_<timestamp>".
+        const archiveSupplier = extracted?.supplierName || supplier;
+        const archiveInvoiceNo = extracted?.invoiceNo || invoiceNo;
+        const archiveDate = extracted?.date || date;
+        archivePhotoToDropbox(
+          base64, mimeType,
+          buildArchiveFileName(archiveSupplier, archiveInvoiceNo, archiveDate),
+          buildArchiveMonthFolder(archiveDate)
+        ).then(path => { if (path) setMaterialPhotoDropboxPath(path); });
+      }
+      if (!extracted) return;
+      const ex = extracted;
+      setSupplier(prev => ex.supplierName || prev);
+      setInvoiceNo(prev => ex.invoiceNo || prev);
+      if (ex.date) setDate(ex.date);
+      if (ex.totalWeightKg > 0) setWeightKg(String(ex.totalWeightKg));
+      if (ex.totalBillValue > 0) setBillValue(String(ex.totalBillValue));
 
       if (mode === 'longer') {
         const matches = suggestMatchingRawMaterials(
-          { odMm: extracted.odMm, thicknessMm: extracted.thicknessMm, lengthMm: extracted.lengthMm },
+          { odMm: ex.odMm, thicknessMm: ex.thicknessMm, lengthMm: ex.lengthMm },
           rawMaterials,
           dimensionTolerances
         );
@@ -260,12 +275,12 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
           const best = matches[0];
           const firstLineKey = lines[0].key;
           setLineRM(firstLineKey, best.id);
-          if (extracted.quantityPcs > 0) {
-            patchLine(firstLineKey, l => ({ ...l, barsReceived: String(extracted.quantityPcs) }));
+          if (ex.quantityPcs > 0) {
+            patchLine(firstLineKey, l => ({ ...l, barsReceived: String(ex.quantityPcs) }));
           }
-          setRmMatchNote(`Matched to ${best.size} — ${best.partName} from the photo (${extracted.materialDescription || 'no description read'}). Verify before saving — you can change it above.`);
-        } else if (extracted.materialDescription) {
-          setRmMatchNote(`Couldn't confidently match "${extracted.materialDescription}" to a Raw Material — pick it by hand below. If this size recurs, ask Admin to add its tolerance under "Dimension Tolerances".`);
+          setRmMatchNote(`Matched to ${best.size} — ${best.partName} from the photo (${ex.materialDescription || 'no description read'}). Verify before saving — you can change it above.`);
+        } else if (ex.materialDescription) {
+          setRmMatchNote(`Couldn't confidently match "${ex.materialDescription}" to a Raw Material — pick it by hand below. If this size recurs, ask Admin to add its tolerance under "Dimension Tolerances".`);
         }
       }
     } catch (err: any) {
