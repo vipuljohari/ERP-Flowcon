@@ -42,7 +42,15 @@ export interface Company {
 // Which views each role may access. 'admin' implicitly gets everything.
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   admin: ['*'],
-  store: ['dashboard', 'inventory', 'inward_logs', 'sales', 'dispatch_daily', 'schedule', 'analytics', 'rm_crossbill'],
+  // 'gate_documents' (Gate Documents for Approval) added for Store — it is
+  // the WhatsApp-gate-photo intake queue and Store is who normally works it
+  // day to day. Admin already has it via '*', and additionally gets a
+  // "Save & Approve" fast path inside that same screen for when no Store
+  // person is available (see GateDocumentsQueue.tsx). 'party_name_master'
+  // is deliberately admin-only (not listed here for any non-admin role) —
+  // it controls which Tally suppliers' gate photos are even allowed to
+  // reach this queue, so no other role can see or change it.
+  store: ['dashboard', 'inventory', 'inward_logs', 'sales', 'dispatch_daily', 'schedule', 'analytics', 'rm_crossbill', 'gate_documents'],
   accounts: ['dashboard', 'sales', 'data_mgmt', 'rm_crossbill', 'inventory'],
   ppc: ['dashboard', 'schedule', 'sales', 'inventory', 'analytics'],
 };
@@ -512,4 +520,91 @@ export interface PendingRMEntry {
   reviewedAt?: string;
   reviewedBy?: string;
   rejectionReason?: string;
+  // Set when this entry originated from a WhatsApp gate photo rather than a
+  // direct Store/PPC Camera or Manual entry — links back to the
+  // GateDocumentForApproval doc it was created from (see below), so Admin's
+  // approval screen can show "from WhatsApp gate photo" context. Absent for
+  // every entry created the normal way.
+  fromGateDocumentId?: string;
+}
+
+// --- Gate-photo capture (WhatsApp "Unit 2 Inward" group) ---
+// One doc per gate photo bot.js relayed that resolved to an Admin-APPROVED
+// RM supplier — see services/apiHandlers.ts's handleGateUpload. This is
+// the PRE-stage, before Store has picked which of the 3 entry types it is
+// or filled in any missing details — a PendingRMEntry doesn't exist yet
+// for this photo. Design (17/18-Sep-26):
+//   - Every doc here is already a confident match against a supplier
+//     Admin has explicitly ticked in GateApprovedSuppliersSettings below
+//     (see handleGateUpload) — so status here only ever starts at
+//     'pending'. Anything that didn't read as an RM invoice, didn't match
+//     any Tally Purchase party, or matched one Admin hasn't approved yet
+//     never gets a doc created here at all — it's archived straight to
+//     the Dropbox "Unprocessed" folder instead (Vipul's 18-Sep decision),
+//     so it's never lost but also never clutters this queue.
+//   - Stays visible in the Gate Documents for Approval tab through the
+//     WHOLE time Store is completing it (status 'in_progress' once a mode
+//     is picked) — only removed once Store actually clicks Post for
+//     Approval on the resulting entry, per Vipul's explicit 18-Sep
+//     confirmation (not the moment a mode is picked).
+//   - imageBase64 is cleared once status becomes 'consumed' (Post for
+//     Approval clicked) — the Dropbox archive from that save is the
+//     photo's permanent record from then on, same as every other Camera
+//     Upload photo, so there's no reason to keep two copies.
+export type GateDocumentStatus = 'pending' | 'in_progress' | 'consumed';
+
+export interface GateDocumentExtractedFields {
+  supplierName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg: number;
+  totalBillValue: number;
+  materialDescription: string;
+  odMm: number;
+  thicknessMm: number;
+  lengthMm: number;
+  quantityPcs: number;
+}
+
+export interface GateDocumentForApproval {
+  id: string;
+  imageBase64: string; // '' once status === 'consumed'
+  mimeType: string;
+  status: GateDocumentStatus;
+  matchedSupplier: string; // always set — see the status-history note above
+  extracted: GateDocumentExtractedFields;
+  originalFileName: string;
+  sender: string; // WhatsApp JID of whoever posted it (the gate guard)
+  pushName?: string | null;
+  caption?: string;
+  waTimestamp?: number | null;
+  capturedAt: string; // ISO — when bot.js captured the photo
+  createdAt: string; // ISO — when this doc was created
+  source: 'whatsapp-gate';
+  pickedEntryType?: PendingRMEntryType;
+  pickedAt?: string;
+  pickedBy?: string;
+  linkedPendingRMEntryId?: string; // set once Post for Approval creates the real PendingRMEntry
+}
+
+// Admin-only "Party Name Master" checkbox selection (Vipul's 18-Sep
+// refinement) over the full Tally-synced Purchase party list
+// (rmPurchaseVouchers' distinct supplierName values): only a party checked
+// here is treated as a genuine RM supplier for gate-photo triage. Anything
+// a gate photo resolves to that ISN'T on this list (including a real Tally
+// party Admin just hasn't reviewed yet) is archived to the Dropbox
+// "Unprocessed" folder instead of reaching Gate Documents for Approval —
+// see services/apiHandlers.ts's handleGateUpload.
+//
+// A single settings-style doc at settings/gateApprovedSuppliers — same
+// shape hooks/useFirestoreDoc.ts already exists for (live sync, straight
+// setDoc writes, offline-queue retry), unlike useFirestoreArray's per-item
+// collections. The client (Party Name Master screen) does
+// `useFirestoreDoc<GateApprovedSuppliersSettings>('settings', 'gateApprovedSuppliers', { selectedNames: [] })`;
+// the server (handleGateUpload, via firebase-admin) reads the exact same
+// collection/doc path directly.
+export interface GateApprovedSuppliersSettings {
+  selectedNames: string[];
+  updatedAt?: string;
+  updatedBy?: string;
 }

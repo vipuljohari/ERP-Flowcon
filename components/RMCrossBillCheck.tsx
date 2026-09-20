@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial, Part } from '../types';
+import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial, Part, GateDocumentForApproval } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
 import { getLocalDateStr, correctedNow } from '../services/time';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from '../services/dropboxArchive';
@@ -111,6 +111,18 @@ interface RMCrossBillCheckProps {
   // before approving.
   cameraEnabled?: boolean;
   manualEnabled?: boolean;
+  // Opened from a Gate Documents for Approval card (WhatsApp gate photo) —
+  // Store (or Admin, via the Admin-only fast path) already picked "RM
+  // Cross-Bill" for it. See the seeding effect below (near
+  // mfgMaterialNameOptions) for exactly what gets pre-filled. Nothing here
+  // is locked — a gate photo has only ever been supplier-name-matched
+  // automatically, never reviewed by a person, so review/correct-before-Save
+  // still applies in full.
+  gateSeed?: GateDocumentForApproval | null;
+  // Fired if Store/Admin clicks Cancel on the Manufacturer Invoice form
+  // while a gate-seeded session was open, instead of completing the Save —
+  // App.tsx uses this to put the gate document back to 'pending'.
+  onGateSeedCancelled?: () => void;
 }
 
 const genId = () => Math.random().toString(36).substr(2, 9);
@@ -201,6 +213,22 @@ const LockedFieldNote: React.FC = () => (
   <p className="text-[9px] font-bold text-indigo-500 mt-1 px-1">🔒 Auto-filled from photo — locked. If this is wrong, Admin will correct it in RM Approvals.</p>
 );
 
+// Shown at the top of the Manufacturer Invoice wizard when it was opened
+// from a Gate Documents for Approval card (WhatsApp gate photo) — see the
+// gateSeed prop comment above. Unlike LockedFieldNote above, every field
+// here stays fully EDITABLE — a gate photo has only ever been matched
+// against an Admin-approved supplier NAME automatically, never reviewed by
+// a person, so Store/Admin completing this card is the first human check.
+const GateSeedBanner: React.FC<{ doc: GateDocumentForApproval }> = ({ doc }) => (
+  <div className="border-2 border-emerald-200 bg-emerald-50/60 rounded-2xl p-3 flex items-start gap-2 mb-4">
+    <span className="text-lg leading-none">📷</span>
+    <p className="text-[11px] font-semibold text-emerald-700 leading-snug">
+      Seeded from a WhatsApp gate photo (matched supplier: <span className="font-black">{doc.matchedSupplier}</span>). Only one material line could be read automatically —
+      review it, add any other materials on the invoice by hand, then continue as usual. The photo itself is archived to Dropbox automatically once you Save.
+    </p>
+  </div>
+);
+
 // Loose name matching for the Tally auto-match below — same tiered idea as
 // the Tally Connector's own findMatchingCustomer (exact, then substring
 // either direction), since "Tube Investments of India Ltd" typed by Store
@@ -241,6 +269,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   setManufacturerInvoices, setCrossInvoices, setMaterialLengths, isAdmin,
   onCreateAlert, onSaveManufacturerInvoiceWithAllotment,
   cameraEnabled = true, manualEnabled = true,
+  gateSeed = null, onGateSeedCancelled,
 }) => {
   // "Camera Upload only" — Manual Entry is switched off, so Store/PPC have
   // no way to type Manufacturer Name/Invoice No. themselves; those two
@@ -914,6 +943,66 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     [mfgMaterialsForSelectedManufacturer]
   );
 
+  // --- Opened from a Gate Documents for Approval card (WhatsApp gate
+  // photo), RM Cross-Bill / Manufacturer Invoice mode ---
+  // Mirrors handleInvoicePhotoUpload's own manufacturer-name resolution
+  // above, just fed the gate document's already-extracted fields instead of
+  // running a fresh extraction. Only ONE line item is ever seeded here
+  // (same "only the first line item is read" limitation the photo-upload
+  // flow already has) — GateDocumentExtractedFields has no per-material
+  // breakdown, only aggregate totalBillValue/quantityPcs/materialDescription
+  // for the whole invoice, so that whole bill value lands on this single
+  // line; Store/Admin splits it into more lines by hand if the real invoice
+  // actually covers more than one material. materialCode is never available
+  // from a gate photo, so this line always opens as "+ Add New Material"
+  // (addingNewMaterial: true) — same as an unrecognized material read from
+  // an ordinary invoice photo. Keyed on gateSeed?.id, not the object, so it
+  // seeds exactly once per document and never stomps what Store has since
+  // typed. Unlike the Camera Upload flow, mfgPhotoDropboxPath is left null
+  // here — the gate photo's archival is handled by App.tsx once
+  // onSaveManufacturerInvoiceWithAllotment actually fires, not by this
+  // component (see the prop comment above).
+  useEffect(() => {
+    if (!gateSeed) return;
+    const ex = gateSeed.extracted;
+    const extractedManufacturer = (ex.supplierName || gateSeed.matchedSupplier || '').trim();
+    const matchedManufacturer = knownManufacturerNames.find(n => n.toLowerCase() === extractedManufacturer.toLowerCase());
+    const resolvedManufacturerName = matchedManufacturer || extractedManufacturer;
+    setAddingNewManufacturer(!matchedManufacturer && !!extractedManufacturer);
+    setMfgForm({
+      manufacturerName: resolvedManufacturerName,
+      customerName: customers[0]?.name || '',
+      invoiceNo: (ex.invoiceNo || '').trim(),
+      date: (ex.date || '').trim(),
+      totalWeightKg: ex.totalWeightKg || 0,
+      actualWeightKg: 0,
+    });
+    setMfgLineItems([{
+      key: genId(),
+      materialName: ex.materialDescription || '',
+      materialCode: '',
+      quantityPcs: ex.quantityPcs || 0,
+      ratePerPc: 0,
+      itemValue: ex.totalBillValue || 0,
+      addingNewMaterial: true,
+      mfgLengthInput: '',
+    }]);
+    setWizardStep(1);
+    setAllotmentLines([]);
+    setExtractingInvoicePhoto(false);
+    setInvoicePhotoError(null);
+    setMfgAiExtracted(true);
+    setMfgPhotoDropboxPath(null);
+    setMfgDuplicateError(null);
+    setShowMfgForm(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gateSeed?.id]);
+
+  const handleCancelMfgForm = () => {
+    if (gateSeed) onGateSeedCancelled?.();
+    closeMfgForm();
+  };
+
   // Step 1's "Next ->" — validates and resolves, but never persists
   // anything: per Vipul's sign-off, an invoice is no longer saveable in two
   // stages, so there is nothing here left to save yet. All of what used to
@@ -1100,7 +1189,12 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
               Bulk Import from File
             </button>
           )}
-          <button onClick={openFreshMfgForm} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest">
+          <button
+            onClick={openFreshMfgForm}
+            disabled={!!gateSeed}
+            title={gateSeed ? 'Finish or Cancel the gate-document invoice you have open before starting a new one.' : undefined}
+            className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             + Manufacturer Invoice
           </button>
           <button onClick={openFreshCrossForm} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-widest">
@@ -1360,6 +1454,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
             <p className="text-[11px] font-black uppercase tracking-widest text-indigo-400 mb-4">
               {wizardStep === 1 ? 'Step 1 of 2 — Invoice Details' : 'Step 2 of 2 — Allot Bars to Inventory'}
             </p>
+            {gateSeed && <GateSeedBanner doc={gateSeed} />}
             {wizardStep === 1 && (
             <>
             {cameraEnabled && (
@@ -1602,7 +1697,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-200 rounded-xl px-3 py-2">{mfgDuplicateError}</p>
               )}
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={closeMfgForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
+                <button type="button" onClick={handleCancelMfgForm} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">Cancel</button>
                 <button type="submit" className="flex-[2] py-3 bg-slate-900 text-white rounded-xl font-bold text-sm">Next →</button>
               </div>
             </form>

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance } from '../types';
+import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance, GateDocumentForApproval } from '../types';
 import { CATEGORIES } from '../constants';
 import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate } from '../services/rmYield';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
@@ -59,6 +59,18 @@ interface InventoryProps {
   // itself doesn't use it.
   cameraEnabled?: boolean;
   manualEnabled?: boolean;
+  // Gate Documents for Approval hand-off (see App.tsx / GateDocumentsQueue.tsx)
+  // — Store/Admin picked "Finished Parts" or "Longer Pipe" for a WhatsApp
+  // gate photo, so App.tsx switched currentView to 'inventory' and set
+  // these. Inventory.tsx auto-opens Material Entry pre-seeded from it (see
+  // the effect below) instead of waiting for an openMaterialEntry() click.
+  gateSeed?: GateDocumentForApproval | null;
+  gateSeedMode?: 'pieces' | 'longer' | null;
+  // Fired if Store/Admin closes Material Entry (Cancel / the ✕) instead of
+  // submitting, while a gate-seeded session was open — App.tsx uses this to
+  // put the gate document back to 'pending' so it isn't stuck "in_progress"
+  // with nobody working it.
+  onGateSeedCancelled?: () => void;
 }
 
 // An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
@@ -102,6 +114,9 @@ const Inventory: React.FC<InventoryProps> = ({
   setDimensionTolerances,
   cameraEnabled = true,
   manualEnabled = true,
+  gateSeed = null,
+  gateSeedMode = null,
+  onGateSeedCancelled,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -110,6 +125,18 @@ const Inventory: React.FC<InventoryProps> = ({
   const [materialEntryPart, setMaterialEntryPart] = useState<Part | null>(null);
   const [materialEntryRMId, setMaterialEntryRMId] = useState<string | null>(null);
   const [showMaterialEntry, setShowMaterialEntry] = useState(false);
+  // Gate Documents for Approval hand-off — auto-open Material Entry (no
+  // seedPart/initialRMId, MaterialEntry.tsx seeds itself from gateSeed) the
+  // moment App.tsx hands us a gate document to process. Keyed on
+  // gateSeed?.id so re-renders of the same in-progress doc don't re-open a
+  // modal Store may have already interacted with.
+  useEffect(() => {
+    if (!gateSeed) return;
+    setMaterialEntryPart(null);
+    setMaterialEntryRMId(null);
+    setShowMaterialEntry(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gateSeed?.id]);
   const openMaterialEntry = (p: Part) => {
     if (p.partType === 'sheet_metal') {
       setSelectedPart(p);
@@ -1967,6 +1994,8 @@ const Inventory: React.FC<InventoryProps> = ({
           manualEnabled={manualEnabled}
           initialRMId={materialEntryRMId}
           onInitialRMConsumed={() => setMaterialEntryRMId(null)}
+          gateSeed={gateSeed}
+          gateSeedMode={gateSeedMode}
           onSubmitFinishedPieces={(header, lines, photoDropboxPath) => {
             onMaterialEntryFinishedPieces?.(header, lines, photoDropboxPath);
             setShowMaterialEntry(false);
@@ -1980,6 +2009,7 @@ const Inventory: React.FC<InventoryProps> = ({
             setMaterialEntryRMId(null);
           }}
           onClose={() => {
+            if (gateSeed) onGateSeedCancelled?.();
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
             setMaterialEntryRMId(null);

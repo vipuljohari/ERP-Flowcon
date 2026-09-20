@@ -22,6 +22,8 @@ import RMCrossBillCheck, { MfgInvoiceSubmission } from './components/RMCrossBill
 import Notifications from './components/Notifications';
 import RMApprovalQueue from './components/RMApprovalQueue';
 import TrialRMReceiving from './components/TrialRMReceiving';
+import GateDocumentsQueue from './components/GateDocumentsQueue';
+import PartyNameMaster from './components/PartyNameMaster';
 import ErrorBoundary from './components/ErrorBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
@@ -29,7 +31,8 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, RMEntryModeSettings, canAccessView } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings } from './types';
+import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
 import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
@@ -180,6 +183,28 @@ const MainApp: React.FC = () => {
   // Written only by the Tally Connector script on the 24x7 server (Admin
   // SDK, hourly) — never by the app, so the setter is never used here.
   const [tallyPurchaseVouchers] = useFirestoreArray<RMPurchaseVoucher>('rmPurchaseVouchers');
+  // WhatsApp gate-photo intake — see components/GateDocumentsQueue.tsx and
+  // services/apiHandlers.ts's handleGateUpload (server-side, via
+  // firebase-admin) which is what actually creates docs in this collection.
+  const [gateDocuments, setGateDocuments] = useFirestoreArray<GateDocumentForApproval>('gateDocumentsForApproval');
+  // Admin's Party Name Master selection over the Tally Purchase party list
+  // — same settings-doc pattern as rmEntryModeSettings above, and the exact
+  // same collection/doc path (settings/gateApprovedSuppliers) handleGateUpload
+  // reads server-side.
+  const [gateApprovedSuppliers, setGateApprovedSuppliers] = useFirestoreDoc<GateApprovedSuppliersSettings>('settings', 'gateApprovedSuppliers', { selectedNames: [] });
+  // Every distinct Purchase party name Tally has ever shown us — Party Name
+  // Master's full checkbox candidate list (see rmPurchaseVouchers' own
+  // "never written by the app" comment above; this is read-only here too).
+  const tallySupplierNameOptions = useMemo(
+    () => Array.from(new Set(tallyPurchaseVouchers.map(pv => (pv.supplierName || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [tallyPurchaseVouchers]
+  );
+  // Which Gate Documents for Approval card (if any) currently has its
+  // matching entry screen open — set the moment Store/Admin picks a mode
+  // on GateDocumentsQueue, cleared once that entry is actually submitted or
+  // cancelled. See finalizeGateDocument / the Inventory & RMCrossBillCheck
+  // render blocks below.
+  const [gateDocInProgress, setGateDocInProgress] = useState<{ doc: GateDocumentForApproval; mode: PendingRMEntryType } | null>(null);
   // Admin-only Notifications feed — persisted so an alert raised from any
   // login (Store, PPC, Accounts) is visible to Admin on any other
   // device/session. Never written to by the fully-automatic Tally sync;
@@ -1438,7 +1463,7 @@ const MainApp: React.FC = () => {
           </div>
         ))}
       </div>
-      <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} pendingAlertsCount={adminAlerts.filter(a => !a.verified && !a.flagged).length} pendingRMApprovalsCount={pendingRMEntries.filter(e => e.status === 'pending' || e.status === 'not_matched').length} />
+      <Sidebar currentView={currentView} onViewChange={setCurrentView} currentMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})} role={role} userDisplayName={appUser?.displayName || userName} onLogout={logout} userName={userName} onUserNameChange={setUserName} pendingAlertsCount={adminAlerts.filter(a => !a.verified && !a.flagged).length} pendingRMApprovalsCount={pendingRMEntries.filter(e => e.status === 'pending' || e.status === 'not_matched').length} pendingGateDocumentsCount={gateDocuments.filter(d => d.status === 'pending' || d.status === 'in_progress').length} />
       <main className="flex-1 md:ml-64 p-6 pt-20 md:p-10 relative text-left">
         <div className="max-w-7xl mx-auto">
           <div className="flex justify-between items-start mb-8 text-left">
@@ -1510,12 +1535,27 @@ const MainApp: React.FC = () => {
               manufacturerInvoices={rmManufacturerInvoices}
               setManufacturerInvoices={setRmManufacturerInvoices}
               materialLengths={rmMaterialLengths}
-              onMaterialEntryFinishedPieces={stageMaterialEntryFinishedPieces}
-              onMaterialEntryLongerPipe={stageMaterialEntryLongerPipe}
+              onMaterialEntryFinishedPieces={(header, lines, photoDropboxPath) => {
+                const fromGateDocumentId = gateDocInProgress?.mode === 'finished_pieces' ? gateDocInProgress.doc.id : undefined;
+                const newEntry = stageMaterialEntryFinishedPieces(header, lines, photoDropboxPath, fromGateDocumentId);
+                if (newEntry && gateDocInProgress?.mode === 'finished_pieces') {
+                  finalizeGateDocument(gateDocInProgress.doc, newEntry);
+                }
+              }}
+              onMaterialEntryLongerPipe={(header, lines, photoDropboxPath) => {
+                const fromGateDocumentId = gateDocInProgress?.mode === 'longer_pipe' ? gateDocInProgress.doc.id : undefined;
+                const newEntry = stageMaterialEntryLongerPipe(header, lines, photoDropboxPath, fromGateDocumentId);
+                if (newEntry && gateDocInProgress?.mode === 'longer_pipe') {
+                  finalizeGateDocument(gateDocInProgress.doc, newEntry);
+                }
+              }}
               dimensionTolerances={dimensionTolerances}
               setDimensionTolerances={setDimensionTolerances}
               cameraEnabled={rmEntryCameraEnabled}
               manualEnabled={rmEntryManualEnabled}
+              gateSeed={gateDocInProgress && gateDocInProgress.mode !== 'manufacturer_invoice' ? gateDocInProgress.doc : null}
+              gateSeedMode={gateDocInProgress?.mode === 'finished_pieces' ? 'pieces' : gateDocInProgress?.mode === 'longer_pipe' ? 'longer' : null}
+              onGateSeedCancelled={cancelGateDocumentInProgress}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'inward_logs' && <InwardLogs logs={inwardLogs} parts={cDP} auditDate={sD} isAdmin={isAdmin} rawMaterials={modelFilteredRawMaterials} localRMOpeningBalances={resolvedRMOpeningBalances} onDeleteLog={(id) => {
@@ -1828,9 +1868,34 @@ const MainApp: React.FC = () => {
               setMaterialLengths={setRmMaterialLengths}
               isAdmin={isAdmin}
               onCreateAlert={pushAdminAlert}
-              onSaveManufacturerInvoiceWithAllotment={stageManufacturerInvoiceWithAllotment}
+              onSaveManufacturerInvoiceWithAllotment={(submission, photoDropboxPath) => {
+                const fromGateDocumentId = gateDocInProgress?.mode === 'manufacturer_invoice' ? gateDocInProgress.doc.id : undefined;
+                const newEntry = stageManufacturerInvoiceWithAllotment(submission, photoDropboxPath, fromGateDocumentId);
+                if (newEntry && gateDocInProgress?.mode === 'manufacturer_invoice') {
+                  finalizeGateDocument(gateDocInProgress.doc, newEntry);
+                }
+              }}
               cameraEnabled={rmEntryCameraEnabled}
               manualEnabled={rmEntryManualEnabled}
+              gateSeed={gateDocInProgress?.mode === 'manufacturer_invoice' ? gateDocInProgress.doc : null}
+              onGateSeedCancelled={cancelGateDocumentInProgress}
+            />
+          )}
+          {canAccessView(role, 'gate_documents') && currentView === 'gate_documents' && (
+            <GateDocumentsQueue
+              gateDocuments={gateDocuments}
+              isAdmin={isAdmin}
+              onProcess={pickGateDocumentMode}
+              onResetInProgress={isAdmin ? resetGateDocumentInProgress : undefined}
+            />
+          )}
+          {isAdmin && currentView === 'party_name_master' && (
+            <PartyNameMaster
+              tallySupplierNames={tallySupplierNameOptions}
+              approvedNames={gateApprovedSuppliers.selectedNames || []}
+              updatedAt={gateApprovedSuppliers.updatedAt}
+              updatedBy={gateApprovedSuppliers.updatedBy}
+              onSave={(names) => setGateApprovedSuppliers({ selectedNames: names, updatedAt: getLocalISOString(), updatedBy: appUser?.displayName || userName })}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust, wasFirstEntry) => setParts(prev => prev.map(p => {
@@ -2308,7 +2373,7 @@ const MainApp: React.FC = () => {
   // clicked Post for Approval on ANY of the 3 entry screens. A hoisted
   // function declaration is unaffected by that bug. Do not change this back
   // to a const arrow function.
-  function pushPendingRMEntry(entry: Omit<PendingRMEntry, 'id' | 'submittedAt' | 'submittedBy' | 'submittedByRole'>) {
+  function pushPendingRMEntry(entry: Omit<PendingRMEntry, 'id' | 'submittedAt' | 'submittedBy' | 'submittedByRole'>): PendingRMEntry {
     const newEntry: PendingRMEntry = {
       id: Math.random().toString(36).substr(2, 9),
       submittedAt: getLocalISOString(),
@@ -2317,32 +2382,96 @@ const MainApp: React.FC = () => {
       ...entry,
     };
     setPendingRMEntries(prev => [newEntry, ...prev]);
+    return newEntry;
   }
 
-  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string) {
-    if (lines.length === 0) return;
+  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string, fromGateDocumentId?: string): PendingRMEntry | null {
+    if (lines.length === 0) return null;
     const partNames = lines.map(l => { const p = parts.find(x => x.id === l.partId); return `${p?.name || l.partId} (${l.quantity} Pcs)`; });
-    pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoDropboxPath });
+    return pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoDropboxPath, fromGateDocumentId });
   }
 
-  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string) {
-    if (lines.length === 0) return;
+  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string, fromGateDocumentId?: string): PendingRMEntry | null {
+    if (lines.length === 0) return null;
     const lineSummaries = lines.map(l => { const rm = rawMaterials.find(r => r.id === l.rmId); return `${rm ? rm.size : 'RM'} (${l.barsReceived} bars)`; });
-    pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoDropboxPath });
+    return pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoDropboxPath, fromGateDocumentId });
   }
 
-  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photoDropboxPath?: string) {
-    if (submission.lines.length === 0) return;
+  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photoDropboxPath?: string, fromGateDocumentId?: string): PendingRMEntry | null {
+    if (submission.lines.length === 0) return null;
     const unresolvedLines = submission.lines.filter(l => !l.rmId);
     const isNotMatched = unresolvedLines.length > 0;
     const materialsSummary = submission.lines.map(l => `${l.materialCode || l.materialName || 'material'} (${l.quantityPcs} Pcs)`).join(', ');
-    pushPendingRMEntry({
+    return pushPendingRMEntry({
       entryType: 'manufacturer_invoice', status: isNotMatched ? 'not_matched' : 'pending',
       manufacturerInvoicePayload: submission,
       summary: `Manufacturer Invoice — ${submission.manufacturerName} — ${submission.invoiceNo} — ${materialsSummary}`,
       notMatchedReason: isNotMatched ? `${unresolvedLines.length} material(s) have no linked Raw Material yet: ${unresolvedLines.map(l => l.materialCode || l.materialName).join(', ')}. Admin must specify which RM Master size to book against before this can be approved.` : undefined,
       photoDropboxPath,
+      fromGateDocumentId,
     });
+  }
+
+  // --- Gate Documents for Approval hand-off ---
+  // Fired once the matching entry screen (Material Entry or RM Cross-Bill
+  // Check's Manufacturer Invoice wizard) actually submits — the staging
+  // call above already created `newEntry`. From here: archive the gate
+  // photo to Dropbox using the SAME naming convention as every other RM
+  // Receiving photo (never earlier — per Vipul's explicit 18-Sep
+  // confirmation, only once Post for Approval / Save is clicked), mark the
+  // gate document 'consumed' and clear its photo, and — only when the
+  // person doing this is Admin — immediately approve the staged entry too,
+  // reusing approvePendingRMEntry (and therefore the exact same validated
+  // posting handlers) rather than any separate code path, per this app's
+  // existing "approve exactly once, only through this one function"
+  // invariant. For Store, the entry simply stays 'pending' in the normal
+  // RM Approvals queue like any other entry.
+  async function finalizeGateDocument(gateDoc: GateDocumentForApproval, newEntry: PendingRMEntry) {
+    let archivedPath: string | undefined;
+    if (gateDoc.imageBase64) {
+      archivedPath = (await archivePhotoToDropbox(
+        gateDoc.imageBase64,
+        gateDoc.mimeType,
+        buildArchiveFileName(gateDoc.matchedSupplier, gateDoc.extracted.invoiceNo, gateDoc.extracted.date),
+        buildArchiveMonthFolder(gateDoc.extracted.date)
+      )) || undefined;
+    }
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'consumed', imageBase64: '', linkedPendingRMEntryId: newEntry.id } : d)));
+    if (archivedPath) {
+      updatePendingRMEntry(newEntry.id, e => ({ ...e, photoDropboxPath: archivedPath }));
+    }
+    if (isAdmin) {
+      approvePendingRMEntry({ ...newEntry, photoDropboxPath: archivedPath || newEntry.photoDropboxPath });
+    }
+    setGateDocInProgress(null);
+  }
+
+  // Store (or Admin) picked a mode on a Gate Documents for Approval card —
+  // mark it 'in_progress' (so it's visibly claimed, not silently vanished)
+  // and open the matching screen via gateDocInProgress; the Inventory /
+  // RMCrossBillCheck render blocks below react to that state.
+  function pickGateDocumentMode(gateDoc: GateDocumentForApproval, mode: PendingRMEntryType) {
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'in_progress', pickedEntryType: mode, pickedAt: getLocalISOString(), pickedBy: appUser?.displayName || userName } : d)));
+    setGateDocInProgress({ doc: gateDoc, mode });
+    setCurrentView(mode === 'manufacturer_invoice' ? 'rm_crossbill' : 'inventory');
+  }
+
+  // Store/Admin closed the entry screen (Cancel / ✕) without submitting —
+  // put the card back to 'pending' instead of leaving it stuck 'in_progress'
+  // with nobody working it.
+  function cancelGateDocumentInProgress() {
+    if (!gateDocInProgress) return;
+    const { doc: gateDoc } = gateDocInProgress;
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'pending', pickedEntryType: undefined, pickedAt: undefined, pickedBy: undefined } : d)));
+    setGateDocInProgress(null);
+  }
+
+  // Admin-only "unstick" action from GateDocumentsQueue itself — for when
+  // whoever picked a card closed their browser/tab instead of Cancel/Post
+  // for Approval, leaving it 'in_progress' with no screen actually open.
+  function resetGateDocumentInProgress(gateDoc: GateDocumentForApproval) {
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'pending', pickedEntryType: undefined, pickedAt: undefined, pickedBy: undefined } : d)));
+    if (gateDocInProgress?.doc.id === gateDoc.id) setGateDocInProgress(null);
   }
 
   function approvePendingRMEntry(entry: PendingRMEntry) {

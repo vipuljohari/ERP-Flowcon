@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Part, RawMaterial, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance } from '../types';
+import { Part, RawMaterial, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance, GateDocumentForApproval } from '../types';
 import {
   pcsPerBar,
   MaterialEntryHeader,
@@ -56,6 +56,23 @@ const FormField: React.FC<{ label: string; children: React.ReactNode }> = ({ lab
 // only Admin can, in the RM Approvals screen.
 const LockedFieldNote: React.FC = () => (
   <p className="text-[9px] font-bold text-indigo-500 mt-1 px-1">🔒 Auto-filled from photo — locked. If this is wrong, Admin will correct it in RM Approvals.</p>
+);
+
+// Shown at the top of the form when this entry was opened from a Gate
+// Documents for Approval card (WhatsApp gate photo) rather than seeded by
+// hand. Unlike cameraOnlyMode's LockedFieldNote above, these fields stay
+// fully EDITABLE — a gate photo has only ever been supplier-name-matched
+// automatically, never reviewed by a person, so Store/Admin completing this
+// card here is the first human check and must be free to correct anything
+// the OCR read wrong before it ever reaches RM Approvals.
+const GateSeedBanner: React.FC<{ doc: GateDocumentForApproval }> = ({ doc }) => (
+  <div className="border-2 border-emerald-200 bg-emerald-50/60 rounded-2xl p-3 flex items-start gap-2">
+    <span className="text-lg leading-none">📷</span>
+    <p className="text-[11px] font-semibold text-emerald-700 leading-snug">
+      Seeded from a WhatsApp gate photo (matched supplier: <span className="font-black">{doc.matchedSupplier}</span>). Fields below were read automatically —
+      please review and correct anything the photo misread, then complete this entry as usual. The photo itself is archived to Dropbox automatically once you Save.
+    </p>
+  </div>
 );
 
 // Same visual pattern as RMCrossBillCheck.tsx's "Auto-fill from a photo
@@ -170,6 +187,22 @@ interface MaterialEntryProps {
   // them afterwards, in the RM Approvals screen, before approving.
   cameraEnabled?: boolean;
   manualEnabled?: boolean;
+  // Third way in, alongside seedPart/initialRMId — Store (or Admin, via the
+  // Admin-only fast path) opened this from a card on the Gate Documents for
+  // Approval screen and already picked which of the 3 entry types it is.
+  // gateSeedMode picks Finished Pieces vs Longer Pipe the same way
+  // initialRMId always implied Longer Pipe; gateSeed carries the
+  // already-OCR-extracted header fields (and the matched supplier, for the
+  // banner above) — this component seeds them into the SAME state
+  // handleMaterialPhotoUpload already sets from its own Camera Upload flow,
+  // it just skips straight past "please upload a photo" since the photo and
+  // its extraction already happened over WhatsApp. Nothing here is locked;
+  // see GateSeedBanner. The caller (App.tsx, via Inventory.tsx) is
+  // responsible for archiving the photo / marking the gate doc consumed
+  // once onSubmitFinishedPieces/onSubmitLongerPipe actually fires — this
+  // component only ever reads gateSeed, never mutates or clears it.
+  gateSeed?: GateDocumentForApproval | null;
+  gateSeedMode?: 'pieces' | 'longer' | null;
 }
 
 const MaterialEntry: React.FC<MaterialEntryProps> = ({
@@ -186,6 +219,8 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   setDimensionTolerances,
   cameraEnabled = true,
   manualEnabled = true,
+  gateSeed = null,
+  gateSeedMode = null,
 }) => {
   // "Camera Upload only" — Manual Entry is switched off, so Store/PPC have
   // no way to type Supplier/Invoice No. themselves; those two fields lock to
@@ -397,6 +432,60 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialRMId]);
 
+  // --- Third way in: opened from a Gate Documents for Approval card ---
+  // Mirrors handleMaterialPhotoUpload's own extraction handling above, just
+  // fed already-extracted fields instead of running the extraction itself.
+  // Keyed on gateSeed?.id (not the whole object) so this seeds exactly once
+  // per gate document even though the parent's Firestore-synced gateSeed
+  // object gets a new identity on every snapshot — it must NOT re-stomp
+  // whatever Store has since typed over the seeded values.
+  useEffect(() => {
+    if (!gateSeed) return;
+    const ex = gateSeed.extracted;
+    setEntryMode(gateSeedMode || 'pieces');
+    setStep(1);
+    setSupplier(ex.supplierName || gateSeed.matchedSupplier || '');
+    setInvoiceNo(ex.invoiceNo || '');
+    if (ex.date) setDate(ex.date);
+    if (ex.totalWeightKg > 0) setWeightKg(String(ex.totalWeightKg));
+    if (ex.totalBillValue > 0) setBillValue(String(ex.totalBillValue));
+    // Dharamkanta Weight is deliberately left blank — it's never part of the
+    // OCR schema (a physical weighbridge slip reading), same as the Camera
+    // Upload flow — Store/Admin must type it in by hand either way.
+
+    if (gateSeedMode === 'longer') {
+      const seededLines = impliedRM
+        ? (() => {
+            const eligible = eligiblePartsForRM(impliedRM.id);
+            const preCheck = eligible
+              .filter(p => p.id === seedPart?.id || seedPart?.siblingIds?.includes(p.id) || p.siblingIds?.includes(seedPart?.id || ''))
+              .map(p => p.id);
+            return [makeLongerLine(impliedRM.id, preCheck)];
+          })()
+        : [makeLongerLine()];
+      setLines(seededLines);
+      const matches = suggestMatchingRawMaterials(
+        { odMm: ex.odMm, thicknessMm: ex.thicknessMm, lengthMm: ex.lengthMm },
+        rawMaterials,
+        dimensionTolerances
+      );
+      if (matches.length > 0) {
+        const best = matches[0];
+        const firstLineKey = seededLines[0].key;
+        setLineRM(firstLineKey, best.id);
+        if (ex.quantityPcs > 0) {
+          patchLine(firstLineKey, l => ({ ...l, barsReceived: String(ex.quantityPcs) }));
+        }
+        setRmMatchNote(`Matched to ${best.size} — ${best.partName} from the gate photo (${ex.materialDescription || 'no description read'}). Verify before saving — you can change it above.`);
+      } else if (ex.materialDescription) {
+        setRmMatchNote(`Couldn't confidently match "${ex.materialDescription}" to a Raw Material — pick it by hand below. If this size recurs, ask Admin to add its tolerance under "Dimension Tolerances".`);
+      }
+    } else {
+      setFinishedLines([makeFinishedLine(seedPart?.id)]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gateSeed?.id]);
+
   const closeEntry = () => onClose();
 
   const patchLine = (key: string, updater: (l: UILongerLine) => UILongerLine) => {
@@ -544,6 +633,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'pieces' && step === 1 && (
           <div className="mt-4 space-y-3">
+            {gateSeed && <GateSeedBanner doc={gateSeed} />}
             {cameraEnabled && (
               <CameraUploadBlock
                 inputIdPrefix="me-pieces"
@@ -634,6 +724,7 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
         {entryMode === 'longer' && step === 1 && (
           <div className="mt-4 space-y-3">
+            {gateSeed && <GateSeedBanner doc={gateSeed} />}
             {cameraEnabled && (
               <CameraUploadBlock
                 inputIdPrefix="me-longer"

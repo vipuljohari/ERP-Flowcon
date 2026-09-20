@@ -1,6 +1,7 @@
 // Shared request-handler logic for every server-side route this app needs
-// (Gemini AI calls, and the two Admin-only user-management actions that
-// must run with Firebase Admin privileges rather than the client SDK).
+// (Gemini AI calls, the two Admin-only user-management actions that must
+// run with Firebase Admin privileges rather than the client SDK, and the
+// WhatsApp gate-photo capture endpoint added 18-Sep-26).
 //
 // Written once here and used from two different places:
 //   - server.ts        — a local-dev Express server (`npm run dev`).
@@ -15,6 +16,8 @@
 // local-dev server and the production functions can never drift apart.
 import { GoogleGenAI, Type } from "@google/genai";
 import admin from "firebase-admin";
+import { matchKnownSupplier } from "./rmSupplierMatch.js";
+import { buildArchiveFileName, buildArchiveMonthFolder } from "./dropboxArchive.js";
 
 // A minimal, structurally-compatible request/response shape that both
 // Express's (Request, Response) and Vercel's (VercelRequest,
@@ -335,36 +338,36 @@ export async function handleExtractInvoice(req: MinimalRequest, res: MinimalResp
   }
 }
 
-// Reads a photo of a Raw Material supplier's invoice for Material Entry's
-// Camera Upload (Finished Pieces / Longer Pipe) — a different shape from
-// handleExtractInvoice above, which feeds RM Cross-Bill Check's own
-// Manufacturer Invoice form. This one additionally pulls the OD/Thickness/
-// Length actually printed in the material description line (e.g. "STEEL
-// TUBES-ERW/SB-ROUND-44.45 X 1.8 X 5710-AS ROLLED"), so the client can
-// suggest the matching Raw Material via services/dimensionTolerance.ts —
-// always a suggestion the Spec/Material dropdown shows for review, never
-// something this endpoint or the client applies on its own. Also extracts
-// Total Weight (Kg) and Total Bill Value, which the RM Cross-Bill Check
-// extractor doesn't need to. Dharamkanta (weighbridge) Weight is
-// deliberately never part of this — it's a physical slip generated at
-// receipt, never printed on the supplier's invoice, so it stays a manual
-// field exactly like it already is on every other invoice form in this
-// app.
-export async function handleExtractMaterialEntryPhoto(req: MinimalRequest, res: MinimalResponse) {
-  try {
-    const ai = getGenAI();
-    if (!ai) {
-      res.status(503).json({ error: "Gemini API key is not configured. Please add GEMINI_API_KEY under Settings > Secrets." });
-      return;
-    }
+export interface ExtractedMaterialEntryFields {
+  supplierName: string;
+  invoiceNo: string;
+  date: string;
+  totalWeightKg: number;
+  totalBillValue: number;
+  materialDescription: string;
+  odMm: number;
+  thicknessMm: number;
+  lengthMm: number;
+  quantityPcs: number;
+}
 
-    const { imageBase64, mimeType } = req.body || {};
-    if (!imageBase64 || !mimeType) {
-      res.status(400).json({ error: "Missing imageBase64 or mimeType." });
-      return;
-    }
+// Core extraction logic for a Raw Material supplier invoice photo — shared
+// by handleExtractMaterialEntryPhoto (Store's own Camera Upload, browser-
+// triggered) and handleGateUpload (WhatsApp gate-photo capture, bot.js-
+// triggered) below, added 18-Sep-26 so the gate-photo pipeline reuses the
+// EXACT SAME prompt/schema instead of a second copy that could silently
+// drift out of sync with it — same reasoning as services/customerMatch.ts's
+// extraction from services/tally.ts. Throws on a missing/unconfigured
+// Gemini key or an unparsable response; each caller decides how to surface
+// that (a 503/502 straight to the browser for the direct-upload path, a
+// 500-so-bot.js-retries for the gate path — see handleGateUpload).
+async function extractMaterialEntryFields(imageBase64: string, mimeType: string): Promise<ExtractedMaterialEntryFields> {
+  const ai = getGenAI();
+  if (!ai) {
+    throw new Error("Gemini API key is not configured. Please add GEMINI_API_KEY under Settings > Secrets.");
+  }
 
-    const prompt = `
+  const prompt = `
       This is a photo of a Raw Material supplier's GST tax invoice (e.g. a
       steel tube/pipe manufacturer like Tube Investments of India Ltd),
       being read for goods-receipt entry.
@@ -403,63 +406,288 @@ export async function handleExtractMaterialEntryPhoto(req: MinimalRequest, res: 
       for number fields — never guess a value that isn't legible.
     `;
 
-    const responseSchema = {
-      type: Type.OBJECT,
-      properties: {
-        supplierName: { type: Type.STRING },
-        invoiceNo: { type: Type.STRING },
-        date: { type: Type.STRING },
-        totalWeightKg: { type: Type.NUMBER },
-        totalBillValue: { type: Type.NUMBER },
-        materialDescription: { type: Type.STRING },
-        odMm: { type: Type.NUMBER },
-        thicknessMm: { type: Type.NUMBER },
-        lengthMm: { type: Type.NUMBER },
-        quantityPcs: { type: Type.NUMBER },
-      },
-      required: ["supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue", "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs"],
-    };
+  const responseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      supplierName: { type: Type.STRING },
+      invoiceNo: { type: Type.STRING },
+      date: { type: Type.STRING },
+      totalWeightKg: { type: Type.NUMBER },
+      totalBillValue: { type: Type.NUMBER },
+      materialDescription: { type: Type.STRING },
+      odMm: { type: Type.NUMBER },
+      thicknessMm: { type: Type.NUMBER },
+      lengthMm: { type: Type.NUMBER },
+      quantityPcs: { type: Type.NUMBER },
+    },
+    required: ["supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue", "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs"],
+  };
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: prompt },
-            { inlineData: { data: imageBase64, mimeType } },
-          ],
-        },
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema,
+  const response = await ai.models.generateContent({
+    model: "gemini-3.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inlineData: { data: imageBase64, mimeType } },
+        ],
       },
+    ],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema,
+    },
+  });
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(response.text || "{}");
+  } catch {
+    throw new Error("Could not make sense of this photo. Try a clearer, better-lit shot.");
+  }
+
+  return {
+    supplierName: String(parsed.supplierName || "").trim(),
+    invoiceNo: String(parsed.invoiceNo || "").trim(),
+    date: String(parsed.date || "").trim(),
+    totalWeightKg: Number(parsed.totalWeightKg) || 0,
+    totalBillValue: Number(parsed.totalBillValue) || 0,
+    materialDescription: String(parsed.materialDescription || "").trim(),
+    odMm: Number(parsed.odMm) || 0,
+    thicknessMm: Number(parsed.thicknessMm) || 0,
+    lengthMm: Number(parsed.lengthMm) || 0,
+    quantityPcs: Number(parsed.quantityPcs) || 0,
+  };
+}
+
+// Reads a photo of a Raw Material supplier's invoice for Material Entry's
+// Camera Upload (Finished Pieces / Longer Pipe) — a different shape from
+// handleExtractInvoice above, which feeds RM Cross-Bill Check's own
+// Manufacturer Invoice form. This one additionally pulls the OD/Thickness/
+// Length actually printed in the material description line (e.g. "STEEL
+// TUBES-ERW/SB-ROUND-44.45 X 1.8 X 5710-AS ROLLED"), so the client can
+// suggest the matching Raw Material via services/dimensionTolerance.ts —
+// always a suggestion the Spec/Material dropdown shows for review, never
+// something this endpoint or the client applies on its own. Also extracts
+// Total Weight (Kg) and Total Bill Value, which the RM Cross-Bill Check
+// extractor doesn't need to. Dharamkanta (weighbridge) Weight is
+// deliberately never part of this — it's a physical slip generated at
+// receipt, never printed on the supplier's invoice, so it stays a manual
+// field exactly like it already is on every other invoice form in this
+// app.
+export async function handleExtractMaterialEntryPhoto(req: MinimalRequest, res: MinimalResponse) {
+  try {
+    const { imageBase64, mimeType } = req.body || {};
+    if (!imageBase64 || !mimeType) {
+      res.status(400).json({ error: "Missing imageBase64 or mimeType." });
+      return;
+    }
+    const fields = await extractMaterialEntryFields(imageBase64, mimeType);
+    res.json(fields);
+  } catch (error: any) {
+    console.error("API Extract Material Entry Photo Error:", error);
+    const msg = error?.message || "Failed to read this invoice photo.";
+    const status = /Gemini API key/.test(msg) ? 503 : /Could not make sense/.test(msg) ? 502 : 500;
+    res.status(status).json({ error: msg });
+  }
+}
+
+// --- Gate-photo capture (WhatsApp "Unit 2 Inward" group -> ERP) ---
+// Called by bot.js's gate-queue worker (see whatsapp-inward-tally-
+// automation design) for every photo the gate guard posts that survives
+// bot.js's own capture step. Auth is a static shared secret
+// (ERP_GATE_API_KEY), NOT a Firebase ID token — bot.js has no logged-in
+// user session, so this can't go through requireAdmin above.
+//
+// Field names in the request body deliberately match exactly what bot.js's
+// processOneGateQueueItem already sends (image/mimetype, not imageBase64/
+// mimeType like this file's other Gemini endpoints) — converted once here
+// rather than changing already-shipped, tested bot.js code to match this
+// file's naming instead.
+let rmSupplierNameCache: { names: string[]; expiresAt: number } | null = null;
+async function getKnownRMSupplierNames(app: admin.app.App): Promise<string[]> {
+  const now = Date.now();
+  if (rmSupplierNameCache && rmSupplierNameCache.expiresAt > now) {
+    return rmSupplierNameCache.names;
+  }
+  // Full Tally-synced Purchase party list — rmPurchaseVouchers is mirrored
+  // hourly by import-tally.js, never written by this app itself. Used to
+  // CANONICALIZE whatever Gemini read off the photo (handles vision/OCR
+  // fuzziness against the real ledger name) — NOT, by itself, permission
+  // to reach the Gate Documents for Approval tab; see
+  // getApprovedSupplierNames below for that gate. Projection query
+  // (.select) so this only reads the one field this needs, not every
+  // voucher's full line-item detail — same Firestore-quota-consciousness
+  // as import-tally.js's own targeted `where in` queries.
+  const snap = await admin.firestore(app).collection("rmPurchaseVouchers").select("supplierName").get();
+  const names = new Set<string>();
+  snap.docs.forEach((d) => {
+    const n = (d.data() as any)?.supplierName;
+    if (n) names.add(String(n));
+  });
+  const list = Array.from(names);
+  // 10 min cache — this collection only changes on the hourly Tally sync,
+  // so re-reading it on every single gate photo would be pure waste.
+  rmSupplierNameCache = { names: list, expiresAt: now + 10 * 60 * 1000 };
+  return list;
+}
+
+// Admin's checkbox selection (18-Sep-26 refinement) over the full Tally
+// Purchase party list above — only a party Admin has actually ticked here
+// counts as an RM supplier for this feature. Maintained from the Party
+// Name Master screen (components/PartyNameMaster.tsx, Admin-only), via
+// App.tsx's `useFirestoreDoc<GateApprovedSuppliersSettings>('settings',
+// 'gateApprovedSuppliers', ...)` — same collection/doc path this reads
+// directly with firebase-admin. Missing doc or empty selectedNames =
+// nothing approved yet = every gate photo goes to Unprocessed until Admin
+// makes a first selection — a safe default (never silently promotes an
+// unreviewed vendor into the live queue).
+let approvedSupplierCache: { names: Set<string>; expiresAt: number } | null = null;
+async function getApprovedSupplierNames(app: admin.app.App): Promise<Set<string>> {
+  const now = Date.now();
+  if (approvedSupplierCache && approvedSupplierCache.expiresAt > now) {
+    return approvedSupplierCache.names;
+  }
+  const doc = await admin.firestore(app).collection("settings").doc("gateApprovedSuppliers").get();
+  const selected: string[] = (doc.exists && (doc.data() as any)?.selectedNames) || [];
+  const names = new Set(selected.map((s) => String(s)));
+  // Shorter TTL than the Tally-list cache — Admin changing this selection
+  // should take effect reasonably soon, not up to 10 minutes later.
+  approvedSupplierCache = { names, expiresAt: now + 5 * 60 * 1000 };
+  return names;
+}
+
+// Sibling to handleArchivePhoto's ARCHIVE_PHOTO_FOLDER, for gate photos
+// that did NOT resolve to an Admin-approved supplier — Vipul's 18-Sep
+// decision: never dropped, just filed here instead of reaching the Gate
+// Documents for Approval tab. ASSUMPTION flagged for Vipul to confirm: he
+// asked for "same file name structure" under a folder named "Unprocessed";
+// this mirrors ARCHIVE_PHOTO_FOLDER's own "<MMM YY>/<Supplier>_<InvoiceNo>_
+// <Date>" layout under a sibling "/Unit 2/Unprocessed" folder. If he meant
+// a different location, only this one constant needs to change.
+const UNPROCESSED_GATE_FOLDER = "/Unit 2/Unprocessed";
+
+async function archiveUnprocessedGatePhoto(
+  imageBase64: string,
+  mimeType: string,
+  supplierNameGuess: string,
+  invoiceNoGuess: string,
+  dateGuess: string
+): Promise<void> {
+  try {
+    const accessToken = await getDropboxAccessToken();
+    const buffer = Buffer.from(imageBase64, "base64");
+    const ext = mimeType === "image/png" ? "png" : "jpg";
+    const fileName = buildArchiveFileName(supplierNameGuess || "Unknown Supplier", invoiceNoGuess || "Pending", dateGuess);
+    const monthFolder = buildArchiveMonthFolder(dateGuess);
+    const path = `${UNPROCESSED_GATE_FOLDER}/${monthFolder}/${fileName}.${ext}`;
+    const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Dropbox-API-Arg": JSON.stringify({ path, mode: "add", autorename: true, mute: true }),
+        "Content-Type": "application/octet-stream",
+      },
+      body: buffer,
     });
+    if (!uploadResp.ok) {
+      const errText = await uploadResp.text().catch(() => "");
+      throw new Error(`Dropbox upload failed (${uploadResp.status}): ${errText.slice(0, 200)}`);
+    }
+  } catch (e: any) {
+    // This archive is a safety net for a photo the app decided NOT to act
+    // on — it must never be the reason bot.js's queue worker thinks
+    // delivery failed and retries a photo that was already correctly
+    // triaged. Log and swallow, same "audit-trail, never blocking" rule
+    // handleArchivePhoto/dropboxArchive.ts already follow for the
+    // matched-and-processed path.
+    console.error("Unprocessed gate photo archive failed (non-fatal):", e);
+  }
+}
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(response.text || "{}");
-    } catch {
-      res.status(502).json({ error: "Could not make sense of this photo. Try a clearer, better-lit shot." });
+export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse) {
+  try {
+    const apiKey = process.env.ERP_GATE_API_KEY;
+    const authHeader = (req.headers.authorization as string) || "";
+    if (!apiKey || authHeader !== `Bearer ${apiKey}`) {
+      res.status(401).json({ error: "Unauthorized." });
       return;
     }
 
-    res.json({
-      supplierName: String(parsed.supplierName || "").trim(),
-      invoiceNo: String(parsed.invoiceNo || "").trim(),
-      date: String(parsed.date || "").trim(),
-      totalWeightKg: Number(parsed.totalWeightKg) || 0,
-      totalBillValue: Number(parsed.totalBillValue) || 0,
-      materialDescription: String(parsed.materialDescription || "").trim(),
-      odMm: Number(parsed.odMm) || 0,
-      thicknessMm: Number(parsed.thicknessMm) || 0,
-      lengthMm: Number(parsed.lengthMm) || 0,
-      quantityPcs: Number(parsed.quantityPcs) || 0,
+    const { image, mimetype, filename, sender, pushName, caption, waTimestamp, capturedAt } = req.body || {};
+    if (!image || !mimetype || !filename) {
+      res.status(400).json({ error: "Missing image, mimetype, or filename." });
+      return;
+    }
+
+    // FLAGGED, NOT YET RESOLVED: WhatsApp photos arrive at whatever
+    // resolution WhatsApp itself sent, uncompressed by bot.js — unlike
+    // every other Camera Upload photo in this app, which the browser
+    // downsizes to 1600px/JPEG-85 first (services/photo.ts) before it ever
+    // reaches a server. A large photo here could push the Firestore doc
+    // below close to or over the 1MB document limit. Worth closing before
+    // this goes live with real gate photos — likely by adding the same
+    // Jimp-based resize bot.js already uses for its OUTBOUND thumbnails
+    // (see makeJpegThumbnail in bot.js) to its gate-CAPTURE step instead,
+    // rather than solving it here.
+    const extracted = await extractMaterialEntryFields(image, mimetype);
+
+    const app = getAdminApp();
+    const [allTallySuppliers, approvedSuppliers] = await Promise.all([
+      getKnownRMSupplierNames(app),
+      getApprovedSupplierNames(app),
+    ]);
+    // Canonicalize first against the FULL Tally Purchase party list
+    // (handles vision/OCR fuzziness against the real ledger name), THEN
+    // check Admin's checkbox selection against that canonical name — not
+    // the raw Gemini-read text — so a slightly-misread name for an
+    // already-approved supplier still gets picked up correctly.
+    const match = matchKnownSupplier(extracted.supplierName, allTallySuppliers);
+    const isApproved = match.result === "confident" && approvedSuppliers.has(match.matchedSupplier);
+
+    if (!isApproved) {
+      // Nothing legible, matched no Tally party at all, OR matched a real
+      // party Admin simply hasn't ticked yet — all three land here per
+      // Vipul's 18-Sep decision: archived to Unprocessed for manual
+      // review, never lost, never cluttering the in-app queue for a
+      // party that isn't meant to be there.
+      await archiveUnprocessedGatePhoto(
+        image,
+        mimetype,
+        match.result === "confident" ? match.matchedSupplier : extracted.supplierName,
+        extracted.invoiceNo,
+        extracted.date
+      );
+      res.json({ matched: false, approved: false });
+      return;
+    }
+
+    const docRef = admin.firestore(app).collection("gateDocumentsForApproval").doc();
+    await docRef.set({
+      id: docRef.id,
+      imageBase64: String(image),
+      mimeType: String(mimetype),
+      status: "pending",
+      matchedSupplier: match.matchedSupplier,
+      extracted,
+      originalFileName: String(filename),
+      sender: sender ? String(sender) : "",
+      pushName: pushName ?? null,
+      caption: caption ? String(caption) : "",
+      waTimestamp: waTimestamp ?? null,
+      capturedAt: capturedAt ? String(capturedAt) : new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      source: "whatsapp-gate",
     });
+
+    res.json({ matched: true, status: "pending", docId: docRef.id });
   } catch (error: any) {
-    console.error("API Extract Material Entry Photo Error:", error);
-    res.status(500).json({ error: error?.message || "Failed to read this invoice photo." });
+    console.error("Gate upload error:", error);
+    // Any non-2xx makes bot.js's queue worker retry (30s backoff) instead
+    // of losing the photo — safe, and correct, to fail loudly here rather
+    // than swallow the error.
+    res.status(500).json({ error: error?.message || "Failed to process gate photo." });
   }
 }
 

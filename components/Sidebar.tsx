@@ -15,6 +15,10 @@ interface SidebarProps {
   onUserNameChange: (name: string) => void;
   pendingAlertsCount?: number;
   pendingRMApprovalsCount?: number;
+  // Gate Documents for Approval (WhatsApp gate photos waiting on Store/Admin
+  // to pick a mode and complete the entry) — badge count, same convention
+  // as pendingRMApprovalsCount above.
+  pendingGateDocumentsCount?: number;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -29,7 +33,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   userName,
   onUserNameChange,
   pendingAlertsCount = 0,
-  pendingRMApprovalsCount = 0
+  pendingRMApprovalsCount = 0,
+  pendingGateDocumentsCount = 0,
 }) => {
   const isAdmin = role === 'admin';
   const company = useActiveCompany();
@@ -68,6 +73,17 @@ const Sidebar: React.FC<SidebarProps> = ({
   const extraNavItems: { id: string; label: string; icon: string }[] = [];
   if (canAccessView(role, 'import_issues')) extraNavItems.push({ id: 'import_issues', label: 'Import Issues', icon: '⚠️' });
   if (canAccessView(role, 'rm_crossbill')) extraNavItems.push({ id: 'rm_crossbill', label: 'RM Cross-Bill Check', icon: '🧾' });
+  // Gate Documents for Approval — WhatsApp gate-photo intake queue. Store
+  // has it via ROLE_PERMISSIONS directly; Admin via the '*' wildcard (Admin
+  // additionally gets a "Save & Approve" fast path inside the screen
+  // itself for when no Store person is available — see App.tsx).
+  if (canAccessView(role, 'gate_documents')) {
+    extraNavItems.push({
+      id: 'gate_documents',
+      label: pendingGateDocumentsCount > 0 ? `Gate Documents (${pendingGateDocumentsCount})` : 'Gate Documents',
+      icon: '📷',
+    });
+  }
   if (extraNavItems.length > 0) {
     const salesIdx = navItems.findIndex((i) => i.id === 'sales');
     navItems.splice(salesIdx >= 0 ? salesIdx + 1 : navItems.length, 0, ...extraNavItems);
@@ -80,6 +96,12 @@ const Sidebar: React.FC<SidebarProps> = ({
       { id: 'notifications', label: pendingAlertsCount > 0 ? `Notifications (${pendingAlertsCount})` : 'Notifications', icon: '🔔' },
       { id: 'user_master', label: 'User Master', icon: '👤' },
       { id: 'company_master', label: 'Company Master', icon: '🏭' },
+      // Admin-only — controls which Tally Purchase party names are even
+      // allowed to reach the Gate Documents for Approval queue. Deliberately
+      // never gated through ROLE_PERMISSIONS/canAccessView like the rest of
+      // this list — this block is already isAdmin-only, and no other role
+      // should ever be able to see or change this list.
+      { id: 'party_name_master', label: 'Party Name Master', icon: '✅' },
       { id: 'import_legacy', label: 'Import Legacy Data', icon: '📤' },
       { id: 'trial_rm_receiving', label: '🧪 RM Receiving (Trial)', icon: '🧪' },
     );

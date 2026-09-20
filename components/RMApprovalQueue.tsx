@@ -420,6 +420,11 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
 
               {isOpen && (
                 <div className="space-y-4 pt-2 border-t border-slate-100">
+                  {e.fromGateDocumentId && (
+                    <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-2 text-[11px] font-bold text-indigo-700">
+                      📱 From a WhatsApp gate photo (Gate Documents for Approval) — completed by {e.submittedBy}.
+                    </div>
+                  )}
                   {e.photoDropboxPath ? (
                     <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2 text-[11px] font-bold text-emerald-700">
                       📷 Source photo archived to Dropbox — {e.photoDropboxPath}
