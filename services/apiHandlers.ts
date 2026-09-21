@@ -16,6 +16,7 @@
 // local-dev server and the production functions can never drift apart.
 import { GoogleGenAI, Type } from "@google/genai";
 import admin from "firebase-admin";
+import { Jimp } from "jimp";
 import { matchKnownSupplier } from "./rmSupplierMatch.js";
 import { buildArchiveFileName, buildArchiveMonthFolder } from "./dropboxArchive.js";
 
@@ -606,6 +607,64 @@ async function archiveUnprocessedGatePhoto(
   }
 }
 
+// 20-Sep-26: server-side safety net for the Firestore 1MB document limit —
+// was flagged (below, where handleGateUpload calls this) as unresolved;
+// closed here on the App side per Vipul's steer to keep bot.js changes in
+// its own thread. WhatsApp photos arrive at whatever resolution WhatsApp
+// itself sent, unlike every browser Camera Upload photo, which the browser
+// already downsizes to 1600px/JPEG-85 (services/photo.ts, MAX_PHOTO_DIMENSION)
+// before it ever reaches a server. This mirrors those exact numbers so a
+// gate photo and a browser-uploaded photo end up compressed the same way —
+// and only touches a photo that's actually large enough to need it, so a
+// normal WhatsApp-compressed photo (the common case Vipul pointed out —
+// "whatsapp photos are not more than 1 mb" — is about the SENT photo; a
+// Document-mode send or a particularly large Photo-mode one can still
+// exceed this) passes through untouched.
+// A matching fix on bot.js's own capture step, if Vipul wants one, is
+// tracked separately in that thread — this is a second, independent line
+// of defense here in the App, not a replacement for that.
+// Never blocks the upload: if Jimp can't decode the image for any reason
+// (an unsupported format, corrupt bytes), this logs and falls back to the
+// original bytes untouched, same "audit-trail, never blocking" rule
+// archiveUnprocessedGatePhoto/handleArchivePhoto already follow.
+const GATE_PHOTO_MAX_DIMENSION = 1600;
+const GATE_PHOTO_JPEG_QUALITY = 85;
+// Budget in RAW bytes (pre-base64) for the stored image. Base64 adds ~33%,
+// and the rest of the gateDocumentsForApproval doc (extracted fields,
+// supplier name, timestamps, etc.) is only a few KB, so this leaves
+// comfortable headroom under Firestore's 1 MiB per-document limit.
+const GATE_PHOTO_MAX_RAW_BYTES = 650 * 1024;
+
+async function shrinkGatePhotoIfNeeded(
+  imageBase64: string,
+  mimeType: string
+): Promise<{ imageBase64: string; mimeType: string }> {
+  try {
+    const original = Buffer.from(imageBase64, "base64");
+    if (original.length <= GATE_PHOTO_MAX_RAW_BYTES) {
+      return { imageBase64, mimeType };
+    }
+    const image = await Jimp.read(original);
+    if (Math.max(image.bitmap.width, image.bitmap.height) > GATE_PHOTO_MAX_DIMENSION) {
+      image.scaleToFit({ w: GATE_PHOTO_MAX_DIMENSION, h: GATE_PHOTO_MAX_DIMENSION });
+    }
+    // Step quality down further only on the rare photo that's still over
+    // budget after the resize above (very high-detail/busy image) — most
+    // gate photos will be done after that single resize.
+    let quality = GATE_PHOTO_JPEG_QUALITY;
+    let out = await image.getBuffer("image/jpeg", { quality });
+    while (out.length > GATE_PHOTO_MAX_RAW_BYTES && quality > 50) {
+      quality -= 15;
+      out = await image.getBuffer("image/jpeg", { quality });
+    }
+    console.log(`[Gate photo] Resized ${original.length} -> ${out.length} bytes (quality ${quality}) before storing.`);
+    return { imageBase64: out.toString("base64"), mimeType: "image/jpeg" };
+  } catch (e: any) {
+    console.error("Gate photo resize failed (non-fatal, using original):", e);
+    return { imageBase64, mimeType };
+  }
+}
+
 export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse) {
   try {
     const apiKey = process.env.ERP_GATE_API_KEY;
@@ -615,22 +674,17 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
       return;
     }
 
-    const { image, mimetype, filename, sender, pushName, caption, waTimestamp, capturedAt } = req.body || {};
+    let { image, mimetype, filename, sender, pushName, caption, waTimestamp, capturedAt } = req.body || {};
     if (!image || !mimetype || !filename) {
       res.status(400).json({ error: "Missing image, mimetype, or filename." });
       return;
     }
 
-    // FLAGGED, NOT YET RESOLVED: WhatsApp photos arrive at whatever
-    // resolution WhatsApp itself sent, uncompressed by bot.js — unlike
-    // every other Camera Upload photo in this app, which the browser
-    // downsizes to 1600px/JPEG-85 first (services/photo.ts) before it ever
-    // reaches a server. A large photo here could push the Firestore doc
-    // below close to or over the 1MB document limit. Worth closing before
-    // this goes live with real gate photos — likely by adding the same
-    // Jimp-based resize bot.js already uses for its OUTBOUND thumbnails
-    // (see makeJpegThumbnail in bot.js) to its gate-CAPTURE step instead,
-    // rather than solving it here.
+    // Shrink first (see shrinkGatePhotoIfNeeded above) — everything
+    // downstream (Gemini extraction, the Unprocessed-folder archive, and
+    // the Firestore doc itself) uses these bytes from here on.
+    ({ imageBase64: image, mimeType: mimetype } = await shrinkGatePhotoIfNeeded(image, mimetype));
+
     const extracted = await extractMaterialEntryFields(image, mimetype);
 
     const app = getAdminApp();
