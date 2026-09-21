@@ -31,7 +31,7 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole } from './types';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
 import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
@@ -1550,14 +1550,12 @@ const MainApp: React.FC = () => {
                 }
               }}
               onInventoryCorrection={(payload) => {
-                // Store: stays 'pending' in RM Approvals until Admin approves.
-                // Admin: posts immediately — same fast path finalizeGateDocument
-                // already uses for gate photos, just without the Dropbox/gate
-                // bookkeeping this doesn't need.
-                const newEntry = stageInventoryCorrection(payload);
-                if (newEntry && isAdmin) {
-                  approvePendingRMEntry(newEntry);
-                }
+                // Store: stageInventoryCorrection leaves it 'pending' in RM
+                // Approvals until Admin approves. Admin: it posts
+                // immediately AND writes the queue record as already-
+                // approved in the same call — see its own comment for why
+                // that's no longer a separate approvePendingRMEntry call.
+                stageInventoryCorrection(payload);
               }}
               dimensionTolerances={dimensionTolerances}
               setDimensionTolerances={setDimensionTolerances}
@@ -2051,9 +2049,19 @@ const MainApp: React.FC = () => {
     return `[INVENTORY_CORRECTION:${reason}] ${label}${note ? ` — ${note}` : ''}`;
   }
 
-  function handleInventoryCorrection(payload: PendingInventoryCorrectionPayload, enteredBy: string) {
+  // enteredByRole matters here specifically because this can now run in
+  // someone ELSE's browser session (Admin clicking Approve on a Store-
+  // staged entry) — unlike every other pushAdminAlert call in this file,
+  // which always fires in the actual submitter's own session and can
+  // safely rely on pushAdminAlert's default createdBy/role (current
+  // signed-in user). Passing both explicitly here keeps the Notifications
+  // "Entered By" column showing the person who actually staged the
+  // correction (e.g. Gaurav/Store) rather than whoever happened to approve
+  // it (Admin) — see 21-Sep-26 fix.
+  function handleInventoryCorrection(payload: PendingInventoryCorrectionPayload, enteredBy: string, enteredByRole?: UserRole) {
     const finalTs = `${payload.date}T12:00:00.000`;
     const remarksTag = buildCorrectionRemarks(payload.reason, payload.note);
+    const alertRole = enteredByRole || role;
 
     if (payload.scope === 'rm') {
       const rm = rawMaterials.find(r => r.id === payload.itemId);
@@ -2061,8 +2069,8 @@ const MainApp: React.FC = () => {
       handleAddRMInward(rm.id, payload.quantity, enteredBy, remarksTag, finalTs, undefined, isSheetRM(rm) ? 'kg' : 'pcs', undefined);
       pushAdminAlert(
         payload.quantity < 0
-          ? { type: 'discrepancy', rmId: rm.id, rmSize: rm.size, timestamp: finalTs, quantity: payload.quantity, remarks: remarksTag, responsibleName: enteredBy }
-          : { type: 'rm_inward', rmId: rm.id, rmSize: rm.size, timestamp: finalTs, quantity: payload.quantity, supplier: enteredBy, remarks: remarksTag }
+          ? { type: 'discrepancy', rmId: rm.id, rmSize: rm.size, timestamp: finalTs, quantity: payload.quantity, remarks: remarksTag, responsibleName: enteredBy, createdBy: enteredBy, role: alertRole }
+          : { type: 'rm_inward', rmId: rm.id, rmSize: rm.size, timestamp: finalTs, quantity: payload.quantity, supplier: enteredBy, remarks: remarksTag, createdBy: enteredBy, role: alertRole }
       );
     } else {
       const part = parts.find(p => p.id === payload.itemId);
@@ -2070,8 +2078,8 @@ const MainApp: React.FC = () => {
       handleAddInward(part.id, payload.quantity, enteredBy, remarksTag, finalTs, undefined);
       pushAdminAlert(
         payload.quantity < 0
-          ? { type: 'discrepancy', partId: part.id, partName: part.name, sapCode: part.sapCode, timestamp: finalTs, quantity: payload.quantity, remarks: remarksTag, responsibleName: enteredBy }
-          : { type: 'item_inward', partId: part.id, partName: part.name, sapCode: part.sapCode, timestamp: finalTs, quantity: payload.quantity, supplier: enteredBy, remarks: remarksTag }
+          ? { type: 'discrepancy', partId: part.id, partName: part.name, sapCode: part.sapCode, timestamp: finalTs, quantity: payload.quantity, remarks: remarksTag, responsibleName: enteredBy, createdBy: enteredBy, role: alertRole }
+          : { type: 'item_inward', partId: part.id, partName: part.name, sapCode: part.sapCode, timestamp: finalTs, quantity: payload.quantity, supplier: enteredBy, remarks: remarksTag, createdBy: enteredBy, role: alertRole }
       );
     }
   }
@@ -2080,11 +2088,40 @@ const MainApp: React.FC = () => {
     if (!payload.itemId || !payload.quantity) return null;
     const scopeLabel = payload.scope === 'rm' ? 'RM' : 'Part';
     const sign = payload.quantity > 0 ? '+' : '';
+    const summary = `Inventory Correction — ${scopeLabel} — ${payload.itemLabel} — ${sign}${payload.quantity} — ${INVENTORY_CORRECTION_REASON_LABELS[payload.reason]}`;
+
+    if (isAdmin) {
+      // Admin posts directly. Deliberately NOT the usual create-then-
+      // approvePendingRMEntry two-write dance (what finalizeGateDocument's
+      // fast path uses) — that pattern only works there because an `await`
+      // (Dropbox archival) sits between the two writes, giving the first
+      // write's Firestore round-trip time to land before the second one
+      // reads `prev`. Here there's no such gap: pushPendingRMEntry's create
+      // and a follow-up approvePendingRMEntry status-flip would fire in the
+      // very same tick, and the second write's `prev` snapshot can still be
+      // from BEFORE the first one lands — so the flip to 'approved' quietly
+      // no-ops against an entry not yet in local state, leaving the card
+      // stuck showing "Pending Approval" forever (even though the
+      // correction itself, below, already posted correctly). Writing
+      // status:'approved' in the SAME create call sidesteps the race
+      // entirely. Confirmed bug, 21-Sep-26.
+      const enteredBy = appUser?.displayName || userName;
+      handleInventoryCorrection(payload, enteredBy, role);
+      return pushPendingRMEntry({
+        entryType: 'inventory_correction',
+        status: 'approved',
+        inventoryCorrectionPayload: payload,
+        summary,
+        reviewedAt: getLocalISOString(),
+        reviewedBy: enteredBy,
+      });
+    }
+
     return pushPendingRMEntry({
       entryType: 'inventory_correction',
       status: 'pending',
       inventoryCorrectionPayload: payload,
-      summary: `Inventory Correction — ${scopeLabel} — ${payload.itemLabel} — ${sign}${payload.quantity} — ${INVENTORY_CORRECTION_REASON_LABELS[payload.reason]}`,
+      summary,
     });
   }
 
@@ -2559,7 +2596,7 @@ const MainApp: React.FC = () => {
       if (lines.some(l => !l.rmId)) return;
       handleManufacturerInvoiceWithAllotment(entry.manufacturerInvoicePayload as MfgInvoiceSubmission);
     } else if (entry.entryType === 'inventory_correction' && entry.inventoryCorrectionPayload) {
-      handleInventoryCorrection(entry.inventoryCorrectionPayload, entry.submittedBy);
+      handleInventoryCorrection(entry.inventoryCorrectionPayload, entry.submittedBy, entry.submittedByRole);
     } else { return; }
     setPendingRMEntries(prev => prev.map(e => e.id === entry.id ? { ...e, status: 'approved', reviewedAt: getLocalISOString(), reviewedBy: appUser?.displayName || userName } : e));
   }
