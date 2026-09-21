@@ -31,7 +31,7 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS } from './types';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
 import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
@@ -1549,6 +1549,16 @@ const MainApp: React.FC = () => {
                   finalizeGateDocument(gateDocInProgress.doc, newEntry);
                 }
               }}
+              onInventoryCorrection={(payload) => {
+                // Store: stays 'pending' in RM Approvals until Admin approves.
+                // Admin: posts immediately — same fast path finalizeGateDocument
+                // already uses for gate photos, just without the Dropbox/gate
+                // bookkeeping this doesn't need.
+                const newEntry = stageInventoryCorrection(payload);
+                if (newEntry && isAdmin) {
+                  approvePendingRMEntry(newEntry);
+                }
+              }}
               dimensionTolerances={dimensionTolerances}
               setDimensionTolerances={setDimensionTolerances}
               cameraEnabled={rmEntryCameraEnabled}
@@ -2021,6 +2031,63 @@ const MainApp: React.FC = () => {
     }
   }
 
+  // --- Inventory Correction (added 21-Sep-26) ---
+  // A no-invoice stock adjustment for a physical-audit finding (rejection
+  // sent to scrap, a shortage/surplus found on count) — see
+  // PendingInventoryCorrectionPayload in types.ts. Unlike Material Entry
+  // just above, this DOES call handleAddInward/handleAddRMInward directly —
+  // there's no multi-line/multi-size allotment to worry about here (always
+  // exactly one RM or one Part), so the same mirroring math those two
+  // already use for a normal signed correction (Inventory.tsx's older
+  // direct-entry modal, still live for sheet-metal/non-Material-Entry
+  // items) is exactly what a correction needs too, just reached from a
+  // button that's available everywhere, staged through the same
+  // PendingRMEntry approval queue as the other 3 entry types. The [x2]
+  // tag embedded in remarks is machine-parseable — see InwardLogs.tsx's
+  // getCorrectionReason — so the reason is filterable without depending on
+  // free-typed wording.
+  function buildCorrectionRemarks(reason: PendingInventoryCorrectionPayload['reason'], note?: string): string {
+    const label = INVENTORY_CORRECTION_REASON_LABELS[reason];
+    return `[INVENTORY_CORRECTION:${reason}] ${label}${note ? ` — ${note}` : ''}`;
+  }
+
+  function handleInventoryCorrection(payload: PendingInventoryCorrectionPayload, enteredBy: string) {
+    const finalTs = `${payload.date}T12:00:00.000`;
+    const remarksTag = buildCorrectionRemarks(payload.reason, payload.note);
+
+    if (payload.scope === 'rm') {
+      const rm = rawMaterials.find(r => r.id === payload.itemId);
+      if (!rm || !handleAddRMInward) return;
+      handleAddRMInward(rm.id, payload.quantity, enteredBy, remarksTag, finalTs, undefined, isSheetRM(rm) ? 'kg' : 'pcs', undefined);
+      pushAdminAlert(
+        payload.quantity < 0
+          ? { type: 'discrepancy', rmId: rm.id, rmSize: rm.size, timestamp: finalTs, quantity: payload.quantity, remarks: remarksTag, responsibleName: enteredBy }
+          : { type: 'rm_inward', rmId: rm.id, rmSize: rm.size, timestamp: finalTs, quantity: payload.quantity, supplier: enteredBy, remarks: remarksTag }
+      );
+    } else {
+      const part = parts.find(p => p.id === payload.itemId);
+      if (!part) return;
+      handleAddInward(part.id, payload.quantity, enteredBy, remarksTag, finalTs, undefined);
+      pushAdminAlert(
+        payload.quantity < 0
+          ? { type: 'discrepancy', partId: part.id, partName: part.name, sapCode: part.sapCode, timestamp: finalTs, quantity: payload.quantity, remarks: remarksTag, responsibleName: enteredBy }
+          : { type: 'item_inward', partId: part.id, partName: part.name, sapCode: part.sapCode, timestamp: finalTs, quantity: payload.quantity, supplier: enteredBy, remarks: remarksTag }
+      );
+    }
+  }
+
+  function stageInventoryCorrection(payload: PendingInventoryCorrectionPayload): PendingRMEntry | null {
+    if (!payload.itemId || !payload.quantity) return null;
+    const scopeLabel = payload.scope === 'rm' ? 'RM' : 'Part';
+    const sign = payload.quantity > 0 ? '+' : '';
+    return pushPendingRMEntry({
+      entryType: 'inventory_correction',
+      status: 'pending',
+      inventoryCorrectionPayload: payload,
+      summary: `Inventory Correction — ${scopeLabel} — ${payload.itemLabel} — ${sign}${payload.quantity} — ${INVENTORY_CORRECTION_REASON_LABELS[payload.reason]}`,
+    });
+  }
+
   // --- Material Entry (RM Receiving) — Longer Pipe / Finished Pieces ---
   // Deliberately does NOT call handleAddInward/handleAddRMInward above: both
   // assume one RM maps to a single yield factor (partsPerRMUnit), which
@@ -2491,6 +2558,8 @@ const MainApp: React.FC = () => {
       const lines = entry.manufacturerInvoicePayload.lines;
       if (lines.some(l => !l.rmId)) return;
       handleManufacturerInvoiceWithAllotment(entry.manufacturerInvoicePayload as MfgInvoiceSubmission);
+    } else if (entry.entryType === 'inventory_correction' && entry.inventoryCorrectionPayload) {
+      handleInventoryCorrection(entry.inventoryCorrectionPayload, entry.submittedBy);
     } else { return; }
     setPendingRMEntries(prev => prev.map(e => e.id === entry.id ? { ...e, status: 'approved', reviewedAt: getLocalISOString(), reviewedBy: appUser?.displayName || userName } : e));
   }

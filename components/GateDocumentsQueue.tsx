@@ -37,6 +37,10 @@ const MODE_LABEL: Record<PendingRMEntryType, string> = {
   manufacturer_invoice: 'RM Cross-Bill',
   finished_pieces: 'Finished Parts',
   longer_pipe: 'Longer Pipes',
+  // Not a real gate-photo processing mode — Inventory Correction has no
+  // camera-upload intake — included only so this Record stays exhaustive
+  // over PendingRMEntryType.
+  inventory_correction: 'Inventory Correction',
 };
 
 const fmtWhen = (iso?: string | null) => {

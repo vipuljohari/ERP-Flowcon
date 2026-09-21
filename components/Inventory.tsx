@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance, GateDocumentForApproval } from '../types';
+import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance, GateDocumentForApproval, PendingInventoryCorrectionPayload, InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS } from '../types';
 import { CATEGORIES } from '../constants';
 import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate } from '../services/rmYield';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
@@ -71,6 +71,13 @@ interface InventoryProps {
   // put the gate document back to 'pending' so it isn't stuck "in_progress"
   // with nobody working it.
   onGateSeedCancelled?: () => void;
+  // Inventory Correction (added 21-Sep-26) — a no-invoice stock adjustment
+  // for a physical-audit finding (rejection sent to scrap, a shortage or
+  // surplus found on count). App.tsx decides Store-stages-for-approval vs
+  // Admin-posts-immediately; this component only ever builds the payload
+  // and hands it off. Optional so this component doesn't break wherever
+  // it's rendered without this wired yet.
+  onInventoryCorrection?: (payload: PendingInventoryCorrectionPayload) => void;
 }
 
 // An inwardLogs entry tagged this way is an AUDIT CORRECTION delta (Item or
@@ -117,6 +124,7 @@ const Inventory: React.FC<InventoryProps> = ({
   gateSeed = null,
   gateSeedMode = null,
   onGateSeedCancelled,
+  onInventoryCorrection,
 }) => {
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
@@ -173,6 +181,59 @@ const Inventory: React.FC<InventoryProps> = ({
     setMaterialEntryRMId(rm.id);
     setShowMaterialEntry(true);
   };
+
+  // Inventory Correction (added 21-Sep-26) — no-invoice stock adjustment
+  // for a physical-audit finding. Deliberately its own small modal rather
+  // than reusing showAddModal above: that one still requires picking
+  // supplier/date/invoice-shaped fields tailored to a receipt, where this
+  // needs a reason instead. Available for every RM/Part, not just the
+  // sheet-metal/non-Material-Entry ones the older modal is now limited to.
+  const [correctionTarget, setCorrectionTarget] = useState<{ scope: 'rm' | 'part'; id: string; label: string } | null>(null);
+  const [correctionSign, setCorrectionSign] = useState<'subtract' | 'add'>('subtract');
+  const [correctionQty, setCorrectionQty] = useState('');
+  const [correctionReason, setCorrectionReason] = useState<InventoryCorrectionReason>('rejection_scrap');
+  const [correctionNote, setCorrectionNote] = useState('');
+  const [correctionDate, setCorrectionDate] = useState(getLocalDateStr(correctedNow()));
+  const [isSubmittingCorrection, setIsSubmittingCorrection] = useState(false);
+
+  const openInventoryCorrection = (scope: 'rm' | 'part', item: RawMaterial | Part) => {
+    const label = scope === 'rm' ? (item as RawMaterial).size : `${(item as Part).name} (${(item as Part).sapCode})`;
+    setCorrectionTarget({ scope, id: item.id, label });
+    setCorrectionSign('subtract');
+    setCorrectionQty('');
+    setCorrectionReason('rejection_scrap');
+    setCorrectionNote('');
+    setCorrectionDate(getLocalDateStr(correctedNow()));
+  };
+
+  const submitInventoryCorrection = () => {
+    if (!correctionTarget || !onInventoryCorrection || isSubmittingCorrection) return;
+    const magnitude = parseFloat(correctionQty);
+    if (isNaN(magnitude) || magnitude <= 0) {
+      alert('Enter a quantity greater than 0.');
+      return;
+    }
+    if (correctionReason === 'other' && !correctionNote.trim()) {
+      alert('Please add a short note for "Other".');
+      return;
+    }
+    setIsSubmittingCorrection(true);
+    try {
+      onInventoryCorrection({
+        scope: correctionTarget.scope,
+        itemId: correctionTarget.id,
+        itemLabel: correctionTarget.label,
+        quantity: correctionSign === 'subtract' ? -magnitude : magnitude,
+        reason: correctionReason,
+        note: correctionNote.trim() || undefined,
+        date: correctionDate,
+      });
+      setCorrectionTarget(null);
+    } finally {
+      setIsSubmittingCorrection(false);
+    }
+  };
+
   // Dropdown 2: Customer Filter
   const [selectedCustomer, setSelectedCustomer] = useState<string>('All');
   // Dropdown 3: Visual Layout Template
@@ -1140,12 +1201,22 @@ const Inventory: React.FC<InventoryProps> = ({
                         </td>
                         <td className="px-8 py-6 text-center">
                           {!readOnly && (
-                            <button 
-                              onClick={() => openMaterialEntry(p)}
-                              className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md active:scale-95 ${isAdmin ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-900 hover:bg-emerald-600'}`}
-                            >
-                              Material Entry
-                            </button>
+                            <div className="flex flex-col items-center gap-2">
+                              <button
+                                onClick={() => openMaterialEntry(p)}
+                                className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md active:scale-95 ${isAdmin ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-900 hover:bg-emerald-600'}`}
+                              >
+                                Material Entry
+                              </button>
+                              {onInventoryCorrection && (
+                                <button
+                                  onClick={() => openInventoryCorrection('part', p)}
+                                  className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-600 hover:text-white hover:border-amber-600 px-4 py-1.5 rounded-lg font-black uppercase tracking-widest transition-all active:scale-95"
+                                >
+                                  Inventory Correction ±
+                                </button>
+                              )}
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -1212,12 +1283,22 @@ const Inventory: React.FC<InventoryProps> = ({
                           </td>
                           <td className="py-2.5 px-4 text-center">
                             {!readOnly && (
-                              <button
-                                onClick={() => openMaterialEntry(p)}
-                                className="text-[10px] bg-slate-900 text-white hover:bg-emerald-600 px-3 py-1 rounded-md font-bold transition-all shadow-sm active:scale-95"
-                              >
-                                + Entry
-                              </button>
+                              <div className="flex flex-col items-center gap-1">
+                                <button
+                                  onClick={() => openMaterialEntry(p)}
+                                  className="text-[10px] bg-slate-900 text-white hover:bg-emerald-600 px-3 py-1 rounded-md font-bold transition-all shadow-sm active:scale-95"
+                                >
+                                  + Entry
+                                </button>
+                                {onInventoryCorrection && (
+                                  <button
+                                    onClick={() => openInventoryCorrection('part', p)}
+                                    className="text-[8px] bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-600 hover:text-white px-2 py-0.5 rounded-md font-bold transition-all shadow-sm active:scale-95"
+                                  >
+                                    ± Correction
+                                  </button>
+                                )}
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -1279,12 +1360,22 @@ const Inventory: React.FC<InventoryProps> = ({
                     </div>
 
                     {!readOnly && (
-                      <button
-                        onClick={() => openMaterialEntry(p)}
-                        className="w-full py-2.5 bg-slate-900 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-sm active:scale-95"
-                      >
-                        Material Entry
-                      </button>
+                      <div className="flex flex-col gap-2">
+                        <button
+                          onClick={() => openMaterialEntry(p)}
+                          className="w-full py-2.5 bg-slate-900 hover:bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-sm active:scale-95"
+                        >
+                          Material Entry
+                        </button>
+                        {onInventoryCorrection && (
+                          <button
+                            onClick={() => openInventoryCorrection('part', p)}
+                            className="w-full py-2 bg-amber-50 hover:bg-amber-600 hover:text-white text-amber-700 border border-amber-200 hover:border-amber-600 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all active:scale-95"
+                          >
+                            Inventory Correction ±
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
@@ -1748,12 +1839,22 @@ const Inventory: React.FC<InventoryProps> = ({
                     </td>
                     <td className="px-8 py-6 text-center">
                       {!readOnly && (
-                        <button
-                          onClick={() => openMaterialEntryForRM(rm)}
-                          className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-indigo-600 hover:bg-emerald-600 active:scale-95`}
-                        >
-                          RM Inward Receipt +
-                        </button>
+                        <div className="flex flex-col items-center gap-2">
+                          <button
+                            onClick={() => openMaterialEntryForRM(rm)}
+                            className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-indigo-600 hover:bg-emerald-600 active:scale-95`}
+                          >
+                            RM Inward Receipt +
+                          </button>
+                          {onInventoryCorrection && (
+                            <button
+                              onClick={() => openInventoryCorrection('rm', rm)}
+                              className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-600 hover:text-white hover:border-amber-600 px-4 py-1.5 rounded-lg font-black uppercase tracking-widest transition-all active:scale-95"
+                            >
+                              Inventory Correction ±
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -1954,12 +2055,22 @@ const Inventory: React.FC<InventoryProps> = ({
                     </td>
                     <td className="px-8 py-6 text-center">
                       {!readOnly && (
-                        <button
-                          onClick={() => openMaterialEntryForRM(rm)}
-                          className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-violet-600 hover:bg-emerald-600 active:scale-95`}
-                        >
-                          RM Inward Receipt +
-                        </button>
+                        <div className="flex flex-col items-center gap-2">
+                          <button
+                            onClick={() => openMaterialEntryForRM(rm)}
+                            className={`text-[10px] text-white px-5 py-2.5 rounded-xl font-black uppercase tracking-widest transition-all shadow-md bg-violet-600 hover:bg-emerald-600 active:scale-95`}
+                          >
+                            RM Inward Receipt +
+                          </button>
+                          {onInventoryCorrection && (
+                            <button
+                              onClick={() => openInventoryCorrection('rm', rm)}
+                              className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-600 hover:text-white hover:border-amber-600 px-4 py-1.5 rounded-lg font-black uppercase tracking-widest transition-all active:scale-95"
+                            >
+                              Inventory Correction ±
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -2222,6 +2333,115 @@ const Inventory: React.FC<InventoryProps> = ({
             <div className="p-8 bg-slate-50 border-t border-slate-100 flex gap-4">
               <button onClick={() => { setShowConfirmModal(false); setIsSubmitting(false); }} className="flex-1 py-5 border-2 border-slate-100 rounded-2xl font-black text-slate-500 uppercase text-[11px] tracking-widest hover:bg-white">Modify</button>
               <button onClick={handleFinalConfirm} disabled={isSubmitting || !isEntryDateValid} className={`flex-[2] py-5 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl active:scale-95 disabled:opacity-50 disabled:active:scale-100 ${isAdjustment ? 'bg-rose-600' : 'bg-slate-900'}`}>{isSubmitting ? 'Posting…' : 'Post to Database'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INVENTORY CORRECTION ± — no-invoice signed adjustment for RM or Part, staged via RM Approvals for Store, fast-posted for Admin */}
+      {correctionTarget && (
+        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-[100] p-4 text-left">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-md w-full p-10 border border-slate-100 animate-in zoom-in-95 max-h-[92vh] overflow-y-auto">
+            <h3 className="text-2xl font-black mb-1 text-left text-amber-600">Inventory Correction ±</h3>
+            <p className="text-xs text-slate-500 mb-6 font-medium text-left">
+              {correctionTarget.scope === 'rm' ? 'Correcting RM stock for: ' : 'Correcting Part stock for: '}
+              <span className="text-amber-700 font-extrabold">{correctionTarget.label}</span>
+            </p>
+
+            <div className="space-y-5 text-left">
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Direction</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setCorrectionSign('subtract')}
+                    className={`py-4 rounded-2xl font-black uppercase text-xs tracking-widest border-2 transition-all ${correctionSign === 'subtract' ? 'bg-rose-600 border-rose-600 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-400 hover:border-rose-200'}`}
+                  >
+                    − Subtract
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCorrectionSign('add')}
+                    className={`py-4 rounded-2xl font-black uppercase text-xs tracking-widest border-2 transition-all ${correctionSign === 'add' ? 'bg-emerald-600 border-emerald-600 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-400 hover:border-emerald-200'}`}
+                  >
+                    + Add
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
+                  Quantity ({correctionTarget.scope === 'part' ? 'Pcs' : 'Pipes / Kg'})
+                </label>
+                <input
+                  autoFocus
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0"
+                  className={`w-full px-6 py-5 bg-white border-2 rounded-2xl outline-none font-black text-3xl transition-all shadow-inner text-slate-900 ${correctionSign === 'subtract' ? 'border-rose-300 focus:border-rose-500' : 'border-emerald-300 focus:border-emerald-500'}`}
+                  value={correctionQty}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '' || /^\d*\.?\d*$/.test(val)) setCorrectionQty(val);
+                  }}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Reason</label>
+                <select
+                  className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-amber-500 outline-none font-bold text-slate-900 transition-all shadow-inner"
+                  value={correctionReason}
+                  onChange={(e) => setCorrectionReason(e.target.value as InventoryCorrectionReason)}
+                >
+                  {Object.entries(INVENTORY_CORRECTION_REASON_LABELS).map(([key, label]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">
+                  Note {correctionReason === 'other' ? <span className="text-rose-500">(Mandatory)</span> : <span className="text-slate-300 normal-case font-bold">(optional)</span>}
+                </label>
+                <textarea
+                  required={correctionReason === 'other'}
+                  placeholder="Additional detail..."
+                  className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-amber-500 outline-none font-bold text-slate-900 min-h-[70px] shadow-inner"
+                  value={correctionNote}
+                  onChange={(e) => setCorrectionNote(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Date</label>
+                <input
+                  type="date"
+                  min={minEntryDateStr}
+                  max={todayDateStr}
+                  className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-amber-500 outline-none font-bold text-slate-900 transition-all shadow-inner"
+                  value={correctionDate}
+                  onChange={(e) => setCorrectionDate(e.target.value)}
+                />
+              </div>
+
+              <p className="text-[9px] text-slate-400 font-bold mt-1.5 ml-1 leading-relaxed">
+                {isAdmin
+                  ? 'Posted immediately to the plant stock as Admin.'
+                  : 'Will be sent for Admin approval before it reflects in the plant stock.'}
+              </p>
+
+              <div className="pt-2 flex gap-4">
+                <button type="button" onClick={() => setCorrectionTarget(null)} className="flex-1 py-4 border border-slate-200 rounded-2xl font-black text-slate-500 uppercase text-[11px] tracking-widest hover:bg-slate-50 transition-all">Cancel</button>
+                <button
+                  type="button"
+                  onClick={submitInventoryCorrection}
+                  disabled={isSubmittingCorrection || !correctionQty}
+                  className="flex-1 py-4 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-xl transition-all active:scale-95 disabled:bg-slate-200 disabled:shadow-none disabled:text-slate-400 bg-amber-600 shadow-amber-100 hover:bg-amber-700"
+                >
+                  {isSubmittingCorrection ? 'Posting…' : isAdmin ? 'Post Correction' : 'Send for Approval'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -422,7 +422,37 @@ export interface MonthlyArchive {
 // when Admin approves a pending entry, instead of the moment Store/PPC
 // clicks Save. This is deliberate reuse, not a rewrite: the same
 // already-validated math and alerts fire either way, just later.
-export type PendingRMEntryType = 'finished_pieces' | 'longer_pipe' | 'manufacturer_invoice';
+export type PendingRMEntryType = 'finished_pieces' | 'longer_pipe' | 'manufacturer_invoice' | 'inventory_correction';
+
+// --- Inventory Correction (added 21-Sep-26) ---
+// A no-invoice stock adjustment for a physical-audit finding — a rejection
+// sent to scrap, a shortage or surplus found on a physical count, or
+// anything else that isn't a real receipt. Deliberately minimal compared
+// to the 3 entry types above: no supplier/invoice/weight/bill-value, since
+// there is no vendor document behind this. Posts through the exact same
+// handleAddInward/handleAddRMInward functions Inventory.tsx's older direct
+// modal already uses for a signed quantity — same mirroring to the linked
+// RM/Part on the other side that a normal receipt already does, just
+// running with a negative (or, for "found extra", positive) number.
+export type InventoryCorrectionReason = 'rejection_scrap' | 'audit_shortage' | 'audit_surplus' | 'ht_to_normal' | 'other';
+
+export const INVENTORY_CORRECTION_REASON_LABELS: Record<InventoryCorrectionReason, string> = {
+  rejection_scrap: 'Rejection / Sent to Scrap',
+  audit_shortage: 'Physical Audit Shortage',
+  audit_surplus: 'Physical Audit Surplus',
+  ht_to_normal: 'HT to Normal',
+  other: 'Other',
+};
+
+export interface PendingInventoryCorrectionPayload {
+  scope: 'rm' | 'part';
+  itemId: string; // rmId or partId, matching scope
+  itemLabel: string; // display snapshot (RM size, or "Part name (SAP code)") at submission time
+  quantity: number; // signed — negative to subtract (the normal case), positive for "found extra"
+  reason: InventoryCorrectionReason;
+  note?: string; // required by the UI when reason === 'other', optional otherwise
+  date: string; // YYYY-MM-DD
+}
 
 // 'pending' = normal, everything resolved to a real RM/Item, orange "Post
 // for Approval" in the UI. 'not_matched' = at least one line/material
@@ -509,6 +539,7 @@ export interface PendingRMEntry {
   finishedPiecesPayload?: { header: PendingMaterialEntryHeader; lines: PendingFinishedPieceLine[] };
   longerPipePayload?: { header: PendingMaterialEntryHeader; lines: PendingLongerPipeLine[] };
   manufacturerInvoicePayload?: PendingMfgInvoiceSubmission;
+  inventoryCorrectionPayload?: PendingInventoryCorrectionPayload;
   // Free-text summary for the queue list — part/RM names, quantities — so
   // Admin doesn't have to expand every card to see what's in it.
   summary: string;

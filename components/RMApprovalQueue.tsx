@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   PendingRMEntry, PendingLongerPipeLine, PendingMfgInvoiceLine, PendingFinishedPieceLine,
   PendingAllottedItem, PendingMaterialEntryHeader, PendingMfgInvoiceSubmission, Part, RawMaterial,
+  InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS,
 } from '../types';
 import { pcsPerBar, computeUnattributedScrapMm } from '../services/materialEntry';
 
@@ -54,6 +55,7 @@ const TYPE_LABEL: Record<PendingRMEntry['entryType'], string> = {
   finished_pieces: 'Material Entry — Finished Pieces',
   longer_pipe: 'Material Entry — Longer Pipe',
   manufacturer_invoice: 'RM Cross-Bill — Manufacturer Invoice',
+  inventory_correction: 'Inventory Correction ±',
 };
 
 const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
@@ -300,8 +302,12 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
     if (e.entryType === 'finished_pieces') return !!e.finishedPiecesPayload && e.finishedPiecesPayload.lines.every(l => l.partId && l.quantity > 0);
     if (e.entryType === 'longer_pipe') return !!e.longerPipePayload && e.longerPipePayload.lines.every(l => !!l.rmId);
     if (e.entryType === 'manufacturer_invoice') return !!e.manufacturerInvoicePayload && e.manufacturerInvoicePayload.lines.every(l => !!l.rmId);
+    if (e.entryType === 'inventory_correction') return !!e.inventoryCorrectionPayload && !!e.inventoryCorrectionPayload.itemId && e.inventoryCorrectionPayload.quantity !== 0;
     return false;
   };
+
+  const patchCorrection = (e: PendingRMEntry, patch: Partial<NonNullable<PendingRMEntry['inventoryCorrectionPayload']>>) =>
+    onUpdate(e.id, ent => ent.inventoryCorrectionPayload ? { ...ent, inventoryCorrectionPayload: { ...ent.inventoryCorrectionPayload, ...patch } } : ent);
 
   return (
     <div className="space-y-8 text-left">
@@ -568,6 +574,87 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                       ) : (
                         <p key={idx} className="text-sm font-bold">{l.materialCode} — {rawMaterials.find(r => r.id === l.rmId)?.size || 'unmatched'} — {l.quantityPcs} bars</p>
                       ))}
+                    </div>
+                  )}
+
+                  {e.entryType === 'inventory_correction' && e.inventoryCorrectionPayload && (
+                    <div className="space-y-3 bg-amber-50/40 border border-amber-100 rounded-2xl p-4">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                        <div>
+                          <p className="text-[9px] font-black text-slate-400 uppercase">Scope</p>
+                          <p className="font-bold uppercase">{e.inventoryCorrectionPayload.scope === 'rm' ? 'Raw Material' : 'Part'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-black text-slate-400 uppercase">Item</p>
+                          <p className="font-bold">{e.inventoryCorrectionPayload.itemLabel}</p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-black text-slate-400 uppercase">Quantity</p>
+                          {editable ? (
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={e.inventoryCorrectionPayload.quantity < 0 ? 'subtract' : 'add'}
+                                onChange={(ev) => {
+                                  const mag = Math.abs(e.inventoryCorrectionPayload!.quantity);
+                                  patchCorrection(e, { quantity: ev.target.value === 'subtract' ? -mag : mag });
+                                }}
+                                className="border-2 border-amber-200 rounded-lg px-1.5 py-1 text-xs font-bold"
+                              >
+                                <option value="subtract">−</option>
+                                <option value="add">+</option>
+                              </select>
+                              <input
+                                type="number"
+                                value={Math.abs(e.inventoryCorrectionPayload.quantity)}
+                                onChange={(ev) => {
+                                  const mag = Math.abs(parseFloat(ev.target.value) || 0);
+                                  const sign = e.inventoryCorrectionPayload!.quantity < 0 ? -1 : 1;
+                                  patchCorrection(e, { quantity: sign * mag });
+                                }}
+                                className="w-20 border-2 border-amber-200 rounded-lg px-2 py-1 text-xs font-bold"
+                              />
+                            </div>
+                          ) : (
+                            <p className={`font-black ${e.inventoryCorrectionPayload.quantity < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {e.inventoryCorrectionPayload.quantity > 0 ? '+' : ''}{e.inventoryCorrectionPayload.quantity}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-black text-slate-400 uppercase">Date</p>
+                          <p className="font-bold">{e.inventoryCorrectionPayload.date}</p>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[9px] font-black text-slate-400 uppercase">Reason</p>
+                        {editable ? (
+                          <select
+                            value={e.inventoryCorrectionPayload.reason}
+                            onChange={(ev) => patchCorrection(e, { reason: ev.target.value as InventoryCorrectionReason })}
+                            className="w-full border-2 border-amber-200 rounded-lg px-2 py-1.5 text-xs font-bold mt-1"
+                          >
+                            {Object.entries(INVENTORY_CORRECTION_REASON_LABELS).map(([key, label]) => (
+                              <option key={key} value={key}>{label}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <p className="font-bold">{INVENTORY_CORRECTION_REASON_LABELS[e.inventoryCorrectionPayload.reason]}</p>
+                        )}
+                      </div>
+                      {(editable || e.inventoryCorrectionPayload.note) && (
+                        <div>
+                          <p className="text-[9px] font-black text-slate-400 uppercase">Note</p>
+                          {editable ? (
+                            <textarea
+                              value={e.inventoryCorrectionPayload.note || ''}
+                              onChange={(ev) => patchCorrection(e, { note: ev.target.value })}
+                              className="w-full border-2 border-amber-200 rounded-lg px-2 py-1.5 text-xs font-bold mt-1 min-h-[50px]"
+                            />
+                          ) : (
+                            <p className="font-bold italic">"{e.inventoryCorrectionPayload.note}"</p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

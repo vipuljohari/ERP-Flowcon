@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { InwardLog, Part, RawMaterial, RMInwardLog } from '../types';
+import { InwardLog, Part, RawMaterial, RMInwardLog, InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS } from '../types';
 import * as XLSX from 'xlsx';
 import { isSheetRM, rmAllCustomers } from '../services/rmYield';
 
@@ -136,6 +136,24 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     return raw.replace(/\[(RM_)?OPENING_BALANCE_SET:[^\]]+\]\s*/g, '').trim() || 'Opening Inventory Correction';
   };
 
+  // Inventory Correction ± (21-Sep-26) tags its remarks with
+  // [INVENTORY_CORRECTION:reason_key] so this report can show the reason as
+  // its own badge/label instead of falling through to the generic
+  // "Adjustment" treatment every other negative entry gets. Store's
+  // "Rejection sent to scrap" note lands here as reason 'rejection_scrap'.
+  const parseInventoryCorrectionTag = (remarks?: string): { reasonKey: string; reasonLabel: string; note: string } | null => {
+    if (!remarks) return null;
+    const m = remarks.match(/^\[INVENTORY_CORRECTION:([a-z_]+)\]\s*/);
+    if (!m) return null;
+    const reasonKey = m[1];
+    const reasonLabel = INVENTORY_CORRECTION_REASON_LABELS[reasonKey as InventoryCorrectionReason] || reasonKey;
+    const rest = remarks.slice(m[0].length).trim();
+    // rest is "<Label>" or "<Label> — <note>" (see buildCorrectionRemarks in
+    // App.tsx) — strip the repeated label back off, keep only the note.
+    const note = rest.replace(new RegExp(`^${reasonLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(—\\s*)?`), '').trim();
+    return { reasonKey, reasonLabel, note };
+  };
+
   // This used to also synthesize a fake "opening balance" log entry for
   // every key in localRMOpeningBalances, to backfill visibility for
   // corrections made before onAddInward-based audit logging existed. Now
@@ -186,13 +204,17 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     });
   }, [allLogsWithAudits, parts, startDate, endDate, selectedSize]);
 
-  // RM-only rows for the same date/size window. The two "audit" filter
-  // modes below (Discrepancy Control / Opening inventory correction) are
-  // Part-level-only concepts — a raw RMInwardLog row is never one of
-  // those — so this correctly returns nothing for either, leaving that
-  // existing behavior untouched.
+  // RM-only rows for the same date/size window. 'Opening inventory
+  // correction' stays a Part-level-only concept (RM has no equivalent
+  // audit-tagged opening-balance log here) so that mode still returns
+  // nothing for RM. 'Discrepancy Control Entry' USED to be Part-only too,
+  // but since Inventory Correction ± (21-Sep-26) can now post a negative
+  // entry on the RM side as well (e.g. Longer Pipe rejection/scrap), this
+  // mode now also surfaces negative RM receipts so Store's "Rejection sent
+  // to scrap" entries are filterable here regardless of which side (RM or
+  // Part) they were posted against.
   const filteredRmLogs = useMemo(() => {
-    if (selectedSize === 'Discrepancy Control Entry' || selectedSize === 'Opening inventory correction') return [];
+    if (selectedSize === 'Opening inventory correction') return [];
     const start = new Date(startDate);
     start.setHours(0, 0, 0, 0);
     const end = new Date(endDate);
@@ -201,6 +223,11 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     return rmLogs.filter(log => {
       const d = new Date(log.timestamp);
       const matchesDate = d >= start && d <= end;
+
+      if (selectedSize === 'Discrepancy Control Entry') {
+        return matchesDate && log.quantity < 0;
+      }
+
       if (selectedSize !== 'All') {
         const rm = rawMaterials.find(r => r.id === log.rmId);
         return matchesDate && (rm?.size || log.rmSize) === selectedSize;
@@ -439,17 +466,17 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
               <h4 className="text-3xl font-black tracking-tighter leading-none text-left">{totalRangeInward.toLocaleString()} Pcs</h4>
               {(rmTotals.pipes !== 0 || rmTotals.kg !== 0) && (
                 <p className="text-[11px] font-bold opacity-80 mt-1.5 text-left">
-                  + {[
-                    rmTotals.pipes !== 0 ? `${rmTotals.pipes.toLocaleString()} Pipes` : null,
-                    rmTotals.kg !== 0 ? `${rmTotals.kg.toLocaleString()} Kg` : null,
-                  ].filter(Boolean).join(' / ')} RM received (raw material, before item allotment)
+                  {[
+                    rmTotals.pipes !== 0 ? `${rmTotals.pipes > 0 ? '+' : ''}${rmTotals.pipes.toLocaleString()} Pipes` : null,
+                    rmTotals.kg !== 0 ? `${rmTotals.kg > 0 ? '+' : ''}${rmTotals.kg.toLocaleString()} Kg` : null,
+                  ].filter(Boolean).join(' / ')} {selectedSize === 'Discrepancy Control Entry' ? 'RM-side correction (raw material)' : 'RM received (raw material, before item allotment)'}
                 </p>
               )}
             </div>
          </div>
          {selectedSize === 'Discrepancy Control Entry' && (
            <span className="bg-white/20 px-5 py-2.5 rounded-2xl text-xs font-black uppercase tracking-widest backdrop-blur-sm">
-             {filteredLogs.length} Negative {filteredLogs.length === 1 ? 'Entry' : 'Entries'}
+             {filteredLogs.length + filteredRmLogs.length} Negative {(filteredLogs.length + filteredRmLogs.length) === 1 ? 'Entry' : 'Entries'}
            </span>
          )}
          {selectedSize === 'Opening inventory correction' && (
@@ -532,10 +559,19 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                                 </span>
                               </td>
                               <td className="px-10 py-6 text-center border-r border-slate-200/40 max-w-[300px]">
-                                <div className="flex flex-col items-center">
-                                  <span className="text-[8px] font-black text-indigo-800 uppercase tracking-widest mb-1 bg-indigo-100 border border-indigo-300 px-2 py-0.5 rounded">🔧 RM Receipt</span>
-                                  <span className="text-[10px] font-bold text-slate-500 leading-snug text-center mt-0.5">{log.remarks || 'Standard RM Inward — not yet allotted to a specific item'}</span>
-                                </div>
+                                {isAdj && parseInventoryCorrectionTag(log.remarks) ? (
+                                  <div className="flex flex-col items-center">
+                                    <span className="text-[8px] font-black text-amber-800 uppercase tracking-widest mb-1 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">📋 {parseInventoryCorrectionTag(log.remarks)!.reasonLabel}</span>
+                                    {parseInventoryCorrectionTag(log.remarks)!.note && (
+                                      <span className="text-[10px] font-bold text-slate-500 line-clamp-2 italic leading-tight">"{parseInventoryCorrectionTag(log.remarks)!.note}"</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col items-center">
+                                    <span className="text-[8px] font-black text-indigo-800 uppercase tracking-widest mb-1 bg-indigo-100 border border-indigo-300 px-2 py-0.5 rounded">🔧 RM Receipt</span>
+                                    <span className="text-[10px] font-bold text-slate-500 leading-snug text-center mt-0.5">{log.remarks || 'Standard RM Inward — not yet allotted to a specific item'}</span>
+                                  </div>
+                                )}
                               </td>
                               <td className="px-10 py-6 text-center border-r border-slate-200/40">
                                 <div className="text-xs font-black text-slate-600 font-mono">{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
@@ -591,6 +627,13 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                                 <div className="flex flex-col items-center">
                                   <span className="text-[8px] font-black text-amber-800 uppercase tracking-widest mb-1 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">⚙️ Opening Audit Record</span>
                                   <span className="text-[11px] font-bold text-slate-800 leading-snug text-center mt-0.5">{formatAuditRemarks(log)}</span>
+                                </div>
+                              ) : isAdj && parseInventoryCorrectionTag(log.remarks) ? (
+                                <div className="flex flex-col items-center">
+                                  <span className="text-[8px] font-black text-amber-800 uppercase tracking-widest mb-1 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">📋 {parseInventoryCorrectionTag(log.remarks)!.reasonLabel}</span>
+                                  {parseInventoryCorrectionTag(log.remarks)!.note && (
+                                    <span className="text-[10px] font-bold text-slate-500 line-clamp-2 italic leading-tight">"{parseInventoryCorrectionTag(log.remarks)!.note}"</span>
+                                  )}
                                 </div>
                               ) : isAdj ? (
                                 <div className="flex flex-col items-center">
