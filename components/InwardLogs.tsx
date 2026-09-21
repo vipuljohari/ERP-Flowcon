@@ -1,7 +1,22 @@
 import React, { useMemo, useState } from 'react';
-import { InwardLog, Part, RawMaterial } from '../types';
+import { InwardLog, Part, RawMaterial, RMInwardLog } from '../types';
 import * as XLSX from 'xlsx';
-import { isSheetRM } from '../services/rmYield';
+import { isSheetRM, rmAllCustomers } from '../services/rmYield';
+
+// 21-Sep-26: this report was Part/SAP-code-only (InwardLog) — a raw
+// material receipt only ever showed up here if its bars/pieces were
+// allotted to a specific Item on the Material Entry screen. A line saved
+// with Auto-Assign (or with no items ticked at all) always bumps RM stock
+// correctly (visible on Inventory (RM-wise)'s RM Inward Log column) but,
+// by design, never created a Part-level row here — there's nothing
+// specific to attribute it to. Per Vipul's 21-Sep confirmation (Auto-Assign
+// WAS ticked on the entries he couldn't find here), this report now also
+// merges in every raw RMInwardLog row directly, so it's a true "everything
+// that came in" ledger — both Part-allotted rows and RM-only rows,
+// visually distinguished (see the 🔧 RM Receipt badge below). RM totals
+// are kept in a SEPARATE stat from the Part Pcs headline (different units
+// — Pipes/Kg vs Pcs — summing them together would be meaningless).
+type LedgerRow = { kind: 'part'; log: InwardLog } | { kind: 'rm'; log: RMInwardLog };
 
 interface InwardLogsProps {
   logs: InwardLog[];
@@ -9,16 +24,20 @@ interface InwardLogsProps {
   auditDate?: Date;
   isAdmin?: boolean;
   onDeleteLog?: (id: string) => void;
+  rmLogs?: RMInwardLog[];
+  onDeleteRmLog?: (id: string) => void;
   rawMaterials?: RawMaterial[];
   localRMOpeningBalances?: Record<string, string>;
 }
 
-const InwardLogs: React.FC<InwardLogsProps> = ({ 
-  logs, 
-  parts, 
-  auditDate = new Date(), 
-  isAdmin = false, 
+const InwardLogs: React.FC<InwardLogsProps> = ({
+  logs,
+  parts,
+  auditDate = new Date(),
+  isAdmin = false,
   onDeleteLog,
+  rmLogs = [],
+  onDeleteRmLog,
   rawMaterials = [],
   localRMOpeningBalances = {}
 }) => {
@@ -49,10 +68,13 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     setEndDate(defaultEnd);
   }, [defaultStart, defaultEnd]);
 
+  // Combines Part sizes AND RM sizes — the same size string is used for
+  // both (a Part's `.size` mirrors whichever RM it's cut from), so one
+  // dropdown filters both Part-allotted rows and RM-only rows together.
   const uniqueRmNames = useMemo(() => {
-    const sizes = parts.map(p => p.size);
-    return Array.from(new Set(sizes)).sort();
-  }, [parts]);
+    const sizes = [...parts.map(p => p.size), ...rawMaterials.map(r => r.size)];
+    return Array.from(new Set(sizes.filter(Boolean))).sort();
+  }, [parts, rawMaterials]);
 
   const isAuditLog = (log: InwardLog) => {
     return (
@@ -164,10 +186,47 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     });
   }, [allLogsWithAudits, parts, startDate, endDate, selectedSize]);
 
+  // RM-only rows for the same date/size window. The two "audit" filter
+  // modes below (Discrepancy Control / Opening inventory correction) are
+  // Part-level-only concepts — a raw RMInwardLog row is never one of
+  // those — so this correctly returns nothing for either, leaving that
+  // existing behavior untouched.
+  const filteredRmLogs = useMemo(() => {
+    if (selectedSize === 'Discrepancy Control Entry' || selectedSize === 'Opening inventory correction') return [];
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    return rmLogs.filter(log => {
+      const d = new Date(log.timestamp);
+      const matchesDate = d >= start && d <= end;
+      if (selectedSize !== 'All') {
+        const rm = rawMaterials.find(r => r.id === log.rmId);
+        return matchesDate && (rm?.size || log.rmSize) === selectedSize;
+      }
+      return matchesDate;
+    });
+  }, [rmLogs, rawMaterials, startDate, endDate, selectedSize]);
+
+  // Separate from totalRangeInward below on purpose — Pipes/Kg (RM) and
+  // Pcs (Part) are different units and summing them into one number would
+  // be meaningless.
+  const rmTotals = useMemo(() => {
+    let pipes = 0, kg = 0;
+    filteredRmLogs.forEach(l => { if (l.unit === 'kg') kg += l.quantity; else pipes += l.quantity; });
+    return { pipes, kg };
+  }, [filteredRmLogs]);
+
+  const combinedRows = useMemo((): LedgerRow[] => [
+    ...filteredLogs.map((log): LedgerRow => ({ kind: 'part', log })),
+    ...filteredRmLogs.map((log): LedgerRow => ({ kind: 'rm', log })),
+  ], [filteredLogs, filteredRmLogs]);
+
   const groupedLogs = useMemo(() => {
-    const groups: Record<string, InwardLog[]> = {};
-    filteredLogs.forEach(log => {
-      const dateKey = new Date(log.timestamp).toLocaleDateString('en-GB', {
+    const groups: Record<string, LedgerRow[]> = {};
+    combinedRows.forEach(row => {
+      const dateKey = new Date(row.log.timestamp).toLocaleDateString('en-GB', {
         day: '2-digit',
         month: 'short',
         year: 'numeric'
@@ -175,13 +234,17 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
       if (!groups[dateKey]) {
         groups[dateKey] = [];
       }
-      groups[dateKey] = [...groups[dateKey], log];
+      groups[dateKey] = [...groups[dateKey], row];
     });
-    
+
+    Object.keys(groups).forEach(k => {
+      groups[k].sort((a, b) => new Date(b.log.timestamp).getTime() - new Date(a.log.timestamp).getTime());
+    });
+
     return Object.entries(groups).sort((a, b) => {
-      return new Date(b[1][0].timestamp).getTime() - new Date(a[1][0].timestamp).getTime();
+      return new Date(b[1][0].log.timestamp).getTime() - new Date(a[1][0].log.timestamp).getTime();
     });
-  }, [filteredLogs]);
+  }, [combinedRows]);
 
   const totalRangeInward = useMemo(() => {
     return filteredLogs.reduce((acc, l) => acc + l.quantity, 0);
@@ -198,8 +261,27 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
   };
 
   const exportToExcel = () => {
-    if (filteredLogs.length === 0) return;
-    const worksheetData = filteredLogs.map(log => {
+    if (combinedRows.length === 0) return;
+    const worksheetData = combinedRows.map(row => {
+      if (row.kind === 'rm') {
+        const log = row.log;
+        const date = new Date(log.timestamp);
+        const rm = rawMaterials.find(r => r.id === log.rmId);
+        return {
+          'Date': date.toLocaleDateString('en-GB'),
+          'Time': date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          'Customer Name': rm ? rmAllCustomers(rm).join(', ') : 'N/A',
+          'Invoice / Ref No.': log.invoiceNumber || '-',
+          'SAP Code': '—',
+          'Part / Material Description': `RM Receipt — ${rm?.size || log.rmSize}`,
+          'RM Size/Specifications': rm?.size || log.rmSize,
+          'Supplier/Authorized By': log.supplier,
+          'Quantity / Adjustment': log.quantity,
+          'Unit': log.unit === 'kg' ? 'Kg' : 'Pipes',
+          'Remarks / Audit Record': log.remarks || 'Standard RM Inward — not yet allotted to a specific item',
+        };
+      }
+      const log = row.log;
       const date = new Date(log.timestamp);
       const part = parts.find(p => p.id === log.partId);
       const rm = rawMaterials.find(r => r.partId === log.partId || r.id === log.partId);
@@ -214,14 +296,15 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
         'Part / Material Description': log.partName,
         'RM Size/Specifications': part?.size || rm?.size || 'N/A',
         'Supplier/Authorized By': log.supplier,
-        'Quantity / Adjustment (Pcs/Pipes)': log.quantity,
+        'Quantity / Adjustment': log.quantity,
+        'Unit': 'Pcs',
         'Remarks / Audit Record': formatAuditRemarks(log)
       };
     });
     const worksheet = XLSX.utils.json_to_sheet(worksheetData);
     const workbook = XLSX.utils.book_new();
 
-    const sheetName = 
+    const sheetName =
       selectedSize === 'Discrepancy Control Entry' ? 'Discrepancy Control' :
       selectedSize === 'Opening inventory correction' ? 'Opening Corrections' :
       'Inward Logs';
@@ -237,6 +320,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
       { wch: 25 },
       { wch: 20 },
       { wch: 18 },
+      { wch: 10 },
       { wch: 55 }
     ];
 
@@ -251,6 +335,12 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
   const handleDelete = (id: string) => {
     if (window.confirm("Admin Alert: Are you sure you want to delete this log? Plant balance will be adjusted.")) {
       onDeleteLog?.(id);
+    }
+  };
+
+  const handleDeleteRm = (id: string) => {
+    if (window.confirm("Admin Alert: Are you sure you want to delete this RM receipt? Raw material stock will be adjusted.")) {
+      onDeleteRmLog?.(id);
     }
   };
 
@@ -317,7 +407,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
           </div>
 
           <div className="flex gap-4 min-w-[180px]">
-            <button onClick={exportToExcel} disabled={filteredLogs.length === 0} className="flex-1 bg-emerald-600 text-white px-8 py-4 h-[72px] rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-emerald-700 transition-all flex items-center justify-center gap-3 shadow-xl shadow-emerald-100 active:scale-95 disabled:opacity-50 disabled:grayscale">
+            <button onClick={exportToExcel} disabled={combinedRows.length === 0} className="flex-1 bg-emerald-600 text-white px-8 py-4 h-[72px] rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-emerald-700 transition-all flex items-center justify-center gap-3 shadow-xl shadow-emerald-100 active:scale-95 disabled:opacity-50 disabled:grayscale">
               <span>Download Excel</span>
               <span className="text-2xl leading-none">📊</span>
             </button>
@@ -347,6 +437,14 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                       : 'Net Period Change (Inward - Adj)')}
               </p>
               <h4 className="text-3xl font-black tracking-tighter leading-none text-left">{totalRangeInward.toLocaleString()} Pcs</h4>
+              {(rmTotals.pipes !== 0 || rmTotals.kg !== 0) && (
+                <p className="text-[11px] font-bold opacity-80 mt-1.5 text-left">
+                  + {[
+                    rmTotals.pipes !== 0 ? `${rmTotals.pipes.toLocaleString()} Pipes` : null,
+                    rmTotals.kg !== 0 ? `${rmTotals.kg.toLocaleString()} Kg` : null,
+                  ].filter(Boolean).join(' / ')} RM received (raw material, before item allotment)
+                </p>
+              )}
             </div>
          </div>
          {selectedSize === 'Discrepancy Control Entry' && (
@@ -386,7 +484,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                   <table className="w-full text-left border-collapse">
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
                       <tr>
-                        <th className="px-10 py-6 text-left border-r border-slate-200/40">Part & Size/Specifications</th>
+                        <th className="px-10 py-6 text-left border-r border-slate-200/40">Part / RM & Size</th>
                         <th className="px-10 py-6 text-center border-r border-slate-200/40">Customer Name</th>
                         <th className="px-10 py-6 text-center border-r border-slate-200/40">Invoice No.</th>
                         <th className="px-10 py-6 text-center border-r border-slate-200/40">Responsible</th>
@@ -397,7 +495,63 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {dailyLogs.map(log => {
+                      {dailyLogs.map(row => {
+                        if (row.kind === 'rm') {
+                          const log = row.log;
+                          const isAdj = log.quantity < 0;
+                          const rm = rawMaterials.find(r => r.id === log.rmId);
+                          const unitLabel = log.unit === 'kg' ? 'Kg' : 'Pipes';
+
+                          return (
+                            <tr key={log.id} className={`${isAdj ? 'bg-rose-50/30' : 'bg-indigo-50/30'} hover:bg-indigo-100/30 border-l-4 border-l-indigo-400 transition-colors group`}>
+                              <td className="px-10 py-6 text-left border-r border-slate-200/40">
+                                <div className="text-[10px] text-indigo-500 font-mono tracking-tighter uppercase mb-0.5 text-left">RM Receipt</div>
+                                <div className="text-sm font-black text-slate-800 uppercase text-left">{rm?.size || log.rmSize}</div>
+                                <div className="text-[9px] text-indigo-500 font-bold uppercase mt-1 text-left">{rm && isSheetRM(rm) ? 'Sheet Metal' : 'Tube / Pipe'}</div>
+                              </td>
+                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
+                                <span className="text-xs font-black text-slate-700 uppercase">
+                                  {rm ? rmAllCustomers(rm).join(', ') : 'N/A'}
+                                </span>
+                              </td>
+                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
+                                <span className="text-xs font-mono font-bold text-indigo-600">
+                                  {log.invoiceNumber || '-'}
+                                </span>
+                              </td>
+                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
+                                <span className={`inline-block px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border ${
+                                  isAdj ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                }`}>
+                                  {log.supplier}
+                                </span>
+                              </td>
+                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
+                                <span className={`font-black text-base ${isAdj ? 'text-rose-600' : 'text-indigo-600'}`}>
+                                  {log.quantity > 0 ? `+${log.quantity}` : log.quantity} <span className="text-[9px] font-bold uppercase">{unitLabel}</span>
+                                </span>
+                              </td>
+                              <td className="px-10 py-6 text-center border-r border-slate-200/40 max-w-[300px]">
+                                <div className="flex flex-col items-center">
+                                  <span className="text-[8px] font-black text-indigo-800 uppercase tracking-widest mb-1 bg-indigo-100 border border-indigo-300 px-2 py-0.5 rounded">🔧 RM Receipt</span>
+                                  <span className="text-[10px] font-bold text-slate-500 leading-snug text-center mt-0.5">{log.remarks || 'Standard RM Inward — not yet allotted to a specific item'}</span>
+                                </div>
+                              </td>
+                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
+                                <div className="text-xs font-black text-slate-600 font-mono">{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+                              </td>
+                              {isAdmin && (
+                                <td className="px-10 py-6 text-center">
+                                  <button onClick={() => handleDeleteRm(log.id)} className="w-10 h-10 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center">
+                                    🗑️
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        }
+
+                        const log = row.log;
                         const isAdj = log.quantity < 0;
                         const isAudit = isAuditLog(log);
                         const part = parts.find(p => p.id === log.partId);
@@ -429,7 +583,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                             </td>
                             <td className="px-10 py-6 text-center border-r border-slate-200/40">
                               <span className={`font-black text-base ${isAudit ? 'text-amber-700' : (isAdj ? 'text-rose-600' : 'text-emerald-600')}`}>
-                                {log.quantity > 0 ? `+${log.quantity}` : log.quantity}
+                                {log.quantity > 0 ? `+${log.quantity}` : log.quantity} <span className="text-[9px] font-bold uppercase">Pcs</span>
                               </span>
                             </td>
                             <td className="px-10 py-6 text-center border-r border-slate-200/40 max-w-[300px]">

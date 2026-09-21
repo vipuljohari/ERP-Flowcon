@@ -1564,6 +1564,12 @@ const MainApp: React.FC = () => {
                setInwardLogs(prev => prev.filter(l => l.id !== id));
                setParts(prev => prev.map(p => p.id === log.partId ? { ...p, stock: p.stock - log.quantity } : p));
              }
+          }} rmLogs={rmInwardLogs} onDeleteRmLog={(id) => {
+             const log = rmInwardLogs.find(l => l.id === id);
+             if (log) {
+               setRmInwardLogs(prev => prev.filter(l => l.id !== id));
+               setRawMaterials(prev => prev.map(r => r.id === log.rmId ? { ...r, stock: r.stock - log.quantity } : r));
+             }
           }} />}
           {canAccessView(role, currentView) && currentView === 'dispatch_daily' && <DailyDispatch parts={cDP} sales={contextSales} allSales={sales} inwardLogs={inwardLogs} onBulkDispatch={(items, cust, ts, inv) => {
              const finalTs = ts || getLocalISOString();
