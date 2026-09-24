@@ -1543,17 +1543,19 @@ const MainApp: React.FC = () => {
               materialLengths={rmMaterialLengths}
               onMaterialEntryFinishedPieces={(header, lines, photo) => {
                 const fromGateDocumentId = gateDocInProgress?.mode === 'finished_pieces' ? gateDocInProgress.doc.id : undefined;
-                const newEntry = stageMaterialEntryFinishedPieces(header, lines, photo, fromGateDocumentId);
-                if (newEntry && gateDocInProgress?.mode === 'finished_pieces') {
-                  finalizeGateDocument(gateDocInProgress.doc, newEntry);
+                const outcome = stageMaterialEntryFinishedPieces(header, lines, photo, fromGateDocumentId);
+                if (outcome.entry && gateDocInProgress?.mode === 'finished_pieces') {
+                  finalizeGateDocument(gateDocInProgress.doc, outcome.entry);
                 }
+                return outcome.error;
               }}
               onMaterialEntryLongerPipe={(header, lines, photo) => {
                 const fromGateDocumentId = gateDocInProgress?.mode === 'longer_pipe' ? gateDocInProgress.doc.id : undefined;
-                const newEntry = stageMaterialEntryLongerPipe(header, lines, photo, fromGateDocumentId);
-                if (newEntry && gateDocInProgress?.mode === 'longer_pipe') {
-                  finalizeGateDocument(gateDocInProgress.doc, newEntry);
+                const outcome = stageMaterialEntryLongerPipe(header, lines, photo, fromGateDocumentId);
+                if (outcome.entry && gateDocInProgress?.mode === 'longer_pipe') {
+                  finalizeGateDocument(gateDocInProgress.doc, outcome.entry);
                 }
+                return outcome.error;
               }}
               onInventoryCorrection={(payload) => {
                 // Store: stageInventoryCorrection leaves it 'pending' in RM
@@ -1890,10 +1892,11 @@ const MainApp: React.FC = () => {
               onCreateAlert={pushAdminAlert}
               onSaveManufacturerInvoiceWithAllotment={(submission, photo) => {
                 const fromGateDocumentId = gateDocInProgress?.mode === 'manufacturer_invoice' ? gateDocInProgress.doc.id : undefined;
-                const newEntry = stageManufacturerInvoiceWithAllotment(submission, photo, fromGateDocumentId);
-                if (newEntry && gateDocInProgress?.mode === 'manufacturer_invoice') {
-                  finalizeGateDocument(gateDocInProgress.doc, newEntry);
+                const outcome = stageManufacturerInvoiceWithAllotment(submission, photo, fromGateDocumentId);
+                if (outcome.entry && gateDocInProgress?.mode === 'manufacturer_invoice') {
+                  finalizeGateDocument(gateDocInProgress.doc, outcome.entry);
                 }
+                return outcome.error;
               }}
               cameraEnabled={rmEntryCameraEnabled}
               manualEnabled={rmEntryManualEnabled}
@@ -1907,6 +1910,7 @@ const MainApp: React.FC = () => {
               isAdmin={isAdmin}
               onProcess={pickGateDocumentMode}
               onResetInProgress={isAdmin ? resetGateDocumentInProgress : undefined}
+              onReject={isAdmin ? handleRejectGateDocument : undefined}
               unmatchedSlips={unmatchedDharamkantaSlips}
               onAttachSlipUpload={handleAttachSlipUpload}
               onAttachSlipFromUnmatched={handleAttachSlipFromUnmatched}
@@ -2542,24 +2546,88 @@ const MainApp: React.FC = () => {
     return newEntry;
   }
 
-  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): PendingRMEntry | null {
-    if (lines.length === 0) return null;
+  // --- Duplicate invoice detection (added 24-Sep-26) ---
+  // Vipul's ask: if the same supplier+invoice number has already been
+  // staged or booked before — today, or any number of days back — Store
+  // (or Admin) must be stopped from posting it again, with a clear
+  // "Duplicate Invoice — Already booked" message, and Admin gets a record
+  // of the blocked attempt. Checked against `pendingRMEntries` — the one
+  // collection every entry type (Finished Pieces, Longer Pipe, RM
+  // Cross-Bill/Manufacturer Invoice) already lives in for its whole life,
+  // 'pending' through 'approved' — so this single scan covers both
+  // "already fully booked days ago" (status 'approved') and "someone else
+  // already submitted this today, still awaiting Admin" (status
+  // 'pending'/'not_matched') in one check. A 'rejected' entry is excluded
+  // — Admin explicitly rejecting one clears the way for a genuine
+  // resubmission. Independent of, and in addition to, the gate-photo-
+  // intake dedup in services/apiHandlers.ts's handleGateUpload — that one
+  // only ever sees WhatsApp-sourced photos before a PendingRMEntry even
+  // exists; this one also catches a duplicate entered by hand via Camera
+  // Upload / manual entry with no gate photo involved at all, and acts as
+  // a backstop if a gate photo's invoice number was corrected by hand
+  // after intake.
+  const normalizeInvoiceKey = (s: string): string => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  function findDuplicateBookedInvoice(supplierName: string, invoiceNo: string): PendingRMEntry | null {
+    const cleanInvoiceNo = normalizeInvoiceKey(invoiceNo);
+    const cleanSupplier = normalizeInvoiceKey(supplierName);
+    if (!cleanInvoiceNo || !cleanSupplier) return null; // never dedupe on a blank/illegible invoice no. or supplier name
+    return pendingRMEntries.find(e => {
+      if (e.status === 'rejected') return false;
+      const supplier = e.finishedPiecesPayload?.header.supplierName ?? e.longerPipePayload?.header.supplierName ?? e.manufacturerInvoicePayload?.manufacturerName;
+      const invoiceNoOnEntry = e.finishedPiecesPayload?.header.invoiceNo ?? e.longerPipePayload?.header.invoiceNo ?? e.manufacturerInvoicePayload?.invoiceNo;
+      return normalizeInvoiceKey(supplier || '') === cleanSupplier && normalizeInvoiceKey(invoiceNoOnEntry || '') === cleanInvoiceNo;
+    }) || null;
+  }
+
+  function pushDuplicateInvoiceAlert(supplier: string, invoiceNo: string, duplicate: PendingRMEntry) {
+    pushAdminAlert({
+      type: 'duplicate_invoice_blocked',
+      supplier,
+      invoiceNumber: invoiceNo,
+      remarks: `Blocked — Invoice ${invoiceNo || '—'} from ${supplier} was already booked ("${duplicate.summary}", status: ${duplicate.status}). This resubmission was not posted.`,
+    });
+  }
+
+  // Every stage function below now returns { entry } on success or
+  // { error } when it refuses to create the entry — a duplicate, or (as
+  // before) an empty line list. The error string is a user-facing message
+  // meant to be shown right on the entry screen Store/Admin is looking at.
+  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): { entry?: PendingRMEntry; error?: string } {
+    if (lines.length === 0) return {};
+    const duplicate = findDuplicateBookedInvoice(header.supplierName, header.invoiceNo);
+    if (duplicate) {
+      pushDuplicateInvoiceAlert(header.supplierName, header.invoiceNo, duplicate);
+      return { error: `Duplicate Invoice — Already booked (${duplicate.summary}).` };
+    }
     const partNames = lines.map(l => { const p = parts.find(x => x.id === l.partId); return `${p?.name || l.partId} (${l.quantity} Pcs)`; });
-    return pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoImageBase64: photo?.base64, photoMimeType: photo?.mimeType, fromGateDocumentId });
+    const entry = pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoImageBase64: photo?.base64, photoMimeType: photo?.mimeType, fromGateDocumentId });
+    return { entry };
   }
 
-  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): PendingRMEntry | null {
-    if (lines.length === 0) return null;
+  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): { entry?: PendingRMEntry; error?: string } {
+    if (lines.length === 0) return {};
+    const duplicate = findDuplicateBookedInvoice(header.supplierName, header.invoiceNo);
+    if (duplicate) {
+      pushDuplicateInvoiceAlert(header.supplierName, header.invoiceNo, duplicate);
+      return { error: `Duplicate Invoice — Already booked (${duplicate.summary}).` };
+    }
     const lineSummaries = lines.map(l => { const rm = rawMaterials.find(r => r.id === l.rmId); return `${rm ? rm.size : 'RM'} (${l.barsReceived} bars)`; });
-    return pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoImageBase64: photo?.base64, photoMimeType: photo?.mimeType, fromGateDocumentId });
+    const entry = pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoImageBase64: photo?.base64, photoMimeType: photo?.mimeType, fromGateDocumentId });
+    return { entry };
   }
 
-  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): PendingRMEntry | null {
-    if (submission.lines.length === 0) return null;
+  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): { entry?: PendingRMEntry; error?: string } {
+    if (submission.lines.length === 0) return {};
+    const duplicate = findDuplicateBookedInvoice(submission.manufacturerName, submission.invoiceNo);
+    if (duplicate) {
+      pushDuplicateInvoiceAlert(submission.manufacturerName, submission.invoiceNo, duplicate);
+      return { error: `Duplicate Invoice — Already booked (${duplicate.summary}).` };
+    }
     const unresolvedLines = submission.lines.filter(l => !l.rmId);
     const isNotMatched = unresolvedLines.length > 0;
     const materialsSummary = submission.lines.map(l => `${l.materialCode || l.materialName || 'material'} (${l.quantityPcs} Pcs)`).join(', ');
-    return pushPendingRMEntry({
+    const entry = pushPendingRMEntry({
       entryType: 'manufacturer_invoice', status: isNotMatched ? 'not_matched' : 'pending',
       manufacturerInvoicePayload: submission,
       summary: `Manufacturer Invoice — ${submission.manufacturerName} — ${submission.invoiceNo} — ${materialsSummary}`,
@@ -2568,6 +2636,7 @@ const MainApp: React.FC = () => {
       photoMimeType: photo?.mimeType,
       fromGateDocumentId,
     });
+    return { entry };
   }
 
   // --- Gate Documents for Approval hand-off ---
@@ -2683,6 +2752,40 @@ const MainApp: React.FC = () => {
   // for Approval, leaving it 'in_progress' with no screen actually open.
   function resetGateDocumentInProgress(gateDoc: GateDocumentForApproval) {
     setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'pending', pickedEntryType: undefined, pickedAt: undefined, pickedBy: undefined } : d)));
+    if (gateDocInProgress?.doc.id === gateDoc.id) setGateDocInProgress(null);
+  }
+
+  // Admin-only reject — 24-Sep-26, Vipul's ask: for a gate-photo entry that
+  // should never be posted (his example: the gate guard resent the exact
+  // same invoice photo a second time, creating a genuine duplicate entry
+  // still sitting in Gate Documents for Approval). Same "never silently
+  // dropped" archive-before-clearing rule as every other photo-lifecycle
+  // step in this pipeline — both photos (if present) go to Dropbox's
+  // "Unit 2/Rejected" folder, tagged "-rejected"/"-rejected-slip", before
+  // being cleared. The doc itself is kept (status 'rejected', never
+  // deleted) as the audit record of what was rejected, by whom, and why —
+  // GateDocumentsQueue's `active` filter already only shows
+  // 'pending'/'in_progress', so a rejected doc simply stops appearing
+  // there, same as a 'consumed' one does.
+  async function handleRejectGateDocument(gateDoc: GateDocumentForApproval, reason: string) {
+    const ex = gateDoc.extracted;
+    const baseFileName = buildArchiveFileName(gateDoc.matchedSupplier, ex.invoiceNo, ex.date);
+    const monthFolder = buildArchiveMonthFolder(ex.date);
+    if (gateDoc.imageBase64 && gateDoc.mimeType) {
+      await archivePhotoToDropbox(gateDoc.imageBase64, gateDoc.mimeType, `${baseFileName}-rejected`, monthFolder, 'rejected');
+    }
+    if (gateDoc.slipImageBase64 && gateDoc.slipMimeType) {
+      await archivePhotoToDropbox(gateDoc.slipImageBase64, gateDoc.slipMimeType, `${baseFileName}-rejected-slip`, monthFolder, 'rejected');
+    }
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? {
+      ...d,
+      status: 'rejected',
+      imageBase64: '',
+      slipImageBase64: '',
+      rejectedAt: getLocalISOString(),
+      rejectedBy: appUser?.displayName || userName,
+      rejectReason: reason || '',
+    } : d)));
     if (gateDocInProgress?.doc.id === gateDoc.id) setGateDocInProgress(null);
   }
 

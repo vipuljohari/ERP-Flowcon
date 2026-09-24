@@ -20,6 +20,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   material_entry_scrap: { label: 'Material Entry — Unattributed Scrap (Shortage Split)', icon: '✂️', color: 'amber' },
   sibling_stock_borrow: { label: 'Sibling Stock Borrow (Auto)', icon: '🔄', color: 'cyan' },
   gate_slip_not_matched: { label: 'Gate Slip Not Auto-Matched', icon: '🚚', color: 'pink' },
+  duplicate_invoice_blocked: { label: 'Duplicate Invoice Blocked', icon: '⛔', color: 'red' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {
@@ -33,6 +34,7 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   orange: { badge: 'bg-orange-100 text-orange-700 border-orange-200', border: 'border-l-orange-500' },
   cyan: { badge: 'bg-cyan-100 text-cyan-700 border-cyan-200', border: 'border-l-cyan-500' },
   pink: { badge: 'bg-pink-100 text-pink-700 border-pink-200', border: 'border-l-pink-500' },
+  red: { badge: 'bg-red-100 text-red-700 border-red-200', border: 'border-l-red-500' },
 };
 
 const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify, onFlag }) => {

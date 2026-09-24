@@ -366,7 +366,7 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow' | 'gate_slip_not_matched';
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow' | 'gate_slip_not_matched' | 'duplicate_invoice_blocked';
 
 export interface AdminAlert {
   id: string;
@@ -609,7 +609,17 @@ export interface PendingRMEntry {
 //     Approval clicked) — the Dropbox archive from that save is the
 //     photo's permanent record from then on, same as every other Camera
 //     Upload photo, so there's no reason to keep two copies.
-export type GateDocumentStatus = 'pending' | 'in_progress' | 'consumed';
+//   - 'rejected' (added 24-Sep-26): Admin-only — for an entry that should
+//     never be posted (Vipul's example: the gate guard resent the same
+//     invoice photo a second time, creating a genuine duplicate entry).
+//     Same "never silently dropped" rule as everywhere else — both photos
+//     (if present) are archived to Dropbox's "Unit 2/Rejected" folder
+//     first, then cleared, same as 'consumed' clears them after archiving
+//     to "Unit 2/Inwards". The doc itself is kept (not deleted) as the
+//     audit record of what was rejected, by whom, and why. See
+//     rejectedAt/rejectedBy/rejectReason below and App.tsx's
+//     handleRejectGateDocument.
+export type GateDocumentStatus = 'pending' | 'in_progress' | 'consumed' | 'rejected';
 
 export interface GateDocumentExtractedFields {
   supplierName: string;
@@ -675,6 +685,10 @@ export interface GateDocumentForApproval {
   slipAttachedVia?: 'auto_whatsapp' | 'manual_pick' | 'manual_upload';
   slipAttachedBy?: string; // display name — set for manual_pick/manual_upload; 'bot.js (auto-matched)' for auto_whatsapp
   slipAttachedAt?: string;
+  // Set only when status === 'rejected' — see the status-history note above.
+  rejectedAt?: string;
+  rejectedBy?: string; // display name
+  rejectReason?: string; // free text Admin typed in, optional
 }
 
 // One doc per dharamkanta slip photo bot.js relayed that services/

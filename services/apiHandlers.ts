@@ -663,6 +663,84 @@ async function archiveUnprocessedGatePhoto(
   }
 }
 
+// --- Duplicate gate-photo detection (added 24-Sep-26) ---
+// Vipul's report: the gate guard resent the same Tube Investments invoice
+// photo a second time (same invoice number, same value, OCR read both
+// correctly), and it created a SECOND separate Gate Documents for Approval
+// entry rather than being recognized as a re-send of one already sitting
+// in the queue — it should never reach a second approval. This closes that
+// gap: after a gate photo resolves to an approved supplier but BEFORE a new
+// gateDocumentsForApproval doc is created, check for an existing doc for
+// the same matchedSupplier + the same invoice number (any status except
+// 'rejected' — a photo Admin already explicitly rejected gets a fresh
+// chance, since the rejection may have been "too blurry, ignore" rather
+// than "this invoice is invalid"). A match suppresses the new doc entirely
+// and archives the resent photo to Dropbox's "Unit 2/Rejected" folder
+// (never silently dropped) instead.
+//
+// Deliberately does NOT dedupe when invoiceNo is blank/illegible on the
+// incoming photo — two different invoices can both read as "" and wrongly
+// colliding them would be worse than occasionally missing a genuine
+// duplicate that has no legible invoice number either.
+const normalizeInvoiceNo = (s: string): string => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+async function findDuplicateGateDocument(app: admin.app.App, matchedSupplier: string, invoiceNo: string): Promise<string | null> {
+  const cleanInvoiceNo = normalizeInvoiceNo(invoiceNo);
+  if (!cleanInvoiceNo) return null;
+  const snap = await admin.firestore(app).collection("gateDocumentsForApproval")
+    .where("matchedSupplier", "==", matchedSupplier)
+    .get();
+  for (const d of snap.docs) {
+    const data = d.data() as any;
+    if (data?.status === "rejected") continue;
+    if (normalizeInvoiceNo(data?.extracted?.invoiceNo) === cleanInvoiceNo) {
+      return d.id;
+    }
+  }
+  return null;
+}
+
+async function archiveDuplicateGatePhoto(
+  imageBase64: string,
+  mimeType: string,
+  supplierName: string,
+  invoiceNo: string,
+  dateGuess: string
+): Promise<void> {
+  try {
+    const accessToken = await getDropboxAccessToken();
+    const buffer = Buffer.from(imageBase64, "base64");
+    const ext = mimeType === "image/png" ? "png" : "jpg";
+    const fileName = `${buildArchiveFileName(supplierName || "Unknown Supplier", invoiceNo || "Pending", dateGuess)}-duplicate`;
+    const monthFolder = buildArchiveMonthFolder(dateGuess);
+    const path = `${REJECTED_GATE_FOLDER}/${monthFolder}/${fileName}.${ext}`;
+    const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Dropbox-API-Arg": JSON.stringify({ path, mode: "add", autorename: true, mute: true }),
+        "Content-Type": "application/octet-stream",
+      },
+      body: buffer,
+    });
+    if (!uploadResp.ok) {
+      const errText = await uploadResp.text().catch(() => "");
+      throw new Error(`Dropbox upload failed (${uploadResp.status}): ${errText.slice(0, 200)}`);
+    }
+  } catch (e: any) {
+    console.error("Duplicate gate photo archive failed (non-fatal):", e);
+  }
+}
+
+// Sibling to UNPROCESSED_GATE_FOLDER above, for photos that DID resolve to
+// an approved supplier but were never meant to reach the live queue anyway
+// — a detected duplicate resend (archiveDuplicateGatePhoto above), or a
+// photo Admin explicitly rejects from an existing entry (App.tsx's
+// handleRejectGateDocument, via handleArchivePhoto's archiveRoot param
+// below). Kept separate from "/Unit 2/Inwards" so it never looks like a
+// genuine posted entry in the real archive.
+const REJECTED_GATE_FOLDER = "/Unit 2/Rejected";
+
 // 20-Sep-26: server-side safety net for the Firestore 1MB document limit —
 // was flagged (below, where handleGateUpload calls this) as unresolved;
 // closed here on the App side per Vipul's steer to keep bot.js changes in
@@ -774,6 +852,19 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
         extracted.date
       );
       res.json({ matched: false, approved: false });
+      return;
+    }
+
+    // Duplicate resend check (added 24-Sep-26) — see findDuplicateGateDocument's
+    // own comment for the full design note. Runs only after a confident,
+    // approved-supplier match, using that match's CANONICAL name (not the
+    // raw OCR text) so a slightly different misread on the resend doesn't
+    // let a genuine duplicate slip through.
+    const duplicateDocId = await findDuplicateGateDocument(app, match.matchedSupplier, extracted.invoiceNo);
+    if (duplicateDocId) {
+      await archiveDuplicateGatePhoto(image, mimetype, match.matchedSupplier, extracted.invoiceNo, extracted.date);
+      await pushDuplicateInvoiceAlert(app, match.matchedSupplier, extracted.invoiceNo, sender);
+      res.json({ matched: true, duplicate: true, existingDocId: duplicateDocId });
       return;
     }
 
@@ -938,6 +1029,31 @@ async function pushGateSlipNotMatchedAlert(app: admin.app.App, vehicleNo: string
   }
 }
 
+// Vipul's 24-Sep-26 ask: whenever a resent/duplicate invoice photo is
+// blocked (here, at WhatsApp gate-photo intake, OR client-side in
+// App.tsx's stage functions when Store/Admin tries to Post for Approval a
+// manually-entered duplicate), Admin should get a record of it — same
+// "written directly via the Admin SDK" pattern as pushGateSlipNotMatchedAlert
+// above, since bot.js's own delivery has no logged-in browser session.
+async function pushDuplicateInvoiceAlert(app: admin.app.App, supplier: string, invoiceNo: string, sender: string): Promise<void> {
+  try {
+    const alertRef = admin.firestore(app).collection("adminAlerts").doc();
+    await alertRef.set({
+      id: alertRef.id,
+      type: "duplicate_invoice_blocked",
+      timestamp: new Date().toISOString(),
+      createdBy: "WhatsApp Gate Bot",
+      role: "store",
+      supplier,
+      invoiceNumber: invoiceNo || "",
+      remarks: `A WhatsApp gate photo for Invoice ${invoiceNo || "(no invoice no. read)"} from ${supplier} was blocked — this invoice already has an entry in Gate Documents for Approval. Sent by ${sender || "unknown"}. Photo archived to Dropbox's "Unit 2/Rejected" folder, not posted.`,
+      verified: false,
+    });
+  } catch (e) {
+    console.error("duplicate_invoice_blocked alert failed (non-fatal):", e);
+  }
+}
+
 // Out-of-order safety net for handleGateUpload above: if a slip photo
 // somehow got processed (and landed in unmatchedDharamkantaSlips) BEFORE
 // its invoice's own gate doc existed to match against, this catches it the
@@ -1089,7 +1205,7 @@ const ARCHIVE_PHOTO_FOLDER = "/Unit 2/Inwards";
 
 export async function handleArchivePhoto(req: MinimalRequest, res: MinimalResponse) {
   try {
-    const { imageBase64, mimeType, fileName, folder } = req.body || {};
+    const { imageBase64, mimeType, fileName, folder, archiveRoot } = req.body || {};
     if (!imageBase64 || !fileName) {
       res.status(400).json({ error: "Missing imageBase64 or fileName." });
       return;
@@ -1106,9 +1222,15 @@ export async function handleArchivePhoto(req: MinimalRequest, res: MinimalRespon
     // upload, no separate "create folder" call needed. Falls back to the
     // flat root for any older caller that doesn't send one.
     const safeFolder = folder ? String(folder).replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_").trim() : "";
+    // 24-Sep-26: whitelisted alternate root, for App.tsx's
+    // handleRejectGateDocument archiving a rejected entry's photo(s) — kept
+    // out of the real "Unit 2/Inwards" archive so it never looks like a
+    // genuine posted entry. Never accepts an arbitrary path from the
+    // client, only this one named alternative.
+    const root = archiveRoot === "rejected" ? REJECTED_GATE_FOLDER : ARCHIVE_PHOTO_FOLDER;
     const path = safeFolder
-      ? `${ARCHIVE_PHOTO_FOLDER}/${safeFolder}/${safeName}.${ext}`
-      : `${ARCHIVE_PHOTO_FOLDER}/${safeName}.${ext}`;
+      ? `${root}/${safeFolder}/${safeName}.${ext}`
+      : `${root}/${safeName}.${ext}`;
 
     const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
       method: "POST",

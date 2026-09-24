@@ -45,6 +45,11 @@ interface GateDocumentsQueueProps {
   // 'pending' without touching anything else, for when whoever picked it
   // closed their browser/tab instead of Cancel/Post for Approval.
   onResetInProgress?: (doc: GateDocumentForApproval) => void;
+  // Admin-only — permanently removes this card from the queue (e.g. a
+  // duplicate resend of an invoice already sitting here). Both photos are
+  // archived to Dropbox's "Unit 2/Rejected" folder first — see App.tsx's
+  // handleRejectGateDocument.
+  onReject?: (doc: GateDocumentForApproval, reason: string) => void | Promise<void>;
   // WhatsApp-ingested slip photos that arrived but couldn't be
   // auto-matched by vehicle number — the "pick from unmatched" fallback
   // reads this list.
@@ -165,14 +170,67 @@ const AttachSlipModal: React.FC<{
   );
 };
 
+// ------------------------------------------------------------
+// Reject entry modal — Admin-only, 24-Sep-26. A short reason is optional
+// but encouraged (shows up in the doc's own record and helps whoever
+// reviews the Dropbox "Unit 2/Rejected" archive later understand why).
+// ------------------------------------------------------------
+const RejectModal: React.FC<{
+  doc: GateDocumentForApproval;
+  onReject: (doc: GateDocumentForApproval, reason: string) => void | Promise<void>;
+  onClose: () => void;
+}> = ({ doc, onReject, onClose }) => {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await onReject(doc, reason.trim());
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-[120] p-4" onClick={onClose}>
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-lg font-black text-slate-900">Reject This Entry</h3>
+        <p className="text-[11px] text-slate-500 mt-1">{doc.matchedSupplier} — Invoice {doc.extracted.invoiceNo || '—'}</p>
+        <p className="text-[11px] text-rose-600 font-bold mt-3">
+          This removes it from the queue for good — it will never be posted to inventory. Both photos stay archived to
+          Dropbox ("Unit 2/Rejected") for the record, they're just no longer editable here.
+        </p>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Reason (optional) — e.g. duplicate of an already-posted invoice"
+          rows={2}
+          className="mt-3 w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+        />
+        <div className="flex gap-2 mt-4">
+          <button onClick={onClose} disabled={busy} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest disabled:opacity-50">
+            Cancel
+          </button>
+          <button onClick={confirm} disabled={busy} className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+            {busy ? 'Rejecting…' : 'Reject Entry'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const GateDocumentCard: React.FC<{
   doc: GateDocumentForApproval;
   isAdmin: boolean;
   onProcess: (mode: PendingRMEntryType) => void;
   onResetInProgress?: () => void;
+  onReject?: () => void;
   onViewPhoto: (which: 'invoice' | 'slip') => void;
   onAttachSlip: () => void;
-}> = ({ doc, isAdmin, onProcess, onResetInProgress, onViewPhoto, onAttachSlip }) => {
+}> = ({ doc, isAdmin, onProcess, onResetInProgress, onReject, onViewPhoto, onAttachSlip }) => {
   const ex = doc.extracted;
   const slipAttached = isSlipAttached(doc);
   return (
@@ -244,19 +302,29 @@ const GateDocumentCard: React.FC<{
           className="px-3 py-1.5 border-2 border-slate-200 hover:border-slate-500 text-slate-700 rounded-lg text-[11px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-200">
           Longer Pipes
         </button>
-        {isAdmin && doc.status === 'in_progress' && onResetInProgress && (
-          <button onClick={onResetInProgress} className="ml-auto px-3 py-1.5 text-rose-500 hover:text-rose-700 rounded-lg text-[11px] font-black uppercase tracking-widest">
-            Reset to Pending
-          </button>
+        {isAdmin && (
+          <div className="ml-auto flex gap-2">
+            {doc.status === 'in_progress' && onResetInProgress && (
+              <button onClick={onResetInProgress} className="px-3 py-1.5 text-amber-600 hover:text-amber-800 rounded-lg text-[11px] font-black uppercase tracking-widest">
+                Reset to Pending
+              </button>
+            )}
+            {onReject && (
+              <button onClick={onReject} className="px-3 py-1.5 text-rose-600 hover:text-rose-800 border-2 border-rose-200 hover:border-rose-400 rounded-lg text-[11px] font-black uppercase tracking-widest">
+                Reject
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
   );
 };
 
-const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, isAdmin, onProcess, onResetInProgress, unmatchedSlips, onAttachSlipUpload, onAttachSlipFromUnmatched }) => {
+const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, isAdmin, onProcess, onResetInProgress, onReject, unmatchedSlips, onAttachSlipUpload, onAttachSlipFromUnmatched }) => {
   const [viewingPhoto, setViewingPhoto] = useState<{ doc: GateDocumentForApproval; which: 'invoice' | 'slip' } | null>(null);
   const [attachingSlipFor, setAttachingSlipFor] = useState<GateDocumentForApproval | null>(null);
+  const [rejectingDoc, setRejectingDoc] = useState<GateDocumentForApproval | null>(null);
 
   const active = gateDocuments
     .filter(d => d.status === 'pending' || d.status === 'in_progress')
@@ -301,6 +369,7 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
               isAdmin={isAdmin}
               onProcess={(mode) => onProcess(doc, mode)}
               onResetInProgress={onResetInProgress ? () => onResetInProgress(doc) : undefined}
+              onReject={onReject ? () => setRejectingDoc(doc) : undefined}
               onViewPhoto={(which) => setViewingPhoto({ doc, which })}
               onAttachSlip={() => setAttachingSlipFor(doc)}
             />
@@ -338,6 +407,14 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
           onAttachSlipUpload={onAttachSlipUpload}
           onAttachSlipFromUnmatched={onAttachSlipFromUnmatched}
           onClose={() => setAttachingSlipFor(null)}
+        />
+      )}
+
+      {rejectingDoc && onReject && (
+        <RejectModal
+          doc={rejectingDoc}
+          onReject={onReject}
+          onClose={() => setRejectingDoc(null)}
         />
       )}
     </div>

@@ -167,8 +167,11 @@ interface MaterialEntryProps {
   // same as any manual line).
   initialRMId?: string | null;
   onInitialRMConsumed?: () => void;
-  onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }) => void;
-  onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }) => void;
+  // Return value (added 24-Sep-26): a string blocks the submission (e.g. a
+  // duplicate-invoice match) — shown as an inline error below the Save
+  // button instead of closing this screen; undefined/void means success.
+  onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }) => string | undefined;
+  onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }) => string | undefined;
   onClose: () => void;
   isAdmin?: boolean;
   // Camera Upload's dimension-tolerance table — see
@@ -271,6 +274,10 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   // component unmounts on close (see Inventory.tsx), so this naturally
   // resets for the next entry without an explicit reset.
   const [materialPhoto, setMaterialPhoto] = useState<{ base64: string; mimeType: string } | null>(null);
+  // Set when onSubmitFinishedPieces/onSubmitLongerPipe returns an error
+  // string (added 24-Sep-26) — a duplicate-invoice block, shown right above
+  // the Save button so Store/Admin sees it without the screen closing.
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const handleMaterialPhotoUpload = async (file: File, mode: 'pieces' | 'longer') => {
     setPhotoError(null);
@@ -587,12 +594,14 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
       .filter(l => l.partId && (parseFloat(l.qty) || 0) > 0)
       .map(l => ({ key: l.key, partId: l.partId, quantity: parseFloat(l.qty) || 0 }));
     if (outLines.length === 0) return;
-    onSubmitFinishedPieces(buildHeader(), outLines, materialPhoto || undefined);
+    const error = onSubmitFinishedPieces(buildHeader(), outLines, materialPhoto || undefined);
+    setSubmitError(error || null);
   };
 
   const saveLongerPipe = () => {
     if (!allLinesValid) return;
-    onSubmitLongerPipe(buildHeader(), lineComputations.map(lc => lc.typed), materialPhoto || undefined);
+    const error = onSubmitLongerPipe(buildHeader(), lineComputations.map(lc => lc.typed), materialPhoto || undefined);
+    setSubmitError(error || null);
   };
 
   const searchPartsFor = (rmId: string, search: string) =>
@@ -702,6 +711,10 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
 
             {!isDateValid(date) && (
               <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">Entry Date must be within the current month ({minEntryDateStr} to {todayDateStr}).</p>
+            )}
+
+            {submitError && (
+              <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-300 rounded-xl px-3 py-2">⛔ {submitError}</p>
             )}
 
             <div className="flex gap-2 pt-2">
@@ -980,6 +993,10 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
               <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
                 Can't save yet — click "‹ Back" below to open Invoice Details. Supplier, Invoice No., Total Weight, Total Bill Value and Dharamkanta Weight are all required.
               </p>
+            )}
+
+            {submitError && (
+              <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-300 rounded-xl px-3 py-2">⛔ {submitError}</p>
             )}
 
             <div className="flex gap-2 pt-2">

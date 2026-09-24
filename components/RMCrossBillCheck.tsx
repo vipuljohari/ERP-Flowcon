@@ -99,7 +99,10 @@ interface RMCrossBillCheckProps {
   // "save invoice, then separately Pull from Invoice into Material Entry"
   // design entirely — per Vipul's sign-off, an invoice can no longer be
   // saved without also allotting its bars to inventory in the same sitting.
-  onSaveManufacturerInvoiceWithAllotment: (submission: MfgInvoiceSubmission, photo?: { base64: string; mimeType: string }) => void;
+  // Return value (added 24-Sep-26): a string blocks the submission (e.g. a
+  // duplicate-invoice match against pendingRMEntries) — shown as
+  // mfgSubmitError instead of closing the form; undefined/void means success.
+  onSaveManufacturerInvoiceWithAllotment: (submission: MfgInvoiceSubmission, photo?: { base64: string; mimeType: string }) => string | undefined;
   // Universal RM Receiving entry-mode switch — Admin sets this once, from
   // the top of the RM Approvals screen, and it applies here AND to Material
   // Entry's Finished Pieces / Longer Pipe at the same time. Both default
@@ -284,6 +287,11 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   // protects against a store user re-clicking "Save" for the same invoice
   // when a slow/dropped connection makes it look like nothing happened.
   const [mfgDuplicateError, setMfgDuplicateError] = useState<string | null>(null);
+  // Distinct from mfgDuplicateError above (that one's a per-material-line
+  // check against already-saved manufacturerInvoices) — this is the
+  // whole-invoice "already booked" block from onSaveManufacturerInvoiceWithAllotment's
+  // return value, checked against pendingRMEntries (added 24-Sep-26).
+  const [mfgSubmitError, setMfgSubmitError] = useState<string | null>(null);
   const [crossDuplicateError, setCrossDuplicateError] = useState<string | null>(null);
   const [markupThreshold, setMarkupThreshold] = useState<string>('');
   const [showBulkImport, setShowBulkImport] = useState(false);
@@ -743,7 +751,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     const weightVarianceKg = bothWeightsEntered ? actualWeightKg - totalWeightKg : 0;
     const weightFlagged = bothWeightsEntered && Math.abs(weightVarianceKg) >= WEIGHT_VARIANCE_FLAG_KG;
 
-    onSaveManufacturerInvoiceWithAllotment({
+    const error = onSaveManufacturerInvoiceWithAllotment({
       manufacturerName: mfgForm.manufacturerName,
       customerName: mfgForm.customerName,
       invoiceNo: mfgForm.invoiceNo,
@@ -770,6 +778,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
         autoAssign: ac.unresolved ? false : ac.line!.autoAssign,
       })),
     }, mfgPhoto || undefined);
+    if (error) {
+      setMfgSubmitError(error);
+      return;
+    }
     closeMfgForm();
   };
 
@@ -794,6 +806,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setMfgAiExtracted(false);
     setMfgPhoto(null);
     setMfgDuplicateError(null);
+    setMfgSubmitError(null);
     setShowMfgForm(true);
   };
   const closeMfgForm = () => {
@@ -807,6 +820,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setMfgAiExtracted(false);
     setMfgPhoto(null);
     setMfgDuplicateError(null);
+    setMfgSubmitError(null);
     setShowMfgForm(false);
   };
 
@@ -980,6 +994,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
     setMfgAiExtracted(true);
     setMfgPhoto(null);
     setMfgDuplicateError(null);
+    setMfgSubmitError(null);
     setShowMfgForm(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gateSeed?.id]);
@@ -1839,6 +1854,10 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                     </div>
                   );
                 })}
+
+                {mfgSubmitError && (
+                  <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border-2 border-rose-300 rounded-xl px-3 py-2">⛔ {mfgSubmitError}</p>
+                )}
 
                 <div className="flex gap-3 pt-2">
                   <button type="button" onClick={() => setWizardStep(1)} className="flex-1 py-3 border-2 border-slate-200 text-slate-500 rounded-xl font-bold text-sm">‹ Back</button>

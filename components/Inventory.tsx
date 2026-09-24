@@ -46,8 +46,11 @@ interface InventoryProps {
   manufacturerInvoices?: RMManufacturerInvoice[];
   setManufacturerInvoices?: (update: RMManufacturerInvoice[] | ((prev: RMManufacturerInvoice[]) => RMManufacturerInvoice[])) => void;
   materialLengths?: RMMaterialLength[];
-  onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }) => void;
-  onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }) => void;
+  // Return value (added 24-Sep-26): an error message string blocks the
+  // submission (e.g. a duplicate-invoice match) and is shown back on the
+  // entry screen; undefined/void means it was staged successfully.
+  onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }) => string | undefined;
+  onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }) => string | undefined;
   // Camera Upload's dimension-tolerance table (Material Entry) — see
   // services/dimensionTolerance.ts. Passed straight through to
   // MaterialEntry.tsx; Inventory.tsx itself doesn't use it.
@@ -2108,16 +2111,20 @@ const Inventory: React.FC<InventoryProps> = ({
           gateSeed={gateSeed}
           gateSeedMode={gateSeedMode}
           onSubmitFinishedPieces={(header, lines, photo) => {
-            onMaterialEntryFinishedPieces?.(header, lines, photo);
+            const error = onMaterialEntryFinishedPieces?.(header, lines, photo);
+            if (error) return error;
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
             setMaterialEntryRMId(null);
+            return undefined;
           }}
           onSubmitLongerPipe={(header, lines, photo) => {
-            onMaterialEntryLongerPipe?.(header, lines, photo);
+            const error = onMaterialEntryLongerPipe?.(header, lines, photo);
+            if (error) return error;
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
             setMaterialEntryRMId(null);
+            return undefined;
           }}
           onClose={() => {
             if (gateSeed) onGateSeedCancelled?.();

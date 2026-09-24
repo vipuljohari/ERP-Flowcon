@@ -14,12 +14,17 @@
 // `folder` (optional) is a month-bucket subfolder, e.g. "Sep 26" — see
 // buildArchiveMonthFolder below. Omitted/blank keeps photos in the flat
 // "Unit 2/Inwards" root (back-compat with any older caller).
-export const archivePhotoToDropbox = async (imageBase64: string, mimeType: string, fileName: string, folder?: string): Promise<string | null> => {
+// `archiveRoot` (optional, added 24-Sep-26) picks the top-level Dropbox
+// folder: omitted/'inward' is the normal "Unit 2/Inwards" archive;
+// 'rejected' is the sibling "Unit 2/Rejected" folder App.tsx's
+// handleRejectGateDocument uses so a rejected entry's photo never looks
+// like a genuine posted one.
+export const archivePhotoToDropbox = async (imageBase64: string, mimeType: string, fileName: string, folder?: string, archiveRoot?: 'inward' | 'rejected'): Promise<string | null> => {
   try {
     const response = await fetch('/api/dropbox/archivePhoto', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64, mimeType, fileName, folder }),
+      body: JSON.stringify({ imageBase64, mimeType, fileName, folder, archiveRoot }),
     });
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}));
