@@ -2568,15 +2568,35 @@ const MainApp: React.FC = () => {
   // after intake.
   const normalizeInvoiceKey = (s: string): string => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-  function findDuplicateBookedInvoice(supplierName: string, invoiceNo: string): PendingRMEntry | null {
+  // Fallback matching (added 24-Sep-26): Vipul hit a real case where a gate
+  // person resent an A.S.T. Pipes invoice photo and the OCR read the invoice
+  // number as blank the second time (it read fine the first time), so the
+  // invoice-number match below never fired even though weight (10,000 Kg)
+  // and bill value (₹7,08,050) were identical to the already-booked entry.
+  // When the incoming invoiceNo can't be used, fall back to supplier + date
+  // + weight + bill value together as a fingerprint of one physical
+  // invoice — still requires an exact match on all three, so two genuinely
+  // different blank-invoice-no. entries won't collide by coincidence.
+  function findDuplicateBookedInvoice(supplierName: string, invoiceNo: string, date?: string, weightKg?: number, billValue?: number): PendingRMEntry | null {
     const cleanInvoiceNo = normalizeInvoiceKey(invoiceNo);
     const cleanSupplier = normalizeInvoiceKey(supplierName);
-    if (!cleanInvoiceNo || !cleanSupplier) return null; // never dedupe on a blank/illegible invoice no. or supplier name
+    if (!cleanSupplier) return null; // never dedupe on a blank/illegible supplier name
+    if (!cleanInvoiceNo && !(date && weightKg && billValue)) return null; // nothing reliable to match on either way
     return pendingRMEntries.find(e => {
       if (e.status === 'rejected') return false;
       const supplier = e.finishedPiecesPayload?.header.supplierName ?? e.longerPipePayload?.header.supplierName ?? e.manufacturerInvoicePayload?.manufacturerName;
-      const invoiceNoOnEntry = e.finishedPiecesPayload?.header.invoiceNo ?? e.longerPipePayload?.header.invoiceNo ?? e.manufacturerInvoicePayload?.invoiceNo;
-      return normalizeInvoiceKey(supplier || '') === cleanSupplier && normalizeInvoiceKey(invoiceNoOnEntry || '') === cleanInvoiceNo;
+      if (normalizeInvoiceKey(supplier || '') !== cleanSupplier) return false;
+      if (cleanInvoiceNo) {
+        const invoiceNoOnEntry = e.finishedPiecesPayload?.header.invoiceNo ?? e.longerPipePayload?.header.invoiceNo ?? e.manufacturerInvoicePayload?.invoiceNo;
+        return normalizeInvoiceKey(invoiceNoOnEntry || '') === cleanInvoiceNo;
+      }
+      const entryDate = e.finishedPiecesPayload?.header.date ?? e.longerPipePayload?.header.date ?? e.manufacturerInvoicePayload?.date;
+      const entryWeight = e.finishedPiecesPayload?.header.totalWeightKg ?? e.longerPipePayload?.header.totalWeightKg ?? e.manufacturerInvoicePayload?.totalWeightKg;
+      const entryValue = e.finishedPiecesPayload?.header.totalBillValue ?? e.longerPipePayload?.header.totalBillValue
+        ?? (e.manufacturerInvoicePayload ? e.manufacturerInvoicePayload.lines.reduce((sum, l) => sum + (l.itemValue || 0), 0) : undefined);
+      return entryDate === date
+        && !!entryWeight && Math.round(entryWeight) === Math.round(weightKg!)
+        && !!entryValue && Math.round(entryValue) === Math.round(billValue!);
     }) || null;
   }
 
@@ -2595,7 +2615,7 @@ const MainApp: React.FC = () => {
   // meant to be shown right on the entry screen Store/Admin is looking at.
   function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): { entry?: PendingRMEntry; error?: string } {
     if (lines.length === 0) return {};
-    const duplicate = findDuplicateBookedInvoice(header.supplierName, header.invoiceNo);
+    const duplicate = findDuplicateBookedInvoice(header.supplierName, header.invoiceNo, header.date, header.totalWeightKg, header.totalBillValue);
     if (duplicate) {
       pushDuplicateInvoiceAlert(header.supplierName, header.invoiceNo, duplicate);
       return { error: `Duplicate Invoice — Already booked (${duplicate.summary}).` };
@@ -2607,7 +2627,7 @@ const MainApp: React.FC = () => {
 
   function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): { entry?: PendingRMEntry; error?: string } {
     if (lines.length === 0) return {};
-    const duplicate = findDuplicateBookedInvoice(header.supplierName, header.invoiceNo);
+    const duplicate = findDuplicateBookedInvoice(header.supplierName, header.invoiceNo, header.date, header.totalWeightKg, header.totalBillValue);
     if (duplicate) {
       pushDuplicateInvoiceAlert(header.supplierName, header.invoiceNo, duplicate);
       return { error: `Duplicate Invoice — Already booked (${duplicate.summary}).` };
@@ -2619,7 +2639,8 @@ const MainApp: React.FC = () => {
 
   function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): { entry?: PendingRMEntry; error?: string } {
     if (submission.lines.length === 0) return {};
-    const duplicate = findDuplicateBookedInvoice(submission.manufacturerName, submission.invoiceNo);
+    const submissionBillValue = submission.lines.reduce((sum, l) => sum + (l.itemValue || 0), 0);
+    const duplicate = findDuplicateBookedInvoice(submission.manufacturerName, submission.invoiceNo, submission.date, submission.totalWeightKg, submissionBillValue);
     if (duplicate) {
       pushDuplicateInvoiceAlert(submission.manufacturerName, submission.invoiceNo, duplicate);
       return { error: `Duplicate Invoice — Already booked (${duplicate.summary}).` };
