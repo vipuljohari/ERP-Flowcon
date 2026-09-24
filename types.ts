@@ -722,6 +722,19 @@ export interface UnmatchedDharamkantaSlip {
 // collection/doc path directly.
 export interface GateApprovedSuppliersSettings {
   selectedNames: string[];
+  // Supplier names Admin has typed in by hand (24-Sep-26) — for a
+  // manufacturer whose invoices come to us but never get posted in Tally as
+  // a direct Purchase voucher (e.g. Tube Investments / Avon Tubes, billed to
+  // us as a cross-bill against a customer like SKH instead — see
+  // components/RMCrossBillCheck.tsx), so it can never appear in
+  // rmPurchaseVouchers / tallySupplierNames for Admin to tick in the first
+  // place. Unlike selectedNames (a tick over the Tally-synced list), adding
+  // a name here IS the approval — no separate tick step. Also merged into
+  // the known-supplier pool used to canonicalize a gate photo's OCR'd
+  // supplier name (services/apiHandlers.ts's getGateApprovedSettings /
+  // matchKnownSupplier), not just the approval check, since these names
+  // have no Tally ledger entry to canonicalize against otherwise.
+  manualNames?: string[];
   updatedAt?: string;
   updatedBy?: string;
 }

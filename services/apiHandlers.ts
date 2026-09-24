@@ -587,19 +587,32 @@ async function getKnownRMSupplierNames(app: admin.app.App): Promise<string[]> {
 // nothing approved yet = every gate photo goes to Unprocessed until Admin
 // makes a first selection — a safe default (never silently promotes an
 // unreviewed vendor into the live queue).
-let approvedSupplierCache: { names: Set<string>; expiresAt: number } | null = null;
-async function getApprovedSupplierNames(app: admin.app.App): Promise<Set<string>> {
+//
+// 24-Sep-26: also carries manualNames — supplier names Admin typed in by
+// hand for a manufacturer that never gets a direct Tally Purchase voucher
+// (billed to us as a cross-bill against a customer instead, e.g. Tube
+// Investments / Avon Tubes via SKH — see GateApprovedSuppliersSettings in
+// types.ts). A manual name is approved the moment it's added (folded
+// straight into approvedNames below), AND returned separately so
+// handleGateUpload can also fold it into the known-supplier pool used to
+// canonicalize OCR'd names — these names would otherwise never appear in
+// rmPurchaseVouchers for that canonicalization to find them.
+let approvedSupplierCache: { approvedNames: Set<string>; manualNames: string[]; expiresAt: number } | null = null;
+async function getGateApprovedSettings(app: admin.app.App): Promise<{ approvedNames: Set<string>; manualNames: string[] }> {
   const now = Date.now();
   if (approvedSupplierCache && approvedSupplierCache.expiresAt > now) {
-    return approvedSupplierCache.names;
+    return { approvedNames: approvedSupplierCache.approvedNames, manualNames: approvedSupplierCache.manualNames };
   }
   const doc = await admin.firestore(app).collection("settings").doc("gateApprovedSuppliers").get();
-  const selected: string[] = (doc.exists && (doc.data() as any)?.selectedNames) || [];
-  const names = new Set(selected.map((s) => String(s)));
+  const data = (doc.exists && (doc.data() as any)) || {};
+  const selected: string[] = data.selectedNames || [];
+  const manual: string[] = data.manualNames || [];
+  const manualNames = manual.map((s) => String(s));
+  const approvedNames = new Set([...selected.map((s) => String(s)), ...manualNames]);
   // Shorter TTL than the Tally-list cache — Admin changing this selection
   // should take effect reasonably soon, not up to 10 minutes later.
-  approvedSupplierCache = { names, expiresAt: now + 5 * 60 * 1000 };
-  return names;
+  approvedSupplierCache = { approvedNames, manualNames, expiresAt: now + 5 * 60 * 1000 };
+  return { approvedNames, manualNames };
 }
 
 // Sibling to handleArchivePhoto's ARCHIVE_PHOTO_FOLDER, for gate photos
@@ -731,17 +744,21 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
     const extracted = await extractMaterialEntryFields(image, mimetype);
 
     const app = getAdminApp();
-    const [allTallySuppliers, approvedSuppliers] = await Promise.all([
+    const [allTallySuppliers, gateApproved] = await Promise.all([
       getKnownRMSupplierNames(app),
-      getApprovedSupplierNames(app),
+      getGateApprovedSettings(app),
     ]);
-    // Canonicalize first against the FULL Tally Purchase party list
-    // (handles vision/OCR fuzziness against the real ledger name), THEN
-    // check Admin's checkbox selection against that canonical name — not
-    // the raw Gemini-read text — so a slightly-misread name for an
+    // Canonicalize first against the FULL Tally Purchase party list PLUS
+    // any manually-added names (a cross-bill manufacturer with no Tally
+    // Purchase voucher of its own — see GateApprovedSuppliersSettings in
+    // types.ts), THEN check Admin's approval against that canonical name —
+    // not the raw Gemini-read text — so a slightly-misread name for an
     // already-approved supplier still gets picked up correctly.
-    const match = matchKnownSupplier(extracted.supplierName, allTallySuppliers);
-    const isApproved = match.result === "confident" && approvedSuppliers.has(match.matchedSupplier);
+    const knownNames = gateApproved.manualNames.length
+      ? [...allTallySuppliers, ...gateApproved.manualNames]
+      : allTallySuppliers;
+    const match = matchKnownSupplier(extracted.supplierName, knownNames);
+    const isApproved = match.result === "confident" && gateApproved.approvedNames.has(match.matchedSupplier);
 
     if (!isApproved) {
       // Nothing legible, matched no Tally party at all, OR matched a real

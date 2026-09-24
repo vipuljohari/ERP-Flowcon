@@ -17,17 +17,29 @@ import React, { useEffect, useMemo, useState } from 'react';
 // already keeps live — so it always reflects Tally, never needs manual
 // upkeep, and a party that stops appearing in Tally simply stops being
 // offered here (though it stays ticked/stored until Admin unticks it).
+//
+// 24-Sep-26: added a second, separate list — Manually Added Suppliers — for
+// a manufacturer whose invoices come to us but never get posted in Tally as
+// a direct Purchase voucher at all (billed to us as a cross-bill against a
+// customer instead, e.g. Tube Investments / Avon Tubes via SKH — see
+// components/RMCrossBillCheck.tsx). Such a name can never appear in the
+// Tally-synced list above no matter how long Admin waits, so it needs its
+// own always-available "type it in" path. Adding a name here IS the
+// approval (no separate tick step); see types.ts's
+// GateApprovedSuppliersSettings.manualNames for how it flows through to the
+// gate-photo matcher.
 // ============================================================
 
 interface PartyNameMasterProps {
   tallySupplierNames: string[];
   approvedNames: string[];
-  onSave: (names: string[]) => void;
+  manualNames: string[];
+  onSave: (names: string[], manualNames: string[]) => void;
   updatedAt?: string;
   updatedBy?: string;
 }
 
-const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, approvedNames, onSave, updatedAt, updatedBy }) => {
+const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, approvedNames, manualNames, onSave, updatedAt, updatedBy }) => {
   // Local working copy — Admin can tick/untick freely and only commits on
   // "Save Changes", same review-before-commit convention as everywhere
   // else in this app that touches a shared master list. Re-seeded whenever
@@ -35,6 +47,10 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
   // saved first), never on every keystroke of the search box.
   const [working, setWorking] = useState<Set<string>>(() => new Set(approvedNames));
   const [search, setSearch] = useState('');
+
+  // Same review-before-commit convention, for the manually-added list.
+  const [workingManual, setWorkingManual] = useState<string[]>(() => [...manualNames].sort((a, b) => a.localeCompare(b)));
+  const [manualInput, setManualInput] = useState('');
 
   // Re-seed the working copy whenever the SAVED list actually changes
   // underneath (a fresh load, or another Admin session saved first) — never
@@ -46,6 +62,12 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
     setWorking(new Set(approvedNames));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [approvedKey]);
+
+  const manualKey = useMemo(() => JSON.stringify([...manualNames].sort()), [manualNames]);
+  useEffect(() => {
+    setWorkingManual([...manualNames].sort((a, b) => a.localeCompare(b)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualKey]);
 
   const sortedNames = useMemo(
     () => Array.from(new Set(tallySupplierNames.map(n => (n || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
@@ -61,8 +83,10 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
   const dirty = useMemo(() => {
     const a = [...working].sort();
     const b = [...approvedNames].sort();
-    return JSON.stringify(a) !== JSON.stringify(b);
-  }, [working, approvedNames]);
+    const c = [...workingManual].sort();
+    const d = [...manualNames].sort();
+    return JSON.stringify(a) !== JSON.stringify(b) || JSON.stringify(c) !== JSON.stringify(d);
+  }, [working, approvedNames, workingManual, manualNames]);
 
   const toggle = (name: string) => {
     setWorking(prev => {
@@ -79,8 +103,23 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
     return next;
   });
 
+  const addManualName = () => {
+    const name = manualInput.trim();
+    if (!name) return;
+    const alreadyManual = workingManual.some(n => n.toLowerCase() === name.toLowerCase());
+    const alreadyTally = sortedNames.some(n => n.toLowerCase() === name.toLowerCase());
+    if (alreadyManual || alreadyTally) {
+      setManualInput('');
+      return;
+    }
+    setWorkingManual(prev => [...prev, name].sort((a, b) => a.localeCompare(b)));
+    setManualInput('');
+  };
+
+  const removeManualName = (name: string) => setWorkingManual(prev => prev.filter(n => n !== name));
+
   const handleSave = () => {
-    onSave(Array.from(working).sort());
+    onSave(Array.from(working).sort(), workingManual.slice().sort());
   };
 
   // Ticked names that no longer appear in Tally's own list at all — kept in
@@ -96,7 +135,8 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
       <div className="mb-6">
         <h2 className="text-2xl font-black text-slate-900">Party Name Master</h2>
         <p className="text-sm text-slate-500 mt-1">
-          Tick every Purchase party whose WhatsApp gate photos should reach the "Gate Documents for Approval" queue. Anything
+          Tick every Purchase party whose WhatsApp gate photos should reach the "Gate Documents for Approval" queue, or add
+          one by hand below for a manufacturer that never shows up in Tally at all (a cross-bill manufacturer). Anything
           else — including a real Tally party you simply haven't reviewed yet — is archived straight to the Dropbox
           "Unprocessed" folder instead, so nothing is lost, but nothing new shows up here without your say.
         </p>
@@ -107,7 +147,51 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
         )}
       </div>
 
+      <div className="bg-white border-2 border-slate-100 rounded-[1.5rem] shadow-sm p-6 mb-6">
+        <h3 className="text-sm font-black text-slate-900 mb-1">Manually Added Suppliers</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          For a manufacturer whose invoices come to us but never get posted in Tally as a direct Purchase voucher — e.g. it's
+          billed to us as a cross-bill through a customer — so it can never appear in the Tally-synced list below. Type its
+          name as close to how it prints on its own invoice as possible (helps photo matching), then hit "Save Changes"
+          below — no ticking needed, being on this list is itself the approval.
+        </p>
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            type="text"
+            value={manualInput}
+            onChange={(e) => setManualInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addManualName(); } }}
+            placeholder="e.g. Tube Investments of India Limited"
+            className="flex-1 border-2 border-slate-200 rounded-xl px-3 py-2 text-sm"
+          />
+          <button
+            onClick={addManualName}
+            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black uppercase text-[10px] tracking-widest whitespace-nowrap"
+          >
+            Add
+          </button>
+        </div>
+        {workingManual.length === 0 ? (
+          <p className="text-sm text-slate-400 p-4 text-center">None added yet.</p>
+        ) : (
+          <div className="border-2 border-slate-100 rounded-2xl divide-y divide-slate-100">
+            {workingManual.map(name => (
+              <div key={name} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <span className="text-sm font-semibold text-slate-700">{name}</span>
+                <button
+                  onClick={() => removeManualName(name)}
+                  className="text-[10px] font-black uppercase tracking-widest text-rose-500 hover:text-rose-700"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="bg-white border-2 border-slate-100 rounded-[1.5rem] shadow-sm p-6">
+        <h3 className="text-sm font-black text-slate-900 mb-3">Tally-Synced Suppliers</h3>
         <div className="flex items-center justify-between gap-3 mb-4">
           <input
             type="text"

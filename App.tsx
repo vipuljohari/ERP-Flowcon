@@ -1916,9 +1916,10 @@ const MainApp: React.FC = () => {
             <PartyNameMaster
               tallySupplierNames={tallySupplierNameOptions}
               approvedNames={gateApprovedSuppliers.selectedNames || []}
+              manualNames={gateApprovedSuppliers.manualNames || []}
               updatedAt={gateApprovedSuppliers.updatedAt}
               updatedBy={gateApprovedSuppliers.updatedBy}
-              onSave={(names) => setGateApprovedSuppliers({ selectedNames: names, updatedAt: getLocalISOString(), updatedBy: appUser?.displayName || userName })}
+              onSave={(names, manualNames) => setGateApprovedSuppliers({ selectedNames: names, manualNames, updatedAt: getLocalISOString(), updatedBy: appUser?.displayName || userName })}
             />
           )}
           {canAccessView(role, currentView) && currentView === 'schedule' && <ScheduleManager parts={cDP} onUpdateSchedule={(id, val, cust, wasFirstEntry) => setParts(prev => prev.map(p => {
