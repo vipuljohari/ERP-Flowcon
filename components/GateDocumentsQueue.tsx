@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { GateDocumentForApproval, PendingRMEntryType, UnmatchedDharamkantaSlip, DharamkantaSlipExtractedFields } from '../types';
 import { readAndCompressPhoto } from '../services/photo';
 import { extractDharamkantaSlipPhoto } from '../services/gemini';
+import PhotoViewerModal from './PhotoViewerModal';
 
 // ============================================================
 // Gate Documents for Approval
@@ -377,28 +378,30 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
         </div>
       )}
 
-      {viewingPhoto && (
-        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-[110] p-4" onClick={() => setViewingPhoto(null)}>
-          <div className="max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
-            {viewingPhoto.which === 'invoice' ? (
-              viewingPhoto.doc.imageBase64 ? (
-                <img src={`data:${viewingPhoto.doc.mimeType};base64,${viewingPhoto.doc.imageBase64}`} alt="Gate photo" className="w-full h-auto rounded-2xl shadow-2xl" />
-              ) : (
-                <p className="text-white text-center">Photo no longer available — it may already be archived.</p>
-              )
-            ) : (
-              viewingPhoto.doc.slipImageBase64 ? (
-                <img src={`data:${viewingPhoto.doc.slipMimeType};base64,${viewingPhoto.doc.slipImageBase64}`} alt="Dharamkanta slip" className="w-full h-auto rounded-2xl shadow-2xl" />
-              ) : (
-                <p className="text-white text-center">Photo no longer available — it may already be archived.</p>
-              )
-            )}
-            <button onClick={() => setViewingPhoto(null)} className="mt-3 w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
-              Close
-            </button>
-          </div>
-        </div>
-      )}
+      {viewingPhoto && (() => {
+        const base64 = viewingPhoto.which === 'invoice' ? viewingPhoto.doc.imageBase64 : viewingPhoto.doc.slipImageBase64;
+        const mimeType = viewingPhoto.which === 'invoice' ? viewingPhoto.doc.mimeType : (viewingPhoto.doc.slipMimeType || 'image/jpeg');
+        if (!base64) {
+          return (
+            <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-[110] p-4" onClick={() => setViewingPhoto(null)}>
+              <div className="max-w-md w-full text-center" onClick={(e) => e.stopPropagation()}>
+                <p className="text-white mb-3">Photo no longer available — it may already be archived.</p>
+                <button onClick={() => setViewingPhoto(null)} className="px-6 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+                  Close
+                </button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <PhotoViewerModal
+            base64={base64}
+            mimeType={mimeType}
+            label={viewingPhoto.which === 'invoice' ? 'Invoice Photo' : 'Dharamkanta Slip'}
+            onClose={() => setViewingPhoto(null)}
+          />
+        );
+      })()}
 
       {attachingSlipFor && (
         <AttachSlipModal

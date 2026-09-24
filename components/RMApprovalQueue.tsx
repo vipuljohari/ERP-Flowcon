@@ -5,6 +5,7 @@ import {
   InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS,
 } from '../types';
 import { pcsPerBar, computeUnattributedScrapMm } from '../services/materialEntry';
+import PhotoViewerModal from './PhotoViewerModal';
 
 // ============================================================
 // RM Approvals — Admin's review queue for every RM receiving entry
@@ -708,15 +709,12 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
       </div>
 
       {viewingPhoto && (
-        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-[110] p-4" onClick={() => setViewingPhoto(null)}>
-          <div className="max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
-            <p className="text-white text-center text-xs font-black uppercase tracking-widest mb-2">{viewingPhoto.label}</p>
-            <img src={`data:${viewingPhoto.mimeType};base64,${viewingPhoto.base64}`} alt={viewingPhoto.label} className="w-full h-auto rounded-2xl shadow-2xl" />
-            <button onClick={() => setViewingPhoto(null)} className="mt-3 w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
-              Close
-            </button>
-          </div>
-        </div>
+        <PhotoViewerModal
+          base64={viewingPhoto.base64}
+          mimeType={viewingPhoto.mimeType}
+          label={viewingPhoto.label}
+          onClose={() => setViewingPhoto(null)}
+        />
       )}
     </div>
   );
