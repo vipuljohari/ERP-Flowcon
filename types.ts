@@ -622,6 +622,13 @@ export interface PendingRMEntry {
 export type GateDocumentStatus = 'pending' | 'in_progress' | 'consumed' | 'rejected';
 
 export interface GateDocumentExtractedFields {
+  // Added 24-Sep-26 — see apiHandlers.ts's ExtractedMaterialEntryFields and
+  // handleGateUpload's reroute-to-slip-pipeline block for the full note.
+  // Always 'supplier_invoice' on a doc that actually made it into
+  // gateDocumentsForApproval, since anything else gets rerouted/archived
+  // before a doc is ever created — kept here so the type accurately
+  // mirrors what's really stored.
+  documentType: 'supplier_invoice' | 'weighbridge_slip' | 'unclear';
   supplierName: string;
   invoiceNo: string;
   date: string;

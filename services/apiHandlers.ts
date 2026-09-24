@@ -340,6 +340,13 @@ export async function handleExtractInvoice(req: MinimalRequest, res: MinimalResp
 }
 
 export interface ExtractedMaterialEntryFields {
+  // Added 24-Sep-26 — see the classification note on handleGateUpload's
+  // reroute-to-slip-pipeline block below for why this exists: a dharamkanta
+  // (weighbridge) slip photo occasionally lands on this invoice-extraction
+  // path instead of the dedicated slip endpoint, and used to get forced
+  // through invoice extraction, producing a bogus gate document (blank
+  // invoice no., the slip's own handwritten weight, a garbled date).
+  documentType: 'supplier_invoice' | 'weighbridge_slip' | 'unclear';
   supplierName: string;
   invoiceNo: string;
   date: string;
@@ -373,6 +380,20 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
       This is a photo of a Raw Material supplier's GST tax invoice (e.g. a
       steel tube/pipe manufacturer like Tube Investments of India Ltd),
       being read for goods-receipt entry.
+
+      IMPORTANT — first check what kind of document this actually is. Some
+      photos in this same WhatsApp stream are actually a weighbridge/
+      dharamkanta slip (a receipt from a public weighbridge operator like
+      "Shri Ganga Dharam Kanta" or "Shree Hanuman Dharam Kanta" — its own
+      letterhead, a Gross/Tare/Net Weight table, and usually 4 small CCTV-
+      style "First Weighment"/"Final Weighment" photos), NOT a supplier's
+      own GST tax invoice. Set documentType to "weighbridge_slip" for one of
+      those, "supplier_invoice" for an actual GST tax invoice (has a GSTIN,
+      "Tax Invoice" header, an itemised HSN/description table), or
+      "unclear" if you genuinely can't tell. If documentType is anything
+      other than "supplier_invoice", still fill every other field with your
+      best guess or "" / 0 — they won't be used, but the schema requires
+      them.
 
       Read the invoice and extract these exact fields:
       - supplierName: the SELLER company's name from the letterhead — NOT
@@ -422,6 +443,7 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
   const responseSchema = {
     type: Type.OBJECT,
     properties: {
+      documentType: { type: Type.STRING, enum: ["supplier_invoice", "weighbridge_slip", "unclear"] },
       supplierName: { type: Type.STRING },
       invoiceNo: { type: Type.STRING },
       date: { type: Type.STRING },
@@ -434,7 +456,7 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
       quantityPcs: { type: Type.NUMBER },
       vehicleNo: { type: Type.STRING },
     },
-    required: ["supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue", "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs", "vehicleNo"],
+    required: ["documentType", "supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue", "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs", "vehicleNo"],
   };
 
   const response = await ai.models.generateContent({
@@ -461,7 +483,9 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
     throw new Error("Could not make sense of this photo. Try a clearer, better-lit shot.");
   }
 
+  const documentType = parsed.documentType === "weighbridge_slip" || parsed.documentType === "unclear" ? parsed.documentType : "supplier_invoice";
   return {
+    documentType,
     supplierName: String(parsed.supplierName || "").trim(),
     invoiceNo: String(parsed.invoiceNo || "").trim(),
     date: String(parsed.date || "").trim(),
@@ -848,6 +872,28 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
     const extracted = await extractMaterialEntryFields(image, mimetype);
 
     const app = getAdminApp();
+
+    // Self-heal (added 24-Sep-26): Vipul hit a real case where a
+    // dharamkanta (weighbridge) slip photo landed on THIS endpoint (meant
+    // for supplier invoices only) instead of /api/gate/slip-upload — it
+    // used to get forced through the invoice extraction above anyway,
+    // which produced a bogus gate document (blank invoice no., the slip's
+    // handwritten weight as the "invoice weight", a garbled date, matched
+    // to whatever supplier name Gemini could half-guess from the page).
+    // Now that extractMaterialEntryFields also classifies documentType,
+    // reroute a slip photo here into the exact same matching/filing logic
+    // handleDharamkantaSlipUpload uses, instead of ever creating that
+    // bogus doc — this protects the app regardless of why the photo ended
+    // up on the wrong endpoint (bot.js couldn't tell the two apart, a
+    // human picked the wrong flow, etc.). An "unclear" read still falls
+    // through to the normal !isApproved branch below (archived to
+    // Unprocessed), same as before this change.
+    if (extracted.documentType === "weighbridge_slip") {
+      const result = await processDharamkantaSlipPhoto(app, image, mimetype, sender, pushName, capturedAt);
+      res.json({ matched: result.matched, rerouted: "weighbridge_slip", docId: result.docId });
+      return;
+    }
+
     const [allTallySuppliers, gateApproved] = await Promise.all([
       getKnownRMSupplierNames(app),
       getGateApprovedSettings(app),
@@ -865,6 +911,33 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
     const isApproved = match.result === "confident" && gateApproved.approvedNames.has(match.matchedSupplier);
 
     if (!isApproved) {
+      // Second-look safety net (added 24-Sep-26, from the WA bot thread's
+      // own investigation of this same bug — merged in here rather than
+      // applied from their file directly, since that file predated this
+      // session's dedup-fallback/Reject/value-field fixes above). The
+      // documentType classification above is one Gemini call and isn't
+      // 100% reliable on every real dharamkanta slip photo — confirmed
+      // live: a Vishal Pipes slip that should have classified as
+      // weighbridge_slip instead got read as (an unmatchable) invoice and
+      // fell all the way through to here. No legible invoice number AND no
+      // legible bill value is the strong secondary signal — a real
+      // invoice, even a badly-photographed one, essentially always has one
+      // of those two; a weighbridge slip run through the invoice prompt
+      // has neither (there's no "Invoice No" or "total item value" on it
+      // at all). Worth one more Gemini call, on the dedicated slip prompt,
+      // before giving up on the photo.
+      if (!extracted.invoiceNo && extracted.totalBillValue === 0) {
+        const slipFields = await extractDharamkantaSlipFields(image, mimetype).catch((e) => {
+          console.error("Dharamkanta second-look extraction failed (non-fatal, falls back to Unprocessed archive):", e);
+          return null;
+        });
+        if (slipFields && slipFields.vehicleNo) {
+          const result = await processDharamkantaSlipPhoto(app, image, mimetype, sender, pushName, capturedAt, slipFields);
+          res.json({ matched: result.matched, rerouted: "weighbridge_slip", docId: result.docId, viaSecondLook: true });
+          return;
+        }
+      }
+
       // Nothing legible, matched no Tally party at all, OR matched a real
       // party Admin simply hasn't ticked yet — all three land here per
       // Vipul's 18-Sep decision: archived to Unprocessed for manual
@@ -1109,6 +1182,74 @@ async function tryAttachWaitingSlipToNewGateDoc(app: admin.app.App, gateDocId: s
   await batch.commit();
 }
 
+// Shared core of the dharamkanta-slip pipeline (pulled out 24-Sep-26) —
+// used by its own HTTP endpoint below (the normal path: bot.js posts a
+// slip photo here directly) AND as a self-heal fallback from
+// handleGateUpload above when a slip photo lands on the INVOICE endpoint
+// instead (see the documentType check and the second-look safety net
+// there). Takes an already-shrunk image so both callers share the one
+// shrinkGatePhotoIfNeeded call each does before reaching here, rather than
+// doing it twice on the reroute path.
+async function processDharamkantaSlipPhoto(
+  app: admin.app.App,
+  image: string,
+  mimetype: string,
+  sender: string | undefined,
+  pushName: string | undefined,
+  capturedAt: string | undefined,
+  // Optional — the second-look safety net in handleGateUpload already
+  // extracted these fields once to decide whether to call this function at
+  // all; passing them through avoids a redundant second Gemini call on the
+  // same photo. Every other caller omits this and it's extracted here as
+  // before.
+  preExtracted?: { vehicleNo: string; netWeightKg: number; slipDate: string }
+): Promise<{ matched: boolean; docId: string }> {
+  const extracted = preExtracted || await extractDharamkantaSlipFields(image, mimetype);
+  const resolvedCapturedAt = capturedAt ? String(capturedAt) : new Date().toISOString();
+
+  let candidates: admin.firestore.QueryDocumentSnapshot[] = [];
+  if (extracted.vehicleNo) {
+    const snap = await admin.firestore(app).collection("gateDocumentsForApproval").where("status", "==", "pending").get();
+    candidates = snap.docs.filter(d => {
+      const data = d.data() as any;
+      return (data.slipStatus || "awaiting") !== "attached"
+        && (data.extracted?.vehicleNo || "") === extracted.vehicleNo
+        && sameCalendarDay(data.capturedAt || "", resolvedCapturedAt);
+    });
+  }
+
+  if (candidates.length === 1) {
+    const now = new Date().toISOString();
+    await candidates[0].ref.update({
+      slipStatus: "attached",
+      slipImageBase64: String(image),
+      slipMimeType: String(mimetype),
+      slipExtracted: extracted,
+      slipAttachedVia: "auto_whatsapp",
+      slipAttachedBy: "bot.js (auto-matched)",
+      slipAttachedAt: now,
+    });
+    return { matched: true, docId: candidates[0].id };
+  }
+
+  // No confident single match — file it for manual attach and alert
+  // Admin, per Vipul's explicit ask, rather than guessing.
+  const slipRef = admin.firestore(app).collection("unmatchedDharamkantaSlips").doc();
+  await slipRef.set({
+    id: slipRef.id,
+    imageBase64: String(image),
+    mimeType: String(mimetype),
+    extracted,
+    sender: sender ? String(sender) : "",
+    pushName: pushName ?? null,
+    capturedAt: resolvedCapturedAt,
+    createdAt: new Date().toISOString(),
+    status: "unmatched",
+  });
+  await pushGateSlipNotMatchedAlert(app, extracted.vehicleNo, candidates.length, sender ? String(sender) : "");
+  return { matched: false, docId: slipRef.id };
+}
+
 export async function handleDharamkantaSlipUpload(req: MinimalRequest, res: MinimalResponse) {
   try {
     const apiKey = process.env.ERP_GATE_API_KEY;
@@ -1118,60 +1259,16 @@ export async function handleDharamkantaSlipUpload(req: MinimalRequest, res: Mini
       return;
     }
 
-    let { image, mimetype, filename, sender, pushName, waTimestamp, capturedAt } = req.body || {};
+    let { image, mimetype, sender, pushName, capturedAt } = req.body || {};
     if (!image || !mimetype) {
       res.status(400).json({ error: "Missing image or mimetype." });
       return;
     }
 
     ({ imageBase64: image, mimeType: mimetype } = await shrinkGatePhotoIfNeeded(image, mimetype));
-
-    const extracted = await extractDharamkantaSlipFields(image, mimetype);
     const app = getAdminApp();
-    const resolvedCapturedAt = capturedAt ? String(capturedAt) : new Date().toISOString();
-
-    let candidates: admin.firestore.QueryDocumentSnapshot[] = [];
-    if (extracted.vehicleNo) {
-      const snap = await admin.firestore(app).collection("gateDocumentsForApproval").where("status", "==", "pending").get();
-      candidates = snap.docs.filter(d => {
-        const data = d.data() as any;
-        return (data.slipStatus || "awaiting") !== "attached"
-          && (data.extracted?.vehicleNo || "") === extracted.vehicleNo
-          && sameCalendarDay(data.capturedAt || "", resolvedCapturedAt);
-      });
-    }
-
-    if (candidates.length === 1) {
-      const now = new Date().toISOString();
-      await candidates[0].ref.update({
-        slipStatus: "attached",
-        slipImageBase64: String(image),
-        slipMimeType: String(mimetype),
-        slipExtracted: extracted,
-        slipAttachedVia: "auto_whatsapp",
-        slipAttachedBy: "bot.js (auto-matched)",
-        slipAttachedAt: now,
-      });
-      res.json({ matched: true, docId: candidates[0].id });
-      return;
-    }
-
-    // No confident single match — file it for manual attach and alert
-    // Admin, per Vipul's explicit ask, rather than guessing.
-    const slipRef = admin.firestore(app).collection("unmatchedDharamkantaSlips").doc();
-    await slipRef.set({
-      id: slipRef.id,
-      imageBase64: String(image),
-      mimeType: String(mimetype),
-      extracted,
-      sender: sender ? String(sender) : "",
-      pushName: pushName ?? null,
-      capturedAt: resolvedCapturedAt,
-      createdAt: new Date().toISOString(),
-      status: "unmatched",
-    });
-    await pushGateSlipNotMatchedAlert(app, extracted.vehicleNo, candidates.length, sender ? String(sender) : "");
-    res.json({ matched: false, docId: slipRef.id });
+    const result = await processDharamkantaSlipPhoto(app, image, mimetype, sender, pushName, capturedAt);
+    res.json(result);
   } catch (error: any) {
     console.error("Dharamkanta slip upload error:", error);
     res.status(500).json({ error: error?.message || "Failed to process dharamkanta slip photo." });
