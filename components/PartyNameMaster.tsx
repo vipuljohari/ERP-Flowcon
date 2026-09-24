@@ -103,6 +103,17 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
     return next;
   });
 
+  // Add/Remove save immediately — 24-Sep-26 fix. Originally these only
+  // staged workingManual locally, same review-then-"Save Changes" pattern
+  // as the Tally checkboxes below. That silently lost an added name the
+  // moment Admin navigated away without also hitting Save Changes (this
+  // component unmounts on any view change, and PartyNameMaster is only
+  // ever rendered while currentView === 'party_name_master') — a single
+  // explicit "Add" click reads as a complete action, not step one of two.
+  // Saves using `approvedNames` (the last-PERSISTED tick list), never the
+  // possibly-dirty local `working` set, so adding/removing a manual name
+  // can never accidentally commit an in-progress, not-yet-saved checkbox
+  // edit — the two lists stay fully independent.
   const addManualName = () => {
     const name = manualInput.trim();
     if (!name) return;
@@ -112,11 +123,17 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
       setManualInput('');
       return;
     }
-    setWorkingManual(prev => [...prev, name].sort((a, b) => a.localeCompare(b)));
+    const next = [...workingManual, name].sort((a, b) => a.localeCompare(b));
+    setWorkingManual(next);
     setManualInput('');
+    onSave(approvedNames.slice().sort(), next);
   };
 
-  const removeManualName = (name: string) => setWorkingManual(prev => prev.filter(n => n !== name));
+  const removeManualName = (name: string) => {
+    const next = workingManual.filter(n => n !== name);
+    setWorkingManual(next);
+    onSave(approvedNames.slice().sort(), next);
+  };
 
   const handleSave = () => {
     onSave(Array.from(working).sort(), workingManual.slice().sort());
@@ -152,8 +169,8 @@ const PartyNameMaster: React.FC<PartyNameMasterProps> = ({ tallySupplierNames, a
         <p className="text-xs text-slate-500 mb-4">
           For a manufacturer whose invoices come to us but never get posted in Tally as a direct Purchase voucher — e.g. it's
           billed to us as a cross-bill through a customer — so it can never appear in the Tally-synced list below. Type its
-          name as close to how it prints on its own invoice as possible (helps photo matching), then hit "Save Changes"
-          below — no ticking needed, being on this list is itself the approval.
+          name as close to how it prints on its own invoice as possible (helps photo matching) and click Add — it saves
+          immediately, no need to also hit "Save Changes" below (that button is only for the Tally-synced tick list).
         </p>
         <div className="flex items-center gap-2 mb-3">
           <input
