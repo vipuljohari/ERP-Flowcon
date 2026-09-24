@@ -340,13 +340,6 @@ export async function handleExtractInvoice(req: MinimalRequest, res: MinimalResp
 }
 
 export interface ExtractedMaterialEntryFields {
-  // Added 24-Sep-26 — see the classification note on handleGateUpload's
-  // reroute-to-slip-pipeline block below for why this exists: a dharamkanta
-  // (weighbridge) slip photo occasionally lands on this invoice-extraction
-  // path instead of the dedicated slip endpoint, and used to get forced
-  // through invoice extraction, producing a bogus gate document (blank
-  // invoice no., the slip's own handwritten weight, a garbled date).
-  documentType: 'supplier_invoice' | 'weighbridge_slip' | 'unclear';
   supplierName: string;
   invoiceNo: string;
   date: string;
@@ -381,20 +374,6 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
       steel tube/pipe manufacturer like Tube Investments of India Ltd),
       being read for goods-receipt entry.
 
-      IMPORTANT — first check what kind of document this actually is. Some
-      photos in this same WhatsApp stream are actually a weighbridge/
-      dharamkanta slip (a receipt from a public weighbridge operator like
-      "Shri Ganga Dharam Kanta" or "Shree Hanuman Dharam Kanta" — its own
-      letterhead, a Gross/Tare/Net Weight table, and usually 4 small CCTV-
-      style "First Weighment"/"Final Weighment" photos), NOT a supplier's
-      own GST tax invoice. Set documentType to "weighbridge_slip" for one of
-      those, "supplier_invoice" for an actual GST tax invoice (has a GSTIN,
-      "Tax Invoice" header, an itemised HSN/description table), or
-      "unclear" if you genuinely can't tell. If documentType is anything
-      other than "supplier_invoice", still fill every other field with your
-      best guess or "" / 0 — they won't be used, but the schema requires
-      them.
-
       Read the invoice and extract these exact fields:
       - supplierName: the SELLER company's name from the letterhead — NOT
         the "Bill to"/"Ship to" customer.
@@ -403,11 +382,7 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
       - totalWeightKg: the invoice's own stated total weight in Kg, as a
         plain number (this is the SUPPLIER's stated weight, not a
         weighbridge reading — if the invoice states no weight, use 0).
-      - totalBillValue: the total item value BEFORE tax, as a plain number —
-        this is the row usually labeled "Assessable Value" or "Taxable
-        Amount" (the pre-GST subtotal). Do NOT use the "Total Bill Amount"/
-        "Grand Total" row, which includes GST — that is a different, larger
-        number on the same invoice.
+      - totalBillValue: the total item value BEFORE tax, as a plain number.
       - materialDescription: the material/item description line, exactly as
         printed (e.g. "STEEL TUBES-ERW/SB-ROUND-44.45 X 1.8 X 5710-AS
         ROLLED").
@@ -443,7 +418,6 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
   const responseSchema = {
     type: Type.OBJECT,
     properties: {
-      documentType: { type: Type.STRING, enum: ["supplier_invoice", "weighbridge_slip", "unclear"] },
       supplierName: { type: Type.STRING },
       invoiceNo: { type: Type.STRING },
       date: { type: Type.STRING },
@@ -456,7 +430,7 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
       quantityPcs: { type: Type.NUMBER },
       vehicleNo: { type: Type.STRING },
     },
-    required: ["documentType", "supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue", "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs", "vehicleNo"],
+    required: ["supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue", "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs", "vehicleNo"],
   };
 
   const response = await ai.models.generateContent({
@@ -483,9 +457,7 @@ async function extractMaterialEntryFields(imageBase64: string, mimeType: string)
     throw new Error("Could not make sense of this photo. Try a clearer, better-lit shot.");
   }
 
-  const documentType = parsed.documentType === "weighbridge_slip" || parsed.documentType === "unclear" ? parsed.documentType : "supplier_invoice";
   return {
-    documentType,
     supplierName: String(parsed.supplierName || "").trim(),
     invoiceNo: String(parsed.invoiceNo || "").trim(),
     date: String(parsed.date || "").trim(),
@@ -691,106 +663,6 @@ async function archiveUnprocessedGatePhoto(
   }
 }
 
-// --- Duplicate gate-photo detection (added 24-Sep-26) ---
-// Vipul's report: the gate guard resent the same Tube Investments invoice
-// photo a second time (same invoice number, same value, OCR read both
-// correctly), and it created a SECOND separate Gate Documents for Approval
-// entry rather than being recognized as a re-send of one already sitting
-// in the queue — it should never reach a second approval. This closes that
-// gap: after a gate photo resolves to an approved supplier but BEFORE a new
-// gateDocumentsForApproval doc is created, check for an existing doc for
-// the same matchedSupplier + the same invoice number (any status except
-// 'rejected' — a photo Admin already explicitly rejected gets a fresh
-// chance, since the rejection may have been "too blurry, ignore" rather
-// than "this invoice is invalid"). A match suppresses the new doc entirely
-// and archives the resent photo to Dropbox's "Unit 2/Rejected" folder
-// (never silently dropped) instead.
-//
-// When invoiceNo is blank/illegible on the incoming photo, matching on
-// invoice number alone is skipped (two different invoices can both read as
-// "" and wrongly colliding them would be worse than occasionally missing a
-// duplicate). But that left a real gap Vipul hit on 24-Sep-26: a gate
-// person resent an A.S.T. Pipes invoice photo and the OCR read the invoice
-// number as blank the second time even though it read fine the first time
-// — weight (10,000 Kg) and bill value (₹7,08,050) were identical to the
-// already-queued entry. Fallback below: when the incoming invoiceNo can't
-// be used, match on supplier (already filtered by the caller's query) +
-// same date + same weight + same bill value instead — still an exact
-// match on all three, so two genuinely different blank-invoice-no. photos
-// won't collide by coincidence.
-const normalizeInvoiceNo = (s: string): string => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-
-async function findDuplicateGateDocument(
-  app: admin.app.App,
-  matchedSupplier: string,
-  invoiceNo: string,
-  dateGuess: string,
-  weightKg: number,
-  billValue: number
-): Promise<string | null> {
-  const cleanInvoiceNo = normalizeInvoiceNo(invoiceNo);
-  if (!cleanInvoiceNo && !(dateGuess && weightKg > 0 && billValue > 0)) return null; // nothing reliable to match on either way
-  const snap = await admin.firestore(app).collection("gateDocumentsForApproval")
-    .where("matchedSupplier", "==", matchedSupplier)
-    .get();
-  for (const d of snap.docs) {
-    const data = d.data() as any;
-    if (data?.status === "rejected") continue;
-    const ex = data?.extracted || {};
-    if (cleanInvoiceNo) {
-      if (normalizeInvoiceNo(ex.invoiceNo) === cleanInvoiceNo) return d.id;
-      continue;
-    }
-    if (ex.date === dateGuess
-        && Math.round(Number(ex.totalWeightKg)) === Math.round(weightKg)
-        && Math.round(Number(ex.totalBillValue)) === Math.round(billValue)) {
-      return d.id;
-    }
-  }
-  return null;
-}
-
-async function archiveDuplicateGatePhoto(
-  imageBase64: string,
-  mimeType: string,
-  supplierName: string,
-  invoiceNo: string,
-  dateGuess: string
-): Promise<void> {
-  try {
-    const accessToken = await getDropboxAccessToken();
-    const buffer = Buffer.from(imageBase64, "base64");
-    const ext = mimeType === "image/png" ? "png" : "jpg";
-    const fileName = `${buildArchiveFileName(supplierName || "Unknown Supplier", invoiceNo || "Pending", dateGuess)}-duplicate`;
-    const monthFolder = buildArchiveMonthFolder(dateGuess);
-    const path = `${REJECTED_GATE_FOLDER}/${monthFolder}/${fileName}.${ext}`;
-    const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Dropbox-API-Arg": JSON.stringify({ path, mode: "add", autorename: true, mute: true }),
-        "Content-Type": "application/octet-stream",
-      },
-      body: buffer,
-    });
-    if (!uploadResp.ok) {
-      const errText = await uploadResp.text().catch(() => "");
-      throw new Error(`Dropbox upload failed (${uploadResp.status}): ${errText.slice(0, 200)}`);
-    }
-  } catch (e: any) {
-    console.error("Duplicate gate photo archive failed (non-fatal):", e);
-  }
-}
-
-// Sibling to UNPROCESSED_GATE_FOLDER above, for photos that DID resolve to
-// an approved supplier but were never meant to reach the live queue anyway
-// — a detected duplicate resend (archiveDuplicateGatePhoto above), or a
-// photo Admin explicitly rejects from an existing entry (App.tsx's
-// handleRejectGateDocument, via handleArchivePhoto's archiveRoot param
-// below). Kept separate from "/Unit 2/Inwards" so it never looks like a
-// genuine posted entry in the real archive.
-const REJECTED_GATE_FOLDER = "/Unit 2/Rejected";
-
 // 20-Sep-26: server-side safety net for the Firestore 1MB document limit —
 // was flagged (below, where handleGateUpload calls this) as unresolved;
 // closed here on the App side per Vipul's steer to keep bot.js changes in
@@ -849,6 +721,184 @@ async function shrinkGatePhotoIfNeeded(
   }
 }
 
+// Routes a single WhatsApp gate photo to the right extraction/matching
+// logic automatically — bot.js has exactly ONE capture pipeline, it just
+// relays every photo it sees in the gate group (see its own header
+// comment), so nobody standing at the weighbridge needs to remember a
+// caption convention or use a second WhatsApp group. Originally added
+// 24-Sep-26 after a real dharamkanta slip photo silently landed in the
+// Unprocessed Dropbox archive instead of auto-attaching to its invoice —
+// it went through the INVOICE reader, found no recognizable supplier name
+// on a weighbridge slip, and got archived like any other unmatched
+// invoice photo, never reaching the slip-matching logic at all.
+type GateAutoExtraction = {
+  documentType: "invoice" | "weighbridge_slip" | "unknown";
+  invoice: ExtractedMaterialEntryFields;
+  slip: { vehicleNo: string; netWeightKg: number; slipDate: string };
+};
+
+// Classifies AND extracts a gate photo in a SINGLE Gemini call (rewritten
+// 24-Sep-26 — see the two-call version this replaced in git history).
+// Originally this was a separate cheap classification call followed by a
+// second, type-specific extraction call (2 calls per photo, 3 on the rare
+// photo that needed the "second-look" fallback below). Vipul flagged the
+// real risk that raises: Gemini's free/default rate limit is 20 requests
+// per MINUTE, and the gate-photo queue can burst — Store/the gate guard
+// sending several photos back to back is normal, not an edge case (this
+// session's own testing sent 6 photos in under 2 seconds at one point).
+// 2-3 Gemini calls per photo turns a burst of ~7-10 photos into 20+ calls
+// within that same minute. One combined call — read BOTH the invoice
+// fields AND the slip fields in the same pass, plus which type this is —
+// puts Gemini call volume for a gate photo back down to exactly 1, the
+// same as before ANY of the 24-Sep dharamkanta-matching work existed.
+// Always extracting both field sets (not just the ones matching
+// documentType) is deliberate, not wasted effort: it's what lets
+// handleGateUpload's existing "second-look" fallback keep working when
+// documentType itself is misjudged, using fields already in hand instead
+// of firing another Gemini call to check.
+async function extractGatePhotoAuto(imageBase64: string, mimeType: string): Promise<GateAutoExtraction> {
+  const ai = getGenAI();
+  if (!ai) {
+    throw new Error("Gemini API key is not configured. Please add GEMINI_API_KEY under Settings > Secrets.");
+  }
+
+  const prompt = `
+      This photo was sent to a factory gate's WhatsApp group and is ONE of
+      exactly two kinds of document. Decide which one it is (documentType),
+      then read and extract ALL of the fields below to the extent they are
+      actually legible on THIS photo — regardless of which type you decide
+      it is. Use "" for a text field or 0 for a number field whenever it
+      isn't legible or doesn't apply to this document — never guess.
+
+      - "invoice": a Raw Material supplier's GST tax invoice/bill — a
+        printed invoice with a supplier letterhead, Invoice No, GST
+        details, and an item/material description.
+      - "weighbridge_slip": a weighbridge/dharamkanta weighment slip — a
+        receipt from a public weighbridge showing Vehicle No and Gross/
+        Tare/Net Weight, printed on the weighbridge operator's OWN
+        letterhead (e.g. "... DHARAM KANTA"). This is NEVER a supplier
+        invoice, even though it also relates to a delivery.
+      - Use "unknown" only if the photo is clearly neither of these two,
+        e.g. unreadable or an unrelated picture.
+
+      Invoice fields (leave at "" / 0 if this isn't an invoice, or if a
+      field genuinely isn't legible):
+      - supplierName: the SELLER company's name from the letterhead — NOT
+        the "Bill to"/"Ship to" customer.
+      - invoiceNo: the Invoice No field.
+      - date: the Invoice Date, formatted as YYYY-MM-DD.
+      - totalWeightKg: the invoice's own stated total weight in Kg (the
+        SUPPLIER's stated weight, not a weighbridge reading).
+      - totalBillValue: the total item value BEFORE tax, as a plain
+        number.
+      - materialDescription: the material/item description line, exactly
+        as printed.
+      - odMm: for a ROUND tube/pipe only, the Outer Diameter printed in
+        the material description (the FIRST dimension number), in mm,
+        reported exactly as printed. 0 if square/rectangular or not
+        legible.
+      - thicknessMm: the wall Thickness printed in the material
+        description (the number immediately BEFORE the length), in mm.
+      - lengthMm: the piece/bar Length printed in the material
+        description (the LAST dimension number), in mm.
+      - quantityPcs: the invoiced quantity of bars/pieces (Qty column).
+      If the invoice has more than one line item, extract only the FIRST
+      one.
+
+      Weighbridge-slip-only fields (leave at "" / 0 if this isn't a
+      weighbridge slip):
+      - netWeightKg: the slip's stated Net Weight, in Kg (the slip states
+        this directly — don't compute it from gross minus tare unless
+        there's no separate Net Weight line).
+      - slipDate: the date printed on the slip (the weighment date, not a
+        signature date if they differ), formatted as YYYY-MM-DD.
+
+      Shared field (fill this in from WHICHEVER document this actually
+      is — an invoice's own transport/dispatch section, or a
+      weighbridge slip's "Vehicle No." line):
+      - vehicleNo: the truck/vehicle registration number, if printed
+        anywhere on this document. Read it exactly as printed, keeping
+        only letters and digits — strip spaces and hyphens (e.g.
+        "PB11CB9547" not "PB-11-CB-9547" or "PB 11 CB 9547"). Use "" if
+        no vehicle number is printed anywhere — never guess or invent
+        one.
+    `;
+
+  const responseSchema = {
+    type: Type.OBJECT,
+    properties: {
+      documentType: { type: Type.STRING, enum: ["invoice", "weighbridge_slip", "unknown"] },
+      supplierName: { type: Type.STRING },
+      invoiceNo: { type: Type.STRING },
+      date: { type: Type.STRING },
+      totalWeightKg: { type: Type.NUMBER },
+      totalBillValue: { type: Type.NUMBER },
+      materialDescription: { type: Type.STRING },
+      odMm: { type: Type.NUMBER },
+      thicknessMm: { type: Type.NUMBER },
+      lengthMm: { type: Type.NUMBER },
+      quantityPcs: { type: Type.NUMBER },
+      vehicleNo: { type: Type.STRING },
+      netWeightKg: { type: Type.NUMBER },
+      slipDate: { type: Type.STRING },
+    },
+    required: [
+      "documentType", "supplierName", "invoiceNo", "date", "totalWeightKg", "totalBillValue",
+      "materialDescription", "odMm", "thicknessMm", "lengthMm", "quantityPcs", "vehicleNo",
+      "netWeightKg", "slipDate",
+    ],
+  };
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inlineData: { data: imageBase64, mimeType } },
+        ],
+      },
+    ],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema,
+    },
+  });
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(response.text || "{}");
+  } catch {
+    throw new Error("Could not make sense of this photo. Try a clearer, better-lit shot.");
+  }
+
+  const dt = String(parsed.documentType || "").trim();
+  const vehicleNo = normalizeVehicleNo(String(parsed.vehicleNo || ""));
+
+  return {
+    documentType: dt === "invoice" || dt === "weighbridge_slip" ? dt : "unknown",
+    invoice: {
+      supplierName: String(parsed.supplierName || "").trim(),
+      invoiceNo: String(parsed.invoiceNo || "").trim(),
+      date: String(parsed.date || "").trim(),
+      totalWeightKg: Number(parsed.totalWeightKg) || 0,
+      totalBillValue: Number(parsed.totalBillValue) || 0,
+      materialDescription: String(parsed.materialDescription || "").trim(),
+      odMm: Number(parsed.odMm) || 0,
+      thicknessMm: Number(parsed.thicknessMm) || 0,
+      lengthMm: Number(parsed.lengthMm) || 0,
+      quantityPcs: Number(parsed.quantityPcs) || 0,
+      vehicleNo,
+    },
+    slip: {
+      vehicleNo,
+      netWeightKg: Number(parsed.netWeightKg) || 0,
+      slipDate: String(parsed.slipDate || "").trim(),
+    },
+  };
+}
+
 export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse) {
   try {
     const apiKey = process.env.ERP_GATE_API_KEY;
@@ -869,30 +919,23 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
     // the Firestore doc itself) uses these bytes from here on.
     ({ imageBase64: image, mimeType: mimetype } = await shrinkGatePhotoIfNeeded(image, mimetype));
 
-    const extracted = await extractMaterialEntryFields(image, mimetype);
-
+    // One Gemini call reads AND classifies the photo — see
+    // extractGatePhotoAuto's own comment above for why this is a single
+    // call rather than the classify-then-extract two-call version this
+    // replaced (Gemini's 20-requests/minute rate limit, per Vipul's own
+    // catch). "invoice" and "unknown" both fall through to the existing
+    // invoice pipeline below, unchanged — "unknown" keeps the original
+    // safety net (try to match a supplier; archive to Unprocessed if it
+    // can't) instead of a second, separate failure mode.
     const app = getAdminApp();
-
-    // Self-heal (added 24-Sep-26): Vipul hit a real case where a
-    // dharamkanta (weighbridge) slip photo landed on THIS endpoint (meant
-    // for supplier invoices only) instead of /api/gate/slip-upload — it
-    // used to get forced through the invoice extraction above anyway,
-    // which produced a bogus gate document (blank invoice no., the slip's
-    // handwritten weight as the "invoice weight", a garbled date, matched
-    // to whatever supplier name Gemini could half-guess from the page).
-    // Now that extractMaterialEntryFields also classifies documentType,
-    // reroute a slip photo here into the exact same matching/filing logic
-    // handleDharamkantaSlipUpload uses, instead of ever creating that
-    // bogus doc — this protects the app regardless of why the photo ended
-    // up on the wrong endpoint (bot.js couldn't tell the two apart, a
-    // human picked the wrong flow, etc.). An "unclear" read still falls
-    // through to the normal !isApproved branch below (archived to
-    // Unprocessed), same as before this change.
-    if (extracted.documentType === "weighbridge_slip") {
-      const result = await processDharamkantaSlipPhoto(app, image, mimetype, sender, pushName, capturedAt);
-      res.json({ matched: result.matched, rerouted: "weighbridge_slip", docId: result.docId });
+    const auto = await extractGatePhotoAuto(image, mimetype);
+    if (auto.documentType === "weighbridge_slip") {
+      const result = await matchOrQueueDharamkantaSlip(app, image, mimetype, sender ? String(sender) : "", pushName ?? null, capturedAt ? String(capturedAt) : new Date().toISOString(), auto.slip);
+      res.json({ ...result, documentType: "weighbridge_slip" });
       return;
     }
+
+    const extracted = auto.invoice;
 
     const [allTallySuppliers, gateApproved] = await Promise.all([
       getKnownRMSupplierNames(app),
@@ -911,31 +954,24 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
     const isApproved = match.result === "confident" && gateApproved.approvedNames.has(match.matchedSupplier);
 
     if (!isApproved) {
-      // Second-look safety net (added 24-Sep-26, from the WA bot thread's
-      // own investigation of this same bug — merged in here rather than
-      // applied from their file directly, since that file predated this
-      // session's dedup-fallback/Reject/value-field fixes above). The
-      // documentType classification above is one Gemini call and isn't
-      // 100% reliable on every real dharamkanta slip photo — confirmed
-      // live: a Vishal Pipes slip that should have classified as
-      // weighbridge_slip instead got read as (an unmatchable) invoice and
-      // fell all the way through to here. No legible invoice number AND no
-      // legible bill value is the strong secondary signal — a real
-      // invoice, even a badly-photographed one, essentially always has one
-      // of those two; a weighbridge slip run through the invoice prompt
-      // has neither (there's no "Invoice No" or "total item value" on it
-      // at all). Worth one more Gemini call, on the dedicated slip prompt,
-      // before giving up on the photo.
-      if (!extracted.invoiceNo && extracted.totalBillValue === 0) {
-        const slipFields = await extractDharamkantaSlipFields(image, mimetype).catch((e) => {
-          console.error("Dharamkanta second-look extraction failed (non-fatal, falls back to Unprocessed archive):", e);
-          return null;
-        });
-        if (slipFields && slipFields.vehicleNo) {
-          const result = await processDharamkantaSlipPhoto(app, image, mimetype, sender, pushName, capturedAt, slipFields);
-          res.json({ matched: result.matched, rerouted: "weighbridge_slip", docId: result.docId, viaSecondLook: true });
-          return;
-        }
+      // Second-look safety net (added 24-Sep-26, made free on 24-Sep-26 —
+      // costs zero extra Gemini calls now that extractGatePhotoAuto always
+      // returns both field sets from the one call it already made).
+      // documentType classification isn't 100% reliable on every real
+      // dharamkanta slip photo (confirmed live: a slip that auto-matched
+      // fine once still got classified "invoice"/"unknown" a second time —
+      // the dharamkanta letterhead can even get misread as a "supplier
+      // name", so checking supplierName alone isn't a safe enough signal).
+      // No legible invoice number AND no legible bill value is the strong
+      // signal here — a real invoice, even a badly-photographed or
+      // unmatched one, essentially always has one of those two, while a
+      // weighbridge slip run through the invoice fields has neither.
+      // auto.slip was already extracted in the same call above, so this is
+      // just checking data already in hand, not a new request.
+      if (!extracted.invoiceNo && extracted.totalBillValue === 0 && auto.slip.vehicleNo) {
+        const result = await matchOrQueueDharamkantaSlip(app, image, mimetype, sender ? String(sender) : "", pushName ?? null, capturedAt ? String(capturedAt) : new Date().toISOString(), auto.slip);
+        res.json({ ...result, documentType: "weighbridge_slip", viaSecondLook: true });
+        return;
       }
 
       // Nothing legible, matched no Tally party at all, OR matched a real
@@ -954,17 +990,33 @@ export async function handleGateUpload(req: MinimalRequest, res: MinimalResponse
       return;
     }
 
-    // Duplicate resend check (added 24-Sep-26) — see findDuplicateGateDocument's
-    // own comment for the full design note. Runs only after a confident,
-    // approved-supplier match, using that match's CANONICAL name (not the
-    // raw OCR text) so a slightly different misread on the resend doesn't
-    // let a genuine duplicate slip through.
-    const duplicateDocId = await findDuplicateGateDocument(app, match.matchedSupplier, extracted.invoiceNo, extracted.date, extracted.totalWeightKg, extracted.totalBillValue);
-    if (duplicateDocId) {
-      await archiveDuplicateGatePhoto(image, mimetype, match.matchedSupplier, extracted.invoiceNo, extracted.date);
-      await pushDuplicateInvoiceAlert(app, match.matchedSupplier, extracted.invoiceNo, sender);
-      res.json({ matched: true, duplicate: true, existingDocId: duplicateDocId });
-      return;
+    // Duplicate-invoice check (added 24-Sep-26) — Vipul re-sent the same
+    // Tube Investments invoice photo to WhatsApp a second time (testing)
+    // and it created a second, identical card here. Same invoice number
+    // from the same matched supplier, still sitting active in the queue
+    // (or already carried through to a PendingRMEntry), means this is the
+    // same physical delivery re-photographed/re-sent — not a second one —
+    // so this upload must NOT create a second card. Deliberately excludes
+    // 'rejected' docs: if Admin rejected the first one (e.g. because IT was
+    // the bad duplicate), a genuinely new arrival of that same invoice
+    // number should still be allowed to try again. Never blocks a real
+    // resend that's meant to REPLACE a bad photo of the same invoice —
+    // Admin can just Reject the stale card (see GateDocumentsQueue.tsx) and
+    // resend, which frees the invoice number back up immediately.
+    const invoiceKey = normalizeVehicleNo(extracted.invoiceNo); // generic normalize (letters/digits, uppercase) — good enough as an invoice-number join key too, not vehicle-specific despite the name
+    if (invoiceKey) {
+      const existingSnap = await admin.firestore(app).collection("gateDocumentsForApproval")
+        .where("matchedSupplier", "==", match.matchedSupplier)
+        .get();
+      const isDuplicate = existingSnap.docs.some((d) => {
+        const data = d.data() as any;
+        return data.status !== "rejected" && normalizeVehicleNo(data.extracted?.invoiceNo || "") === invoiceKey;
+      });
+      if (isDuplicate) {
+        await archiveUnprocessedGatePhoto(image, mimetype, match.matchedSupplier, extracted.invoiceNo, extracted.date);
+        res.json({ matched: true, duplicate: true });
+        return;
+      }
     }
 
     const docRef = admin.firestore(app).collection("gateDocumentsForApproval").doc();
@@ -1128,31 +1180,6 @@ async function pushGateSlipNotMatchedAlert(app: admin.app.App, vehicleNo: string
   }
 }
 
-// Vipul's 24-Sep-26 ask: whenever a resent/duplicate invoice photo is
-// blocked (here, at WhatsApp gate-photo intake, OR client-side in
-// App.tsx's stage functions when Store/Admin tries to Post for Approval a
-// manually-entered duplicate), Admin should get a record of it — same
-// "written directly via the Admin SDK" pattern as pushGateSlipNotMatchedAlert
-// above, since bot.js's own delivery has no logged-in browser session.
-async function pushDuplicateInvoiceAlert(app: admin.app.App, supplier: string, invoiceNo: string, sender: string): Promise<void> {
-  try {
-    const alertRef = admin.firestore(app).collection("adminAlerts").doc();
-    await alertRef.set({
-      id: alertRef.id,
-      type: "duplicate_invoice_blocked",
-      timestamp: new Date().toISOString(),
-      createdBy: "WhatsApp Gate Bot",
-      role: "store",
-      supplier,
-      invoiceNumber: invoiceNo || "",
-      remarks: `A WhatsApp gate photo for Invoice ${invoiceNo || "(no invoice no. read)"} from ${supplier} was blocked — this invoice already has an entry in Gate Documents for Approval. Sent by ${sender || "unknown"}. Photo archived to Dropbox's "Unit 2/Rejected" folder, not posted.`,
-      verified: false,
-    });
-  } catch (e) {
-    console.error("duplicate_invoice_blocked alert failed (non-fatal):", e);
-  }
-}
-
 // Out-of-order safety net for handleGateUpload above: if a slip photo
 // somehow got processed (and landed in unmatchedDharamkantaSlips) BEFORE
 // its invoice's own gate doc existed to match against, this catches it the
@@ -1182,30 +1209,31 @@ async function tryAttachWaitingSlipToNewGateDoc(app: admin.app.App, gateDocId: s
   await batch.commit();
 }
 
-// Shared core of the dharamkanta-slip pipeline (pulled out 24-Sep-26) —
-// used by its own HTTP endpoint below (the normal path: bot.js posts a
-// slip photo here directly) AND as a self-heal fallback from
-// handleGateUpload above when a slip photo lands on the INVOICE endpoint
-// instead (see the documentType check and the second-look safety net
-// there). Takes an already-shrunk image so both callers share the one
-// shrinkGatePhotoIfNeeded call each does before reaching here, rather than
-// doing it twice on the reroute path.
-async function processDharamkantaSlipPhoto(
+// Core dharamkanta-slip extraction/matching logic — pulled out on 24-Sep-26
+// so it has exactly ONE implementation shared by both callers: the direct
+// /api/gate/slip-upload endpoint below (handleDharamkantaSlipUpload, kept
+// for any future caller that already knows it's sending a slip), and
+// handleGateUpload's own auto-detect branch above (extractGatePhotoAuto),
+// which is what the WhatsApp bot's single capture pipeline actually hits
+// now. Behaviour is unchanged from the original handleDharamkantaSlipUpload
+// body — same matching rule, same unmatched-alert fallback.
+async function matchOrQueueDharamkantaSlip(
   app: admin.app.App,
   image: string,
   mimetype: string,
-  sender: string | undefined,
-  pushName: string | undefined,
-  capturedAt: string | undefined,
-  // Optional — the second-look safety net in handleGateUpload already
-  // extracted these fields once to decide whether to call this function at
-  // all; passing them through avoids a redundant second Gemini call on the
-  // same photo. Every other caller omits this and it's extracted here as
-  // before.
+  sender: string,
+  pushName: string | null,
+  capturedAt: string,
+  // Optional — handleGateUpload already has these fields from its one
+  // extractGatePhotoAuto call (both its primary weighbridge_slip branch
+  // and its second-look fallback pass them through), so it never needs a
+  // second Gemini call for the same photo. Only the direct
+  // /api/gate/slip-upload endpoint (handleDharamkantaSlipUpload) omits
+  // this and falls back to extracting it here itself.
   preExtracted?: { vehicleNo: string; netWeightKg: number; slipDate: string }
 ): Promise<{ matched: boolean; docId: string }> {
   const extracted = preExtracted || await extractDharamkantaSlipFields(image, mimetype);
-  const resolvedCapturedAt = capturedAt ? String(capturedAt) : new Date().toISOString();
+  const resolvedCapturedAt = capturedAt || new Date().toISOString();
 
   let candidates: admin.firestore.QueryDocumentSnapshot[] = [];
   if (extracted.vehicleNo) {
@@ -1240,13 +1268,13 @@ async function processDharamkantaSlipPhoto(
     imageBase64: String(image),
     mimeType: String(mimetype),
     extracted,
-    sender: sender ? String(sender) : "",
+    sender: sender || "",
     pushName: pushName ?? null,
     capturedAt: resolvedCapturedAt,
     createdAt: new Date().toISOString(),
     status: "unmatched",
   });
-  await pushGateSlipNotMatchedAlert(app, extracted.vehicleNo, candidates.length, sender ? String(sender) : "");
+  await pushGateSlipNotMatchedAlert(app, extracted.vehicleNo, candidates.length, sender || "");
   return { matched: false, docId: slipRef.id };
 }
 
@@ -1266,8 +1294,9 @@ export async function handleDharamkantaSlipUpload(req: MinimalRequest, res: Mini
     }
 
     ({ imageBase64: image, mimeType: mimetype } = await shrinkGatePhotoIfNeeded(image, mimetype));
+
     const app = getAdminApp();
-    const result = await processDharamkantaSlipPhoto(app, image, mimetype, sender, pushName, capturedAt);
+    const result = await matchOrQueueDharamkantaSlip(app, image, mimetype, sender ? String(sender) : "", pushName ?? null, capturedAt ? String(capturedAt) : new Date().toISOString());
     res.json(result);
   } catch (error: any) {
     console.error("Dharamkanta slip upload error:", error);
@@ -1328,7 +1357,7 @@ const ARCHIVE_PHOTO_FOLDER = "/Unit 2/Inwards";
 
 export async function handleArchivePhoto(req: MinimalRequest, res: MinimalResponse) {
   try {
-    const { imageBase64, mimeType, fileName, folder, archiveRoot } = req.body || {};
+    const { imageBase64, mimeType, fileName, folder } = req.body || {};
     if (!imageBase64 || !fileName) {
       res.status(400).json({ error: "Missing imageBase64 or fileName." });
       return;
@@ -1345,15 +1374,9 @@ export async function handleArchivePhoto(req: MinimalRequest, res: MinimalRespon
     // upload, no separate "create folder" call needed. Falls back to the
     // flat root for any older caller that doesn't send one.
     const safeFolder = folder ? String(folder).replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_").trim() : "";
-    // 24-Sep-26: whitelisted alternate root, for App.tsx's
-    // handleRejectGateDocument archiving a rejected entry's photo(s) — kept
-    // out of the real "Unit 2/Inwards" archive so it never looks like a
-    // genuine posted entry. Never accepts an arbitrary path from the
-    // client, only this one named alternative.
-    const root = archiveRoot === "rejected" ? REJECTED_GATE_FOLDER : ARCHIVE_PHOTO_FOLDER;
     const path = safeFolder
-      ? `${root}/${safeFolder}/${safeName}.${ext}`
-      : `${root}/${safeName}.${ext}`;
+      ? `${ARCHIVE_PHOTO_FOLDER}/${safeFolder}/${safeName}.${ext}`
+      : `${ARCHIVE_PHOTO_FOLDER}/${safeName}.${ext}`;
 
     const uploadResp = await fetch("https://content.dropboxapi.com/2/files/upload", {
       method: "POST",
