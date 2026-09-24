@@ -25,7 +25,10 @@ interface RMApprovalQueueProps {
   parts: Part[];
   rawMaterials: RawMaterial[];
   isAdmin?: boolean;
-  onApprove: (entry: PendingRMEntry) => void;
+  // Async in App.tsx (archives any pending photo to Dropbox before
+  // posting) — this screen fires it and moves on, same as any other button
+  // click here; nothing in this component needs to await it.
+  onApprove: (entry: PendingRMEntry) => void | Promise<void>;
   onUpdate: (id: string, updater: (e: PendingRMEntry) => PendingRMEntry) => void;
   onReject: (id: string, reason: string) => void;
   // Universal RM Receiving entry-mode switch — set from here, applies to RM
@@ -43,6 +46,15 @@ interface RMApprovalQueueProps {
 
 const isPartMappedToRM = (p: Part, rm: RawMaterial): boolean =>
   p.customerRMMappings?.[rm.customerName] === rm.id || rm.partId === p.id || !!rm.partIds?.includes(p.id);
+
+// Same threshold/formula App.tsx's handleMaterialEntryFinishedPieces /
+// handleMaterialEntryLongerPipe use to decide whether to fire a
+// rm_weight_mismatch alert — mirrored here purely for the ⚠ badge, not to
+// recompute anything that affects posting.
+const WEIGHT_VARIANCE_FLAG_KG = 50;
+const isHeaderWeightFlagged = (header: PendingMaterialEntryHeader): boolean =>
+  header.totalWeightKg != null && header.dharamkantaWeightKg != null &&
+  Math.abs(header.dharamkantaWeightKg - header.totalWeightKg) >= WEIGHT_VARIANCE_FLAG_KG;
 
 const STATUS_META: Record<PendingRMEntry['status'], { label: string; badge: string; border: string }> = {
   pending: { label: 'Pending Approval', badge: 'bg-amber-100 text-amber-700 border-amber-200', border: 'border-l-amber-500' },
@@ -66,6 +78,12 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  // Full-screen view for a pending entry's own photo(s) — see the
+  // photoImageBase64/slipPhotoImageBase64 thumbnails below. Only ever
+  // populated while the entry hasn't been approved yet (see types.ts's
+  // note on those fields); once approved there's nothing left to view here,
+  // just the archived Dropbox path as text, same as before this existed.
+  const [viewingPhoto, setViewingPhoto] = useState<{ base64: string; mimeType: string; label: string } | null>(null);
 
   const sorted = useMemo(
     () => [...entries].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
@@ -431,7 +449,14 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                       📱 From a WhatsApp gate photo (Gate Documents for Approval) — completed by {e.submittedBy}.
                     </div>
                   )}
-                  {e.photoDropboxPath ? (
+                  {e.photoImageBase64 && e.photoMimeType ? (
+                    <div className="bg-white border-2 border-slate-100 rounded-xl px-4 py-3 flex items-center gap-3">
+                      <button onClick={() => setViewingPhoto({ base64: e.photoImageBase64!, mimeType: e.photoMimeType!, label: 'Source photo' })} className="shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 border-slate-200 hover:border-indigo-400" title="View full size">
+                        <img src={`data:${e.photoMimeType};base64,${e.photoImageBase64}`} alt="Source photo" className="w-full h-full object-cover" />
+                      </button>
+                      <p className="text-[11px] font-bold text-slate-500">📷 Source photo — tap to view full size. Archived to Dropbox once you approve this entry.</p>
+                    </div>
+                  ) : e.photoDropboxPath ? (
                     <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2 text-[11px] font-bold text-emerald-700">
                       📷 Source photo archived to Dropbox — {e.photoDropboxPath}
                     </div>
@@ -440,6 +465,18 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                       No photo attached — this entry was submitted without using Camera Upload (or the photo failed to archive). Verify against the physical invoice/paper bill for now.
                     </div>
                   )}
+                  {e.slipPhotoImageBase64 && e.slipPhotoMimeType ? (
+                    <div className="bg-white border-2 border-slate-100 rounded-xl px-4 py-3 flex items-center gap-3">
+                      <button onClick={() => setViewingPhoto({ base64: e.slipPhotoImageBase64!, mimeType: e.slipPhotoMimeType!, label: 'Dharamkanta slip' })} className="shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 border-slate-200 hover:border-indigo-400" title="View full size">
+                        <img src={`data:${e.slipPhotoMimeType};base64,${e.slipPhotoImageBase64}`} alt="Dharamkanta slip" className="w-full h-full object-cover" />
+                      </button>
+                      <p className="text-[11px] font-bold text-slate-500">⚖️ Dharamkanta slip — tap to view full size. Archived to Dropbox once you approve this entry.</p>
+                    </div>
+                  ) : e.slipPhotoDropboxPath ? (
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-4 py-2 text-[11px] font-bold text-emerald-700">
+                      ⚖️ Dharamkanta slip photo archived to Dropbox — {e.slipPhotoDropboxPath}
+                    </div>
+                  ) : null}
 
                   {e.entryType === 'finished_pieces' && e.finishedPiecesPayload && (
                     <div className="space-y-3">
@@ -460,7 +497,7 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                             <p className="font-bold">{e.finishedPiecesPayload.header.invoiceNo}</p>
                           )}
                         </div>
-                        <div><p className="text-[9px] font-black text-slate-400 uppercase">Weight (Dharamkanta)</p><p className="font-bold">{e.finishedPiecesPayload.header.totalWeightKg ?? '—'} Kg ({e.finishedPiecesPayload.header.dharamkantaWeightKg ?? '—'} Kg)</p></div>
+                        <div><p className="text-[9px] font-black text-slate-400 uppercase">Weight (Dharamkanta)</p><p className="font-bold">{e.finishedPiecesPayload.header.totalWeightKg ?? '—'} Kg ({e.finishedPiecesPayload.header.dharamkantaWeightKg ?? '—'} Kg){isHeaderWeightFlagged(e.finishedPiecesPayload.header) ? ' ⚠' : ''}</p></div>
                         <div><p className="text-[9px] font-black text-slate-400 uppercase">Bill Value</p><p className="font-bold">₹{e.finishedPiecesPayload.header.totalBillValue ?? '—'}</p></div>
                       </div>
                       {e.finishedPiecesPayload.lines.map(l => (
@@ -501,7 +538,7 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                             <p className="font-bold">{e.longerPipePayload.header.invoiceNo}</p>
                           )}
                         </div>
-                        <div><p className="text-[9px] font-black text-slate-400 uppercase">Weight (Dharamkanta)</p><p className="font-bold">{e.longerPipePayload.header.totalWeightKg ?? '—'} Kg ({e.longerPipePayload.header.dharamkantaWeightKg ?? '—'} Kg)</p></div>
+                        <div><p className="text-[9px] font-black text-slate-400 uppercase">Weight (Dharamkanta)</p><p className="font-bold">{e.longerPipePayload.header.totalWeightKg ?? '—'} Kg ({e.longerPipePayload.header.dharamkantaWeightKg ?? '—'} Kg){isHeaderWeightFlagged(e.longerPipePayload.header) ? ' ⚠' : ''}</p></div>
                         <div><p className="text-[9px] font-black text-slate-400 uppercase">Bill Value</p><p className="font-bold">₹{e.longerPipePayload.header.totalBillValue ?? '—'}</p></div>
                       </div>
                       {e.longerPipePayload.lines.map((l, idx) => editable ? (
@@ -669,6 +706,18 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
           </div>
         )}
       </div>
+
+      {viewingPhoto && (
+        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-[110] p-4" onClick={() => setViewingPhoto(null)}>
+          <div className="max-w-2xl w-full" onClick={(e) => e.stopPropagation()}>
+            <p className="text-white text-center text-xs font-black uppercase tracking-widest mb-2">{viewingPhoto.label}</p>
+            <img src={`data:${viewingPhoto.mimeType};base64,${viewingPhoto.base64}`} alt={viewingPhoto.label} className="w-full h-auto rounded-2xl shadow-2xl" />
+            <button onClick={() => setViewingPhoto(null)} className="mt-3 w-full py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

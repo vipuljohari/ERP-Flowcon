@@ -31,7 +31,7 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, UnmatchedDharamkantaSlip, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole } from './types';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
 import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
@@ -187,6 +187,12 @@ const MainApp: React.FC = () => {
   // services/apiHandlers.ts's handleGateUpload (server-side, via
   // firebase-admin) which is what actually creates docs in this collection.
   const [gateDocuments, setGateDocuments] = useFirestoreArray<GateDocumentForApproval>('gateDocumentsForApproval');
+  // Dharamkanta (weighbridge) slip photos that arrived over WhatsApp but
+  // couldn't be auto-matched to a pending gate entry by vehicle number —
+  // the manual "pick from unmatched" fallback in GateDocumentsQueue reads
+  // this. Written server-side by handleDharamkantaSlipUpload; the app only
+  // reads it and, on a manual pick, flips status to 'attached'.
+  const [unmatchedDharamkantaSlips, setUnmatchedDharamkantaSlips] = useFirestoreArray<UnmatchedDharamkantaSlip>('unmatchedDharamkantaSlips');
   // Admin's Party Name Master selection over the Tally Purchase party list
   // — same settings-doc pattern as rmEntryModeSettings above, and the exact
   // same collection/doc path (settings/gateApprovedSuppliers) handleGateUpload
@@ -1535,16 +1541,16 @@ const MainApp: React.FC = () => {
               manufacturerInvoices={rmManufacturerInvoices}
               setManufacturerInvoices={setRmManufacturerInvoices}
               materialLengths={rmMaterialLengths}
-              onMaterialEntryFinishedPieces={(header, lines, photoDropboxPath) => {
+              onMaterialEntryFinishedPieces={(header, lines, photo) => {
                 const fromGateDocumentId = gateDocInProgress?.mode === 'finished_pieces' ? gateDocInProgress.doc.id : undefined;
-                const newEntry = stageMaterialEntryFinishedPieces(header, lines, photoDropboxPath, fromGateDocumentId);
+                const newEntry = stageMaterialEntryFinishedPieces(header, lines, photo, fromGateDocumentId);
                 if (newEntry && gateDocInProgress?.mode === 'finished_pieces') {
                   finalizeGateDocument(gateDocInProgress.doc, newEntry);
                 }
               }}
-              onMaterialEntryLongerPipe={(header, lines, photoDropboxPath) => {
+              onMaterialEntryLongerPipe={(header, lines, photo) => {
                 const fromGateDocumentId = gateDocInProgress?.mode === 'longer_pipe' ? gateDocInProgress.doc.id : undefined;
-                const newEntry = stageMaterialEntryLongerPipe(header, lines, photoDropboxPath, fromGateDocumentId);
+                const newEntry = stageMaterialEntryLongerPipe(header, lines, photo, fromGateDocumentId);
                 if (newEntry && gateDocInProgress?.mode === 'longer_pipe') {
                   finalizeGateDocument(gateDocInProgress.doc, newEntry);
                 }
@@ -1882,9 +1888,9 @@ const MainApp: React.FC = () => {
               setMaterialLengths={setRmMaterialLengths}
               isAdmin={isAdmin}
               onCreateAlert={pushAdminAlert}
-              onSaveManufacturerInvoiceWithAllotment={(submission, photoDropboxPath) => {
+              onSaveManufacturerInvoiceWithAllotment={(submission, photo) => {
                 const fromGateDocumentId = gateDocInProgress?.mode === 'manufacturer_invoice' ? gateDocInProgress.doc.id : undefined;
-                const newEntry = stageManufacturerInvoiceWithAllotment(submission, photoDropboxPath, fromGateDocumentId);
+                const newEntry = stageManufacturerInvoiceWithAllotment(submission, photo, fromGateDocumentId);
                 if (newEntry && gateDocInProgress?.mode === 'manufacturer_invoice') {
                   finalizeGateDocument(gateDocInProgress.doc, newEntry);
                 }
@@ -1901,6 +1907,9 @@ const MainApp: React.FC = () => {
               isAdmin={isAdmin}
               onProcess={pickGateDocumentMode}
               onResetInProgress={isAdmin ? resetGateDocumentInProgress : undefined}
+              unmatchedSlips={unmatchedDharamkantaSlips}
+              onAttachSlipUpload={handleAttachSlipUpload}
+              onAttachSlipFromUnmatched={handleAttachSlipFromUnmatched}
             />
           )}
           {isAdmin && currentView === 'party_name_master' && (
@@ -2134,6 +2143,13 @@ const MainApp: React.FC = () => {
   // allotment before save, no negative entries, an invoice-pulled line
   // can't be removed) live in services/materialEntry.ts and are enforced by
   // components/MaterialEntry.tsx before either of these is ever called.
+  // Same threshold/formula as RMCrossBillCheck.tsx's own
+  // WEIGHT_VARIANCE_FLAG_KG (kept as a separate local copy there
+  // deliberately, same reasoning as services/photo.ts's header comment —
+  // not switched to share this one so that already-working screen's
+  // behavior can't be disturbed by a change made here).
+  const MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG = 50;
+
   function handleMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[]) {
     const finalTs = `${header.date}T12:00:00.000`;
     const entryId = Math.random().toString(36).substr(2, 9);
@@ -2168,6 +2184,21 @@ const MainApp: React.FC = () => {
       timestamp: finalTs, itemCount: newLogs.length,
       details: `Material Entry — Finished Pieces: ${itemsSummary}. Total Weight ${header.totalWeightKg ?? '—'} Kg (Dharamkanta ${header.dharamkantaWeightKg ?? '—'} Kg), Bill Value ₹${header.totalBillValue ?? '—'}.`,
     });
+
+    // Invoice-billed weight vs the dharamkanta (weighbridge) actual —
+    // same check/threshold as the RM Cross-Bill Manufacturer Invoice flow,
+    // only fired when both weights are actually entered.
+    if (header.totalWeightKg != null && header.dharamkantaWeightKg != null) {
+      const weightVarianceKg = header.dharamkantaWeightKg - header.totalWeightKg;
+      if (Math.abs(weightVarianceKg) >= MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG) {
+        pushAdminAlert({
+          type: 'rm_weight_mismatch',
+          invoiceNumber: header.invoiceNo, supplier: header.supplierName,
+          itemCount: newLogs.length,
+          remarks: `Material Entry — Finished Pieces: ${itemsSummary} — Invoice billed ${header.totalWeightKg} Kg, Dharam Kanta actual ${header.dharamkantaWeightKg} Kg — ${weightVarianceKg > 0 ? 'received MORE than billed by' : 'received LESS than billed by'} ${Math.abs(weightVarianceKg).toFixed(1)} Kg. Review for a supplier debit note.`,
+        });
+      }
+    }
   }
 
   function handleMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[]) {
@@ -2280,6 +2311,21 @@ const MainApp: React.FC = () => {
         timestamp: finalTs,
         details: `${totalScrapMm.toFixed(0)} mm unattributed leftover across Split-by-Pieces line(s) in this Material Entry — not credited to any single item.`,
       });
+    }
+
+    // Invoice-billed weight vs the dharamkanta (weighbridge) actual — same
+    // check/threshold as the RM Cross-Bill Manufacturer Invoice flow, only
+    // fired when both weights are actually entered.
+    if (header.totalWeightKg != null && header.dharamkantaWeightKg != null) {
+      const weightVarianceKg = header.dharamkantaWeightKg - header.totalWeightKg;
+      if (Math.abs(weightVarianceKg) >= MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG) {
+        pushAdminAlert({
+          type: 'rm_weight_mismatch',
+          invoiceNumber: header.invoiceNo, supplier: header.supplierName,
+          itemCount: lines.length,
+          remarks: `Material Entry — Longer Pipe: ${perLineRemarks.join(' | ')} — Invoice billed ${header.totalWeightKg} Kg, Dharam Kanta actual ${header.dharamkantaWeightKg} Kg — ${weightVarianceKg > 0 ? 'received MORE than billed by' : 'received LESS than billed by'} ${Math.abs(weightVarianceKg).toFixed(1)} Kg. Review for a supplier debit note.`,
+        });
+      }
     }
   }
 
@@ -2495,19 +2541,19 @@ const MainApp: React.FC = () => {
     return newEntry;
   }
 
-  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string, fromGateDocumentId?: string): PendingRMEntry | null {
+  function stageMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): PendingRMEntry | null {
     if (lines.length === 0) return null;
     const partNames = lines.map(l => { const p = parts.find(x => x.id === l.partId); return `${p?.name || l.partId} (${l.quantity} Pcs)`; });
-    return pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoDropboxPath, fromGateDocumentId });
+    return pushPendingRMEntry({ entryType: 'finished_pieces', status: 'pending', finishedPiecesPayload: { header, lines }, summary: `Finished Pieces — ${header.supplierName} — ${partNames.join(', ')}`, photoImageBase64: photo?.base64, photoMimeType: photo?.mimeType, fromGateDocumentId });
   }
 
-  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string, fromGateDocumentId?: string): PendingRMEntry | null {
+  function stageMaterialEntryLongerPipe(header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): PendingRMEntry | null {
     if (lines.length === 0) return null;
     const lineSummaries = lines.map(l => { const rm = rawMaterials.find(r => r.id === l.rmId); return `${rm ? rm.size : 'RM'} (${l.barsReceived} bars)`; });
-    return pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoDropboxPath, fromGateDocumentId });
+    return pushPendingRMEntry({ entryType: 'longer_pipe', status: 'pending', longerPipePayload: { header, lines }, summary: `Longer Pipe — ${header.supplierName} — ${lineSummaries.join(', ')}`, photoImageBase64: photo?.base64, photoMimeType: photo?.mimeType, fromGateDocumentId });
   }
 
-  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photoDropboxPath?: string, fromGateDocumentId?: string): PendingRMEntry | null {
+  function stageManufacturerInvoiceWithAllotment(submission: MfgInvoiceSubmission, photo?: { base64: string; mimeType: string }, fromGateDocumentId?: string): PendingRMEntry | null {
     if (submission.lines.length === 0) return null;
     const unresolvedLines = submission.lines.filter(l => !l.rmId);
     const isNotMatched = unresolvedLines.length > 0;
@@ -2517,7 +2563,8 @@ const MainApp: React.FC = () => {
       manufacturerInvoicePayload: submission,
       summary: `Manufacturer Invoice — ${submission.manufacturerName} — ${submission.invoiceNo} — ${materialsSummary}`,
       notMatchedReason: isNotMatched ? `${unresolvedLines.length} material(s) have no linked Raw Material yet: ${unresolvedLines.map(l => l.materialCode || l.materialName).join(', ')}. Admin must specify which RM Master size to book against before this can be approved.` : undefined,
-      photoDropboxPath,
+      photoImageBase64: photo?.base64,
+      photoMimeType: photo?.mimeType,
       fromGateDocumentId,
     });
   }
@@ -2525,35 +2572,84 @@ const MainApp: React.FC = () => {
   // --- Gate Documents for Approval hand-off ---
   // Fired once the matching entry screen (Material Entry or RM Cross-Bill
   // Check's Manufacturer Invoice wizard) actually submits — the staging
-  // call above already created `newEntry`. From here: archive the gate
-  // photo to Dropbox using the SAME naming convention as every other RM
-  // Receiving photo (never earlier — per Vipul's explicit 18-Sep
-  // confirmation, only once Post for Approval / Save is clicked), mark the
-  // gate document 'consumed' and clear its photo, and — only when the
-  // person doing this is Admin — immediately approve the staged entry too,
-  // reusing approvePendingRMEntry (and therefore the exact same validated
-  // posting handlers) rather than any separate code path, per this app's
-  // existing "approve exactly once, only through this one function"
-  // invariant. For Store, the entry simply stays 'pending' in the normal
-  // RM Approvals queue like any other entry.
+  // call above already created `newEntry`. From here: the photo(s) move
+  // from the gate document onto the entry itself as base64 — NOT archived
+  // to Dropbox yet. Corrected 24-Sep-26: archiving here (at Post for
+  // Approval) meant the photo was already gone by the time Admin opened RM
+  // Approvals to review Store's submission — only the Dropbox path text
+  // ever showed up there, never the actual photo. Now the base64 rides on
+  // the PendingRMEntry while it's pending, and App.tsx's
+  // approvePendingRMEntry is the only place that archives it (once Admin
+  // actually approves) — see that function's own comment. Mark the gate
+  // document 'consumed' and clear its own copy of the photo (ownership
+  // moves to the entry), and — only when the person doing this is Admin —
+  // immediately approve the staged entry too, reusing approvePendingRMEntry
+  // (and therefore the exact same validated posting handlers AND archival
+  // logic) rather than any separate code path, per this app's existing
+  // "approve exactly once, only through this one function" invariant. For
+  // Store, the entry simply stays 'pending' in the normal RM Approvals
+  // queue like any other entry, photo and all.
   async function finalizeGateDocument(gateDoc: GateDocumentForApproval, newEntry: PendingRMEntry) {
-    let archivedPath: string | undefined;
-    if (gateDoc.imageBase64) {
-      archivedPath = (await archivePhotoToDropbox(
-        gateDoc.imageBase64,
-        gateDoc.mimeType,
-        buildArchiveFileName(gateDoc.matchedSupplier, gateDoc.extracted.invoiceNo, gateDoc.extracted.date),
-        buildArchiveMonthFolder(gateDoc.extracted.date)
-      )) || undefined;
-    }
-    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'consumed', imageBase64: '', linkedPendingRMEntryId: newEntry.id } : d)));
-    if (archivedPath) {
-      updatePendingRMEntry(newEntry.id, e => ({ ...e, photoDropboxPath: archivedPath }));
-    }
+    const entryWithPhotos: PendingRMEntry = {
+      ...newEntry,
+      photoImageBase64: gateDoc.imageBase64 || undefined,
+      photoMimeType: gateDoc.mimeType || undefined,
+      slipPhotoImageBase64: gateDoc.slipImageBase64 || undefined,
+      slipPhotoMimeType: gateDoc.slipMimeType || undefined,
+    };
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'consumed', imageBase64: '', slipImageBase64: '', linkedPendingRMEntryId: newEntry.id } : d)));
+    updatePendingRMEntry(newEntry.id, e => ({
+      ...e,
+      photoImageBase64: entryWithPhotos.photoImageBase64,
+      photoMimeType: entryWithPhotos.photoMimeType,
+      slipPhotoImageBase64: entryWithPhotos.slipPhotoImageBase64,
+      slipPhotoMimeType: entryWithPhotos.slipPhotoMimeType,
+    }));
     if (isAdmin) {
-      approvePendingRMEntry({ ...newEntry, photoDropboxPath: archivedPath || newEntry.photoDropboxPath });
+      await approvePendingRMEntry(entryWithPhotos);
     }
     setGateDocInProgress(null);
+  }
+
+  // Store or Admin manually attaches a dharamkanta slip photo directly
+  // in-app (upload path) for a pending gate entry — vehicle-number
+  // auto-match failed or hasn't happened yet. Runs the same Gemini
+  // extraction the WhatsApp path uses server-side, but client-side isn't an
+  // option here (no bot.js involved), so this reuses the existing
+  // extractMaterialEntryFields-style endpoint pattern via a direct call —
+  // see handleAttachSlipFromUnmatched below for the no-extraction pick path.
+  async function handleAttachSlipUpload(gateDoc: GateDocumentForApproval, imageBase64: string, mimeType: string, extracted: { vehicleNo: string; netWeightKg: number; slipDate: string }) {
+    const now = getLocalISOString();
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? {
+      ...d,
+      slipStatus: 'attached',
+      slipImageBase64: imageBase64,
+      slipMimeType: mimeType,
+      slipExtracted: extracted,
+      slipAttachedVia: 'manual_upload',
+      slipAttachedBy: appUser?.displayName || userName,
+      slipAttachedAt: now,
+    } : d)));
+  }
+
+  // Store or Admin picks a WhatsApp-ingested slip that arrived but wasn't
+  // auto-matched (the "Both (Recommended)" fallback Vipul chose) — moves
+  // its fields onto the target gate doc and marks the unmatched slip
+  // consumed, same shape as the server's own auto-match write.
+  function handleAttachSlipFromUnmatched(gateDoc: GateDocumentForApproval, slip: UnmatchedDharamkantaSlip) {
+    const now = getLocalISOString();
+    const by = appUser?.displayName || userName;
+    setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? {
+      ...d,
+      slipStatus: 'attached',
+      slipImageBase64: slip.imageBase64,
+      slipMimeType: slip.mimeType,
+      slipExtracted: slip.extracted,
+      slipAttachedVia: 'manual_pick',
+      slipAttachedBy: by,
+      slipAttachedAt: now,
+    } : d)));
+    setUnmatchedDharamkantaSlips(prev => prev.map(s => (s.id === slip.id ? { ...s, status: 'attached', imageBase64: '', attachedToGateDocId: gateDoc.id, attachedBy: by, attachedAt: now } : s)));
   }
 
   // Store (or Admin) picked a mode on a Gate Documents for Approval card —
@@ -2561,6 +2657,11 @@ const MainApp: React.FC = () => {
   // and open the matching screen via gateDocInProgress; the Inventory /
   // RMCrossBillCheck render blocks below react to that state.
   function pickGateDocumentMode(gateDoc: GateDocumentForApproval, mode: PendingRMEntryType) {
+    // Both photos must be in before the entry can move forward — per
+    // Vipul's explicit call: "store can only post gate entry once both the
+    // documents lands in system". Absent slipStatus (docs created before
+    // this feature shipped) is treated exactly like 'awaiting'.
+    if ((gateDoc.slipStatus || 'awaiting') !== 'attached') return;
     setGateDocuments(prev => prev.map(d => (d.id === gateDoc.id ? { ...d, status: 'in_progress', pickedEntryType: mode, pickedAt: getLocalISOString(), pickedBy: appUser?.displayName || userName } : d)));
     setGateDocInProgress({ doc: gateDoc, mode });
     setCurrentView(mode === 'manufacturer_invoice' ? 'rm_crossbill' : 'inventory');
@@ -2584,21 +2685,74 @@ const MainApp: React.FC = () => {
     if (gateDocInProgress?.doc.id === gateDoc.id) setGateDocInProgress(null);
   }
 
-  function approvePendingRMEntry(entry: PendingRMEntry) {
+  // The only place any of the entryType posting handlers above ever runs —
+  // see the "approve exactly once, only through this one function"
+  // invariant. Also, as of 24-Sep-26, the ONLY place a pending photo
+  // (invoice and/or dharamkanta slip, held as base64 purely so Admin can
+  // actually see it while reviewing — see PendingRMEntry.photoImageBase64
+  // in types.ts) gets archived to Dropbox. Applies uniformly whether the
+  // entry came from a WhatsApp gate photo (finalizeGateDocument transfers
+  // the base64 here) or a direct Store/PPC Camera Upload (MaterialEntry.tsx
+  // / RMCrossBillCheck.tsx capture it client-side and hand it straight to
+  // the relevant stageXXX function above) — neither path archives anything
+  // itself anymore, so the photo genuinely stays visible in-app through
+  // Admin's whole review and only goes Dropbox-only once actually approved.
+  async function approvePendingRMEntry(entry: PendingRMEntry) {
+    if (entry.entryType === 'longer_pipe' && entry.longerPipePayload?.lines.some(l => !l.rmId)) return;
+    if (entry.entryType === 'manufacturer_invoice' && entry.manufacturerInvoicePayload?.lines.some(l => !l.rmId)) return;
+    if (
+      entry.entryType !== 'finished_pieces' && entry.entryType !== 'longer_pipe' &&
+      entry.entryType !== 'manufacturer_invoice' && entry.entryType !== 'inventory_correction'
+    ) return;
+
+    // Supplier/invoice/date context for the archive filename — whichever of
+    // the 3 possible payloads this entry actually carries. Inventory
+    // Correction never carries a photo (no camera-upload intake for it).
+    const archiveCtx =
+      entry.finishedPiecesPayload ? { supplier: entry.finishedPiecesPayload.header.supplierName, invoiceNo: entry.finishedPiecesPayload.header.invoiceNo, date: entry.finishedPiecesPayload.header.date } :
+      entry.longerPipePayload ? { supplier: entry.longerPipePayload.header.supplierName, invoiceNo: entry.longerPipePayload.header.invoiceNo, date: entry.longerPipePayload.header.date } :
+      entry.manufacturerInvoicePayload ? { supplier: entry.manufacturerInvoicePayload.manufacturerName, invoiceNo: entry.manufacturerInvoicePayload.invoiceNo, date: entry.manufacturerInvoicePayload.date } :
+      null;
+
+    let archivedPath: string | undefined;
+    if (entry.photoImageBase64 && entry.photoMimeType && archiveCtx) {
+      archivedPath = (await archivePhotoToDropbox(
+        entry.photoImageBase64, entry.photoMimeType,
+        buildArchiveFileName(archiveCtx.supplier, archiveCtx.invoiceNo, archiveCtx.date),
+        buildArchiveMonthFolder(archiveCtx.date)
+      )) || undefined;
+    }
+    let slipArchivedPath: string | undefined;
+    if (entry.slipPhotoImageBase64 && entry.slipPhotoMimeType && archiveCtx) {
+      slipArchivedPath = (await archivePhotoToDropbox(
+        entry.slipPhotoImageBase64, entry.slipPhotoMimeType,
+        buildArchiveFileName(archiveCtx.supplier, `dharamkanta-${archiveCtx.invoiceNo || entry.id}`, archiveCtx.date),
+        buildArchiveMonthFolder(archiveCtx.date)
+      )) || undefined;
+    }
+
     if (entry.entryType === 'finished_pieces' && entry.finishedPiecesPayload) {
       handleMaterialEntryFinishedPieces(entry.finishedPiecesPayload.header, entry.finishedPiecesPayload.lines as FinishedPieceLine[]);
     } else if (entry.entryType === 'longer_pipe' && entry.longerPipePayload) {
-      const lines = entry.longerPipePayload.lines;
-      if (lines.some(l => !l.rmId)) return;
-      handleMaterialEntryLongerPipe(entry.longerPipePayload.header, lines as LongerPipeLine[]);
+      handleMaterialEntryLongerPipe(entry.longerPipePayload.header, entry.longerPipePayload.lines as LongerPipeLine[]);
     } else if (entry.entryType === 'manufacturer_invoice' && entry.manufacturerInvoicePayload) {
-      const lines = entry.manufacturerInvoicePayload.lines;
-      if (lines.some(l => !l.rmId)) return;
       handleManufacturerInvoiceWithAllotment(entry.manufacturerInvoicePayload as MfgInvoiceSubmission);
     } else if (entry.entryType === 'inventory_correction' && entry.inventoryCorrectionPayload) {
       handleInventoryCorrection(entry.inventoryCorrectionPayload, entry.submittedBy, entry.submittedByRole);
     } else { return; }
-    setPendingRMEntries(prev => prev.map(e => e.id === entry.id ? { ...e, status: 'approved', reviewedAt: getLocalISOString(), reviewedBy: appUser?.displayName || userName } : e));
+
+    setPendingRMEntries(prev => prev.map(e => e.id === entry.id ? {
+      ...e,
+      status: 'approved',
+      reviewedAt: getLocalISOString(),
+      reviewedBy: appUser?.displayName || userName,
+      photoDropboxPath: archivedPath || e.photoDropboxPath,
+      slipPhotoDropboxPath: slipArchivedPath || e.slipPhotoDropboxPath,
+      photoImageBase64: '',
+      photoMimeType: '',
+      slipPhotoImageBase64: '',
+      slipPhotoMimeType: '',
+    } : e));
   }
 
   function updatePendingRMEntry(id: string, updater: (e: PendingRMEntry) => PendingRMEntry) {

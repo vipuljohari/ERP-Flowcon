@@ -19,6 +19,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   rm_weight_mismatch: { label: 'RM Weight Mismatch (vs Dharam Kanta)', icon: '⚖️', color: 'orange' },
   material_entry_scrap: { label: 'Material Entry — Unattributed Scrap (Shortage Split)', icon: '✂️', color: 'amber' },
   sibling_stock_borrow: { label: 'Sibling Stock Borrow (Auto)', icon: '🔄', color: 'cyan' },
+  gate_slip_not_matched: { label: 'Gate Slip Not Auto-Matched', icon: '🚚', color: 'pink' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {
@@ -31,6 +32,7 @@ const colorClasses: Record<string, { badge: string; border: string }> = {
   teal: { badge: 'bg-teal-100 text-teal-700 border-teal-200', border: 'border-l-teal-500' },
   orange: { badge: 'bg-orange-100 text-orange-700 border-orange-200', border: 'border-l-orange-500' },
   cyan: { badge: 'bg-cyan-100 text-cyan-700 border-cyan-200', border: 'border-l-cyan-500' },
+  pink: { badge: 'bg-pink-100 text-pink-700 border-pink-200', border: 'border-l-pink-500' },
 };
 
 const Notifications: React.FC<NotificationsProps> = ({ alerts, onVerify, onFlag }) => {

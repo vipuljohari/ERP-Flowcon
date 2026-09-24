@@ -46,8 +46,8 @@ interface InventoryProps {
   manufacturerInvoices?: RMManufacturerInvoice[];
   setManufacturerInvoices?: (update: RMManufacturerInvoice[] | ((prev: RMManufacturerInvoice[]) => RMManufacturerInvoice[])) => void;
   materialLengths?: RMMaterialLength[];
-  onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string) => void;
-  onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string) => void;
+  onMaterialEntryFinishedPieces?: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }) => void;
+  onMaterialEntryLongerPipe?: (header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }) => void;
   // Camera Upload's dimension-tolerance table (Material Entry) — see
   // services/dimensionTolerance.ts. Passed straight through to
   // MaterialEntry.tsx; Inventory.tsx itself doesn't use it.
@@ -2107,14 +2107,14 @@ const Inventory: React.FC<InventoryProps> = ({
           onInitialRMConsumed={() => setMaterialEntryRMId(null)}
           gateSeed={gateSeed}
           gateSeedMode={gateSeedMode}
-          onSubmitFinishedPieces={(header, lines, photoDropboxPath) => {
-            onMaterialEntryFinishedPieces?.(header, lines, photoDropboxPath);
+          onSubmitFinishedPieces={(header, lines, photo) => {
+            onMaterialEntryFinishedPieces?.(header, lines, photo);
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
             setMaterialEntryRMId(null);
           }}
-          onSubmitLongerPipe={(header, lines, photoDropboxPath) => {
-            onMaterialEntryLongerPipe?.(header, lines, photoDropboxPath);
+          onSubmitLongerPipe={(header, lines, photo) => {
+            onMaterialEntryLongerPipe?.(header, lines, photo);
             setShowMaterialEntry(false);
             setMaterialEntryPart(null);
             setMaterialEntryRMId(null);

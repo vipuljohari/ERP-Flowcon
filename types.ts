@@ -366,7 +366,7 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow';
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow' | 'gate_slip_not_matched';
 
 export interface AdminAlert {
   id: string;
@@ -544,10 +544,37 @@ export interface PendingRMEntry {
   // Admin doesn't have to expand every card to see what's in it.
   summary: string;
   notMatchedReason?: string; // set when status === 'not_matched'
-  // Photo of the source invoice, once Dropbox archival exists — the path it
-  // was saved to (Apps/Flowcon-Schedule-Export/Unit 2/Inwards/<MMM YY>/<Supplier>/...).
-  // Not populated by this phase of the feature yet.
+  // Photo of the source invoice, once archived — the Dropbox path it was
+  // saved to (Apps/Flowcon-Schedule-Export/Unit 2/Inwards/<MMM YY>/<Supplier>/...).
+  // Set only once this entry is actually APPROVED (see App.tsx's
+  // approvePendingRMEntry) — see photoImageBase64 below for how the photo
+  // is shown before that.
   photoDropboxPath?: string;
+  // Dharamkanta slip photo's own Dropbox archive path (added 23-Sep-26) —
+  // archived alongside the invoice photo, same "in-app while pending,
+  // Dropbox-only once approved" lifecycle as photoDropboxPath above. Only
+  // ever set for an entry that came from a gate document
+  // (fromGateDocumentId set) — there's no slip at all for a direct
+  // Store/PPC Camera or Manual entry.
+  slipPhotoDropboxPath?: string;
+  // Base64 photo(s), held in Firestore ONLY while this entry hasn't been
+  // approved yet — corrected 24-Sep-26: the photo used to be archived to
+  // Dropbox (and cleared) the instant Store/Admin finished the entry
+  // screen, which meant Admin's own RM Approvals review never actually saw
+  // it, only the Dropbox path as text. Now the base64 rides on the entry
+  // itself while status is 'pending'/'not_matched' — see
+  // RMApprovalQueue.tsx's photo thumbnails — and App.tsx's
+  // approvePendingRMEntry is the ONLY place that archives it (into
+  // photoDropboxPath/slipPhotoDropboxPath above) and clears these fields,
+  // at the moment Admin actually clicks Approve. Present for BOTH a
+  // WhatsApp gate-photo entry (transferred from GateDocumentForApproval by
+  // finalizeGateDocument) and a direct Store/PPC Camera Upload entry
+  // (captured client-side in MaterialEntry.tsx / RMCrossBillCheck.tsx);
+  // slipPhoto* only ever for a gate-document entry.
+  photoImageBase64?: string;
+  photoMimeType?: string;
+  slipPhotoImageBase64?: string;
+  slipPhotoMimeType?: string;
   reviewedAt?: string;
   reviewedBy?: string;
   rejectionReason?: string;
@@ -595,6 +622,25 @@ export interface GateDocumentExtractedFields {
   thicknessMm: number;
   lengthMm: number;
   quantityPcs: number;
+  // Vehicle number read off the invoice photo itself, if bot.js's capture
+  // step can find one printed there — the join key for auto-matching the
+  // dharamkanta slip (see slipStatus/DharamkantaSlipExtractedFields below).
+  // '' when not printed/not read — that doc simply never auto-matches and
+  // always needs a manual slip attach.
+  vehicleNo: string;
+}
+
+// --- Dharamkanta (weighbridge) slip capture (added 23-Sep-26) ---
+// The invoice photo alone used to be enough to start working a gate entry.
+// Per Vipul's 22/23-Sep decision, a gate entry can no longer be started
+// (mode picked) until its dharamkanta slip has ALSO arrived and been
+// attached — the slip can land anywhere from minutes to 5+ hours after the
+// invoice, since it depends on when the truck actually gets weighed. See
+// GateDocumentForApproval.slipStatus below for the gating mechanics.
+export interface DharamkantaSlipExtractedFields {
+  vehicleNo: string; // '' if not legible — that slip can never auto-match, only manual attach
+  netWeightKg: number; // 0 if not legible
+  slipDate: string; // YYYY-MM-DD, best-effort from whatever date is printed
 }
 
 export interface GateDocumentForApproval {
@@ -616,6 +662,46 @@ export interface GateDocumentForApproval {
   pickedAt?: string;
   pickedBy?: string;
   linkedPendingRMEntryId?: string; // set once Post for Approval creates the real PendingRMEntry
+  // 'awaiting' (or absent, for a doc created before this feature shipped —
+  // treated identically to 'awaiting' everywhere this is checked) blocks
+  // mode-picking entirely. 'attached' means the slip photo/weight below are
+  // populated and Store/Admin can proceed exactly like the invoice-only
+  // flow used to work. Never re-settable back to 'awaiting' once attached.
+  slipStatus?: 'awaiting' | 'attached';
+  slipImageBase64?: string; // '' once status === 'consumed', same lifecycle as imageBase64 above
+  slipMimeType?: string;
+  slipExtracted?: DharamkantaSlipExtractedFields;
+  // How the slip got attached — for the audit trail, not for any logic.
+  slipAttachedVia?: 'auto_whatsapp' | 'manual_pick' | 'manual_upload';
+  slipAttachedBy?: string; // display name — set for manual_pick/manual_upload; 'bot.js (auto-matched)' for auto_whatsapp
+  slipAttachedAt?: string;
+}
+
+// One doc per dharamkanta slip photo bot.js relayed that services/
+// apiHandlers.ts's handleDharamkantaSlipUpload could NOT confidently
+// auto-match to exactly one open ('pending', slipStatus!=='attached') gate
+// entry — either the vehicle number wasn't legible on one side or the
+// other, or it matched more than one open entry from the same day. Fires a
+// 'gate_slip_not_matched' AdminAlert the moment this is created (see
+// Notifications.tsx) so Admin knows to keenly verify whichever manual
+// attach eventually resolves it, same "camera reads it, a human confirms
+// anything ambiguous" pattern as everywhere else in this pipeline. Store
+// and Admin can both pick one of these from GateDocumentsQueue's manual
+// attach screen and link it to the right gate entry by eye (they can see
+// the photo, unlike this matching code).
+export interface UnmatchedDharamkantaSlip {
+  id: string;
+  imageBase64: string; // '' once status === 'attached'
+  mimeType: string;
+  extracted: DharamkantaSlipExtractedFields;
+  sender: string;
+  pushName?: string | null;
+  capturedAt: string;
+  createdAt: string;
+  status: 'unmatched' | 'attached';
+  attachedToGateDocId?: string;
+  attachedBy?: string;
+  attachedAt?: string;
 }
 
 // Admin-only "Party Name Master" checkbox selection (Vipul's 18-Sep

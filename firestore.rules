@@ -87,9 +87,21 @@ service cloud.firestore {
     // RM opening balances — same ownership as rawMaterials (Store enters
     // physical stock counts). A single settings-style document, not a
     // per-record collection.
+    //
+    // Two doc IDs under this same collection are Admin-only in the app's
+    // OWN UI but would otherwise inherit Store's blanket write access here:
+    // 'rmEntryMode' (the Camera Upload on/off switch, RM Approvals screen)
+    // and 'gateApprovedSuppliers' (Party Name Master's checkbox selection,
+    // added 20-Sep-26 for the WhatsApp gate-photo intake feature — it
+    // controls which suppliers' gate photos even reach Gate Documents for
+    // Approval, so it's worth locking down at the rules level too, not just
+    // hidden from Store in the UI). Excluded from Store's write here rather
+    // than given their own separate `match` blocks, since Firestore
+    // evaluates every matching rule with OR logic — a permissive rule
+    // elsewhere for the same doc would silently undo a stricter one.
     match /settings/{settingId} {
       allow read: if isActive();
-      allow write: if isAdmin() || myRole() == 'store';
+      allow write: if isAdmin() || (myRole() == 'store' && settingId != 'rmEntryMode' && settingId != 'gateApprovedSuppliers');
     }
 
     match /rmInwardLogs/{logId} {
@@ -169,6 +181,39 @@ service cloud.firestore {
     match /rmPurchaseVouchers/{voucherId} {
       allow read: if isActive();
       allow write: if isAdmin();
+    }
+
+    // --- WhatsApp gate-photo intake (added 20-Sep-26) ---
+    // Gate Documents for Approval — one doc per gate photo that matched an
+    // Admin-approved supplier (see Party Name Master / settings above). A
+    // doc here is only ever CREATED server-side, by handleGateUpload (the
+    // Admin SDK, which bypasses rules entirely) — the app itself never
+    // creates or deletes one. Store/Admin only ever UPDATE an existing doc:
+    // picking a mode (status -> 'in_progress'), Cancelling (back to
+    // 'pending'), or Post for Approval / Save (status -> 'consumed',
+    // imageBase64 cleared) — same ownership shape as pendingRMEntries
+    // above. Read is scoped to Admin/Store (not every active role) since
+    // this is the only place PPC/Accounts have no UI reason to reach and it
+    // carries supplier invoice photos/values, same reasoning as adminAlerts
+    // below being Admin-only rather than isActive().
+    match /gateDocumentsForApproval/{docId} {
+      allow read: if isAdmin() || myRole() == 'store';
+      allow update: if isAdmin() || myRole() == 'store';
+      allow create, delete: if isAdmin();
+    }
+
+    // Dharamkanta (weighbridge) slip photos that arrived over WhatsApp but
+    // couldn't be auto-matched to a pending gate entry by vehicle number —
+    // added 23-Sep-26 alongside gateDocumentsForApproval's two-photo
+    // extension. Same ownership shape: created only server-side (bot.js's
+    // slip-upload path, via the Admin SDK, which bypasses rules entirely).
+    // Store/Admin only ever UPDATE an existing doc, when manually picking
+    // one to attach to a pending gate entry (status -> 'attached'). Same
+    // read scoping as gateDocumentsForApproval above.
+    match /unmatchedDharamkantaSlips/{docId} {
+      allow read: if isAdmin() || myRole() == 'store';
+      allow update: if isAdmin() || myRole() == 'store';
+      allow create, delete: if isAdmin();
     }
 
     match /archives/{archiveId} {

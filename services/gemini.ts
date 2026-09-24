@@ -107,6 +107,29 @@ export const extractMaterialEntryPhoto = async (imageBase64: string, mimeType: s
   return response.json();
 };
 
+export interface ExtractedDharamkantaSlipFields {
+  vehicleNo: string;
+  netWeightKg: number;
+  slipDate: string;
+}
+
+// Reads a dharamkanta (weighbridge) slip photo uploaded directly in-app —
+// the manual-attach "upload" path on Gate Documents for Approval. Always
+// review/correct the result before attaching — this never writes anything
+// on its own; see App.tsx's handleAttachSlipUpload.
+export const extractDharamkantaSlipPhoto = async (imageBase64: string, mimeType: string): Promise<ExtractedDharamkantaSlipFields> => {
+  const response = await fetch("/api/gemini/extractDharamkantaSlip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageBase64, mimeType }),
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData.error || `HTTP error ${response.status}`);
+  }
+  return response.json();
+};
+
 export const chatWithAI = async (
   message: string,
   parts: Part[],

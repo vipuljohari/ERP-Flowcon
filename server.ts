@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
-import { handleInsights, handleChat, handleExtractInvoice, handleExtractMaterialEntryPhoto, handleArchivePhoto, handleGateUpload, handleCreateUser, handleUpdateUser } from "./services/apiHandlers";
+import { handleInsights, handleChat, handleExtractInvoice, handleExtractMaterialEntryPhoto, handleExtractDharamkantaSlipPhoto, handleArchivePhoto, handleGateUpload, handleDharamkantaSlipUpload, handleCreateUser, handleUpdateUser } from "./services/apiHandlers";
 
 // The actual route logic (Gemini calls, Admin-only user management) lives
 // in services/apiHandlers.ts, shared with the Vercel Serverless Functions
@@ -33,10 +33,15 @@ async function startServer() {
     app.post("/api/gemini/chat", (req, res) => handleChat(req, res));
     app.post("/api/gemini/extractInvoice", (req, res) => handleExtractInvoice(req, res));
     app.post("/api/gemini/extractMaterialEntryPhoto", (req, res) => handleExtractMaterialEntryPhoto(req, res));
+    app.post("/api/gemini/extractDharamkantaSlip", (req, res) => handleExtractDharamkantaSlipPhoto(req, res));
     app.post("/api/dropbox/archivePhoto", (req, res) => handleArchivePhoto(req, res));
     // WhatsApp gate-photo capture (bot.js -> ERP), added 18-Sep-26 — see
     // services/apiHandlers.ts's handleGateUpload.
     app.post("/api/gate/upload", (req, res) => handleGateUpload(req, res));
+    // Dharamkanta (weighbridge) slip capture — the second gate photo,
+    // added for the two-photo gate-intake feature (23-Sep-26). See
+    // services/apiHandlers.ts's handleDharamkantaSlipUpload.
+    app.post("/api/gate/slip-upload", (req, res) => handleDharamkantaSlipUpload(req, res));
     app.post("/api/admin/createUser", (req, res) => handleCreateUser(req, res));
     app.post("/api/admin/updateUser", (req, res) => handleUpdateUser(req, res));
 

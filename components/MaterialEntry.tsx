@@ -13,7 +13,6 @@ import {
 import { getLocalDateStr, correctedNow } from '../services/time';
 import { readAndCompressPhoto } from '../services/photo';
 import { extractMaterialEntryPhoto } from '../services/gemini';
-import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from '../services/dropboxArchive';
 import { suggestMatchingRawMaterials } from '../services/dimensionTolerance';
 
 // ============================================================
@@ -168,8 +167,8 @@ interface MaterialEntryProps {
   // same as any manual line).
   initialRMId?: string | null;
   onInitialRMConsumed?: () => void;
-  onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photoDropboxPath?: string) => void;
-  onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[], photoDropboxPath?: string) => void;
+  onSubmitFinishedPieces: (header: MaterialEntryHeader, lines: FinishedPieceLine[], photo?: { base64: string; mimeType: string }) => void;
+  onSubmitLongerPipe: (header: MaterialEntryHeader, lines: LongerPipeLine[], photo?: { base64: string; mimeType: string }) => void;
   onClose: () => void;
   isAdmin?: boolean;
   // Camera Upload's dimension-tolerance table — see
@@ -253,17 +252,25 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
   // — Supplier/Invoice No./Date/Total Weight/Total Bill Value — same
   // "always review before Save" convention as RM Cross-Bill Check's own
   // photo auto-fill. Dharamkanta Weight is never touched by this — it's a
-  // physical weighbridge slip, always typed in by hand. Every captured
-  // photo is also archived to Dropbox (fire-and-forget, never blocks this
-  // form) regardless of whether the AI could read it.
+  // physical weighbridge slip, always typed in by hand.
+  //
+  // The captured photo is kept as base64 (not archived to Dropbox here) —
+  // corrected 24-Sep-26: archiving immediately, right after the photo is
+  // taken, meant Admin's RM Approvals review never actually saw the photo,
+  // only a Dropbox path as text, since it was already gone from Firestore
+  // by the time Store finished the form and Admin opened the entry. Now the
+  // base64 travels with the submission (onSubmitFinishedPieces/
+  // onSubmitLongerPipe below) onto the PendingRMEntry, stays visible to
+  // Admin while it's pending, and App.tsx's approvePendingRMEntry is the
+  // only place that actually archives it, once Admin approves.
   const [extractingPhoto, setExtractingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [rmMatchNote, setRmMatchNote] = useState<string | null>(null);
-  // Dropbox path the archived photo landed at (see handleMaterialPhotoUpload
-  // below) — carried onto the PendingRMEntry on save so it shows up on the
-  // RM Approvals screen. This component unmounts on close (see Inventory.tsx),
-  // so this naturally resets for the next entry without an explicit reset.
-  const [materialPhotoDropboxPath, setMaterialPhotoDropboxPath] = useState<string | null>(null);
+  // The captured photo itself (see above) — carried onto the PendingRMEntry
+  // on save so Admin can see it in RM Approvals before archiving it. This
+  // component unmounts on close (see Inventory.tsx), so this naturally
+  // resets for the next entry without an explicit reset.
+  const [materialPhoto, setMaterialPhoto] = useState<{ base64: string; mimeType: string } | null>(null);
 
   const handleMaterialPhotoUpload = async (file: File, mode: 'pieces' | 'longer') => {
     setPhotoError(null);
@@ -271,27 +278,11 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
     setExtractingPhoto(true);
     try {
       const { base64, mimeType } = await readAndCompressPhoto(file);
-      let extracted: Awaited<ReturnType<typeof extractMaterialEntryPhoto>> | null = null;
-      try {
-        extracted = await extractMaterialEntryPhoto(base64, mimeType);
-      } finally {
-        // Archive regardless of whether the AI could read the photo (fire-
-        // and-forget — never awaited into the extraction's own success/
-        // failure path, and archivePhotoToDropbox itself swallows its own
-        // errors, see that file). Named from whatever the extraction found,
-        // falling back to what's already typed into the form, then
-        // "Unknown Supplier"/"Pending" — so the archived file lands under
-        // its real Supplier_InvoiceNo_Date name and month folder in the
-        // normal case, instead of always as "unknown_pending_<timestamp>".
-        const archiveSupplier = extracted?.supplierName || supplier;
-        const archiveInvoiceNo = extracted?.invoiceNo || invoiceNo;
-        const archiveDate = extracted?.date || date;
-        archivePhotoToDropbox(
-          base64, mimeType,
-          buildArchiveFileName(archiveSupplier, archiveInvoiceNo, archiveDate),
-          buildArchiveMonthFolder(archiveDate)
-        ).then(path => { if (path) setMaterialPhotoDropboxPath(path); });
-      }
+      // Kept regardless of whether the AI can read it below — same
+      // "capture the photo either way" intent the old fire-and-forget
+      // Dropbox archive had, just held in state instead of uploaded now.
+      setMaterialPhoto({ base64, mimeType });
+      const extracted = await extractMaterialEntryPhoto(base64, mimeType);
       if (!extracted) return;
       const ex = extracted;
       setSupplier(prev => ex.supplierName || prev);
@@ -596,12 +587,12 @@ const MaterialEntry: React.FC<MaterialEntryProps> = ({
       .filter(l => l.partId && (parseFloat(l.qty) || 0) > 0)
       .map(l => ({ key: l.key, partId: l.partId, quantity: parseFloat(l.qty) || 0 }));
     if (outLines.length === 0) return;
-    onSubmitFinishedPieces(buildHeader(), outLines, materialPhotoDropboxPath || undefined);
+    onSubmitFinishedPieces(buildHeader(), outLines, materialPhoto || undefined);
   };
 
   const saveLongerPipe = () => {
     if (!allLinesValid) return;
-    onSubmitLongerPipe(buildHeader(), lineComputations.map(lc => lc.typed), materialPhotoDropboxPath || undefined);
+    onSubmitLongerPipe(buildHeader(), lineComputations.map(lc => lc.typed), materialPhoto || undefined);
   };
 
   const searchPartsFor = (rmId: string, search: string) =>
