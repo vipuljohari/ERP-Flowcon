@@ -2725,9 +2725,18 @@ const MainApp: React.FC = () => {
     }
     let slipArchivedPath: string | undefined;
     if (entry.slipPhotoImageBase64 && entry.slipPhotoMimeType && archiveCtx) {
+      // Same base name as the invoice photo above (Supplier_InvoiceNo_Date),
+      // just with a trailing "_2" — Vipul's 24-Sep ask, so the two files sit
+      // together in Dropbox as an obvious pair/series (e.g.
+      // "Tube Investments of India Limited_TII-2456_24.09.26.jpg" and
+      // "..._24.09.26_2.jpg") rather than the slip getting a differently-
+      // shaped name. The trailing "_2" alone is enough to keep the slip's
+      // path distinct from the invoice's even when invoiceNo is blank on
+      // both (both would fall back to "...Pending_<Date>[.jpg / _2.jpg]") —
+      // no separate entry.id fallback needed any more.
       slipArchivedPath = (await archivePhotoToDropbox(
         entry.slipPhotoImageBase64, entry.slipPhotoMimeType,
-        buildArchiveFileName(archiveCtx.supplier, `dharamkanta-${archiveCtx.invoiceNo || entry.id}`, archiveCtx.date),
+        `${buildArchiveFileName(archiveCtx.supplier, archiveCtx.invoiceNo, archiveCtx.date)}_2`,
         buildArchiveMonthFolder(archiveCtx.date)
       )) || undefined;
     }
