@@ -1101,6 +1101,17 @@ const Inventory: React.FC<InventoryProps> = ({
           {/* TEMPLATE 1: DETAILED TABLE */}
           {layoutTemplate === 'detailed' && (
             <div className={`bg-white rounded-[2.5rem] shadow-sm border overflow-hidden transition-all duration-500 ${isAdmin ? 'border-amber-500 shadow-amber-500/10' : 'border-slate-100'}`}>
+              {/* Bug fix, 25-Sep-26: this outer div's `overflow-hidden` is only
+                  here for the rounded corners — it was also silently clipping
+                  the table itself sideways whenever a row's content (e.g. a
+                  long "Mapped to" list) made the table wider than the card,
+                  with NO scrollbar and no visible sign anything was cut off.
+                  A part/RM shared across several mapped items could push the
+                  far-right Actions column clean off-screen this way. Wrapping
+                  just the <table> in its own overflow-x-auto scroller fixes
+                  that — the rounded card still clips vertically, but wide
+                  content now scrolls horizontally instead of vanishing. */}
+              <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
                   <tr>
@@ -1234,6 +1245,7 @@ const Inventory: React.FC<InventoryProps> = ({
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
 
@@ -1425,6 +1437,20 @@ const Inventory: React.FC<InventoryProps> = ({
 
       {inventoryMode === 'rm' && !rmReorderMode && selectedRMCategory === 'tube' && (
         <div className={`bg-white rounded-[2.5rem] shadow-sm border overflow-hidden transition-all duration-500 border-indigo-500 shadow-indigo-500/5`}>
+          {/* Bug fix, 25-Sep-26: see the matching comment on the Item-wise
+              table above — this outer overflow-hidden was silently clipping
+              the Actions column (rightmost) whenever a row's "Mapped to"
+              list / Consumption / Scrap breakdown made the table wider than
+              the card, with zero scrollbar or visual sign. Confirmed live:
+              an RM mapped to 4 different parts (shared LH/RH + bottom rail
+              parts under SIAC-SKH Palwal) was wide enough to push Actions
+              off-screen for every row whenever that RM was in view — i.e.
+              filtered to Palwal itself, or "All Customers" (which includes
+              it too). Reproduced pixel-for-pixel outside the app using this
+              exact row's HTML/CSS at a narrower viewport width. Jaipur/
+              Belrise etc. happened to have no RM mapped to that many parts,
+              so their tables stayed narrow enough to never hit this. */}
+          <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
               <tr>
@@ -1874,6 +1900,7 @@ const Inventory: React.FC<InventoryProps> = ({
               )}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -1883,6 +1910,9 @@ const Inventory: React.FC<InventoryProps> = ({
           analysis and is NOT subtracted a second time from Closing Kg. */}
       {inventoryMode === 'rm' && !rmReorderMode && selectedRMCategory === 'sheet' && (
         <div className={`bg-white rounded-[2.5rem] shadow-sm border overflow-hidden transition-all duration-500 border-violet-500 shadow-violet-500/5`}>
+          {/* Bug fix, 25-Sep-26: same overflow-hidden-clips-Actions issue as
+              the Tube table above — fixed the same way, see that comment. */}
+          <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50/50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
               <tr>
@@ -2090,6 +2120,7 @@ const Inventory: React.FC<InventoryProps> = ({
               )}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
