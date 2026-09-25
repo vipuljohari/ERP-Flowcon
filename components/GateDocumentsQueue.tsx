@@ -57,6 +57,10 @@ interface GateDocumentsQueueProps {
   unmatchedSlips: UnmatchedDharamkantaSlip[];
   onAttachSlipUpload: (doc: GateDocumentForApproval, imageBase64: string, mimeType: string, extracted: DharamkantaSlipExtractedFields) => void;
   onAttachSlipFromUnmatched: (doc: GateDocumentForApproval, slip: UnmatchedDharamkantaSlip) => void;
+  // Admin-only, 25-Sep-26 — permanently removes an unmatched slip's
+  // Firestore doc (see UnmatchedSlipsModal below). Undefined for a
+  // non-Admin, same convention as onReject/onResetInProgress above.
+  onDeleteUnmatchedSlip?: (slip: UnmatchedDharamkantaSlip) => void;
 }
 
 const MODE_LABEL: Record<PendingRMEntryType, string> = {
@@ -168,6 +172,92 @@ const AttachSlipModal: React.FC<{
         </button>
       </div>
     </div>
+  );
+};
+
+// ------------------------------------------------------------
+// Unmatched slip photos — Admin-only, 25-Sep-26. Every dharamkanta slip
+// bot.js relayed that couldn't be auto-matched (or hasn't been manually
+// picked yet — see AttachSlipModal above) lands in unmatchedDharamkantaSlips
+// and just sits there: there's no expiry, no cleanup job, nothing. This is
+// the manual prune Vipul asked for — a plain list of every 'unmatched' slip
+// still holding its image, with its own preview (reuses PhotoViewerModal,
+// same zoom/rotate/close as everywhere else photos are viewed in this app)
+// and a Delete. Deliberately excludes 'attached' slips — those have already
+// had imageBase64 cleared (see handleAttachSlipFromUnmatched in App.tsx) so
+// there's no photo left to preview or reclaim space by deleting anyway;
+// this list is specifically about photos still taking up room.
+// ------------------------------------------------------------
+const UnmatchedSlipsModal: React.FC<{
+  slips: UnmatchedDharamkantaSlip[];
+  onDelete: (slip: UnmatchedDharamkantaSlip) => void;
+  onClose: () => void;
+}> = ({ slips, onDelete, onClose }) => {
+  const [previewing, setPreviewing] = useState<UnmatchedDharamkantaSlip | null>(null);
+
+  const pending = slips.filter(s => s.status === 'unmatched').sort((a, b) => (b.capturedAt || '').localeCompare(a.capturedAt || ''));
+
+  const handleDelete = (slip: UnmatchedDharamkantaSlip) => {
+    const label = slip.extracted.vehicleNo || 'this photo';
+    if (!window.confirm(`Delete this unmatched dharamkanta slip (${label}, captured ${fmtWhen(slip.capturedAt)})?\n\nThis can't be undone — it isn't archived anywhere else.`)) return;
+    onDelete(slip);
+  };
+
+  return (
+    <>
+      {/* z-[105]: below PhotoViewerModal's z-[110]/[111] so the preview
+          opens on top of this list, but still above the page itself. */}
+      <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center z-[105] p-4" onClick={onClose}>
+        <div className="max-w-lg w-full bg-white rounded-2xl shadow-2xl p-6 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <h3 className="text-lg font-black text-slate-900">Unmatched Dharamkanta Slip Photos</h3>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Slip photos from WhatsApp that never got picked up or attached to a gate entry — nothing deletes these
+            automatically, so they sit here indefinitely otherwise. Tap a thumbnail to preview full-screen; delete
+            whichever you don't need.
+          </p>
+
+          <div className="mt-4 space-y-2 overflow-y-auto">
+            {pending.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-6">No unmatched slip photos right now.</p>
+            ) : (
+              pending.map(slip => (
+                <div key={slip.id} className="flex gap-3 items-center border-2 border-slate-100 rounded-xl p-2">
+                  <button onClick={() => setPreviewing(slip)} className="shrink-0 w-14 h-14 rounded-lg overflow-hidden border border-slate-200 hover:border-indigo-400" title="Preview photo">
+                    {slip.imageBase64 ? (
+                      <img src={`data:${slip.mimeType};base64,${slip.imageBase64}`} alt="Slip" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-xl bg-slate-100">⚖️</div>
+                    )}
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12px] font-black text-slate-800 truncate">
+                      {slip.extracted.vehicleNo || 'Vehicle no. not read'} {slip.extracted.netWeightKg ? `— ${slip.extracted.netWeightKg} Kg` : ''}
+                    </p>
+                    <p className="text-[10px] text-slate-400">Captured {fmtWhen(slip.capturedAt)}{slip.pushName ? ` by ${slip.pushName}` : ''}</p>
+                  </div>
+                  <button onClick={() => handleDelete(slip)} className="shrink-0 px-3 py-1.5 text-rose-600 hover:text-white hover:bg-rose-600 border-2 border-rose-200 hover:border-rose-600 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all">
+                    Delete
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          <button onClick={onClose} className="mt-4 w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-black uppercase text-[10px] tracking-widest">
+            Close
+          </button>
+        </div>
+      </div>
+
+      {previewing && previewing.imageBase64 && (
+        <PhotoViewerModal
+          base64={previewing.imageBase64}
+          mimeType={previewing.mimeType}
+          label={previewing.extracted.vehicleNo ? `Dharamkanta Slip — ${previewing.extracted.vehicleNo}` : 'Dharamkanta Slip'}
+          onClose={() => setPreviewing(null)}
+        />
+      )}
+    </>
   );
 };
 
@@ -322,16 +412,18 @@ const GateDocumentCard: React.FC<{
   );
 };
 
-const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, isAdmin, onProcess, onResetInProgress, onReject, unmatchedSlips, onAttachSlipUpload, onAttachSlipFromUnmatched }) => {
+const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, isAdmin, onProcess, onResetInProgress, onReject, unmatchedSlips, onAttachSlipUpload, onAttachSlipFromUnmatched, onDeleteUnmatchedSlip }) => {
   const [viewingPhoto, setViewingPhoto] = useState<{ doc: GateDocumentForApproval; which: 'invoice' | 'slip' } | null>(null);
   const [attachingSlipFor, setAttachingSlipFor] = useState<GateDocumentForApproval | null>(null);
   const [rejectingDoc, setRejectingDoc] = useState<GateDocumentForApproval | null>(null);
+  const [showUnmatchedSlips, setShowUnmatchedSlips] = useState(false);
 
   const active = gateDocuments
     .filter(d => d.status === 'pending' || d.status === 'in_progress')
     .sort((a, b) => (a.capturedAt || '').localeCompare(b.capturedAt || ''));
 
   const awaitingSlipCount = active.filter(d => !isSlipAttached(d)).length;
+  const unmatchedSlipCount = unmatchedSlips.filter(s => s.status === 'unmatched').length;
 
   return (
     <div className="max-w-3xl mx-auto p-6 md:p-10">
@@ -349,6 +441,14 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
             You're signed in as Admin — completing an entry from here also approves and posts it to inventory immediately
             (no separate RM Approvals step), for when no Store person is available.
           </p>
+        )}
+        {isAdmin && onDeleteUnmatchedSlip && (
+          <button
+            onClick={() => setShowUnmatchedSlips(true)}
+            className="mt-2 px-3 py-1.5 border-2 border-slate-200 hover:border-indigo-400 text-slate-600 hover:text-indigo-700 rounded-lg text-[11px] font-black uppercase tracking-widest transition-all"
+          >
+            View Unmatched Photos {unmatchedSlipCount > 0 ? `(${unmatchedSlipCount})` : ''}
+          </button>
         )}
         {awaitingSlipCount > 0 && (
           <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mt-2">
@@ -418,6 +518,14 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
           doc={rejectingDoc}
           onReject={onReject}
           onClose={() => setRejectingDoc(null)}
+        />
+      )}
+
+      {showUnmatchedSlips && onDeleteUnmatchedSlip && (
+        <UnmatchedSlipsModal
+          slips={unmatchedSlips}
+          onDelete={onDeleteUnmatchedSlip}
+          onClose={() => setShowUnmatchedSlips(false)}
         />
       )}
     </div>

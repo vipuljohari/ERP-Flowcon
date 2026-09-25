@@ -347,6 +347,19 @@ const MainApp: React.FC = () => {
   const localRMOpeningBalancesRef = useRef(localRMOpeningBalances);
   const localPartOpeningBalancesRef = useRef(localPartOpeningBalances);
   const lastSyncTimeRef = useRef(0);
+  // Bug fix, 24-Sep-26: a second click on "Approve & Post" while the first
+  // click was still mid-flight (archivePhotoToDropbox alone can take several
+  // seconds, and approvePendingRMEntry doesn't flip the entry's status to
+  // 'approved' until everything else has finished) ran the ENTIRE posting
+  // logic a second time on the same still-'pending' entry — double-crediting
+  // stock and filing two inward log entries for one physical delivery.
+  // Confirmed in production: Vipul double-clicked Approve on a Finished
+  // Pieces entry (A.S.T. Pipes, AST/D/26-27/2682) and all 3 items posted
+  // twice. A plain state check can't catch this reliably (both clicks can
+  // fire from the same stale render before either write lands), so this is
+  // a synchronous ref-based lock instead — checked and set before any
+  // `await`, so the second call's check always sees the first call's claim.
+  const approvingEntryIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     partsRef.current = parts; salesRef.current = sales; customersRef.current = customers;
@@ -1914,6 +1927,7 @@ const MainApp: React.FC = () => {
               unmatchedSlips={unmatchedDharamkantaSlips}
               onAttachSlipUpload={handleAttachSlipUpload}
               onAttachSlipFromUnmatched={handleAttachSlipFromUnmatched}
+              onDeleteUnmatchedSlip={isAdmin ? handleDeleteUnmatchedSlip : undefined}
             />
           )}
           {isAdmin && currentView === 'party_name_master' && (
@@ -2743,6 +2757,20 @@ const MainApp: React.FC = () => {
     setUnmatchedDharamkantaSlips(prev => prev.map(s => (s.id === slip.id ? { ...s, status: 'attached', imageBase64: '', attachedToGateDocId: gateDoc.id, attachedBy: by, attachedAt: now } : s)));
   }
 
+  // Admin-only, 25-Sep-26: unmatched dharamkanta slips have no expiry or
+  // cleanup of any kind — one that never gets picked (wrong photo, an
+  // invoice that ended up not needing a slip attach, etc.) sits in
+  // Firestore with its full image forever. This is the manual prune Admin
+  // asked for, from the new "View Unmatched Photos" list in
+  // GateDocumentsQueue. Filtering the slip out of the array and handing it
+  // to setUnmatchedDharamkantaSlips is enough — useFirestoreArray (see its
+  // own comment) diffs this against the previous array and issues a real
+  // Firestore delete for whatever id disappears, same as every other
+  // delete in this app; no separate Firestore call needed here.
+  function handleDeleteUnmatchedSlip(slip: UnmatchedDharamkantaSlip) {
+    setUnmatchedDharamkantaSlips(prev => prev.filter(s => s.id !== slip.id));
+  }
+
   // Store (or Admin) picked a mode on a Gate Documents for Approval card —
   // mark it 'in_progress' (so it's visibly claimed, not silently vanished)
   // and open the matching screen via gateDocInProgress; the Inventory /
@@ -2823,6 +2851,21 @@ const MainApp: React.FC = () => {
   // itself anymore, so the photo genuinely stays visible in-app through
   // Admin's whole review and only goes Dropbox-only once actually approved.
   async function approvePendingRMEntry(entry: PendingRMEntry) {
+    // See approvingEntryIdsRef's own comment above — this must be the very
+    // first thing that runs, synchronously, before any `await` or early
+    // return, so a second call for the same entry.id (fired while the first
+    // is still archiving/posting) bails out here instead of re-running the
+    // whole approval a second time.
+    if (approvingEntryIdsRef.current.has(entry.id)) return;
+    approvingEntryIdsRef.current.add(entry.id);
+    try {
+      await approvePendingRMEntryInner(entry);
+    } finally {
+      approvingEntryIdsRef.current.delete(entry.id);
+    }
+  }
+
+  async function approvePendingRMEntryInner(entry: PendingRMEntry) {
     if (entry.entryType === 'longer_pipe' && entry.longerPipePayload?.lines.some(l => !l.rmId)) return;
     if (entry.entryType === 'manufacturer_invoice' && entry.manufacturerInvoicePayload?.lines.some(l => !l.rmId)) return;
     if (
