@@ -170,6 +170,23 @@ const parsePieceLengthFromMaterialName = (name: string): number | null => {
 // file (rare, but possible for some HEIC variants), this rejects with a
 // clear error asking for a JPG/PNG instead, rather than silently failing.
 const MAX_INVOICE_PHOTO_DIMENSION = 1600;
+
+// 26-Sep-26: moved here from inside the RMCrossBillCheck component body
+// (was a local `const WEIGHT_VARIANCE_FLAG_KG = 50;`) as a precaution after
+// finding the exact same twin constant in App.tsx's MainApp — declared the
+// same way, same value, same purpose — was the actual cause of a
+// production-only crash: esbuild/Vite's minifier silently dropped that
+// `const NAME = <value>` binding from the bundle even though both its use
+// sites survived (renamed), so referencing it threw "ReferenceError: <name>
+// is not defined" the instant the code path ran. That bug is specific to a
+// binding declared deep inside an enormous component's body; every other
+// constant in this file (MAX_INVOICE_PHOTO_DIMENSION above included) is
+// already safely at module scope like this one now is, which never showed
+// the same failure. No confirmed crash here yet, but this one was declared
+// exactly the same risky way in a large (2000+ line) component, so it's
+// moved out rather than waiting to find out the hard way. Do not move this
+// back inside RMCrossBillCheck's body.
+const WEIGHT_VARIANCE_FLAG_KG = 50;
 const readAndCompressInvoicePhoto = (file: File): Promise<{ base64: string; mimeType: string }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -578,8 +595,8 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
   //
   // Any invoice whose Dharam Kanta actual weight differs from the billed
   // Total Weight by this much or more gets auto-flagged for Admin — see
-  // saveMfgInvoiceWithAllotment.
-  const WEIGHT_VARIANCE_FLAG_KG = 50;
+  // saveMfgInvoiceWithAllotment. WEIGHT_VARIANCE_FLAG_KG now lives at
+  // module scope near the top of this file — see its own comment there.
   const blankMfgForm = () => ({
     manufacturerName: '', customerName: customers[0]?.name || '', invoiceNo: '', date: '',
     totalWeightKg: 0, actualWeightKg: 0,

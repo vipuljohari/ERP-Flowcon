@@ -49,6 +49,27 @@ import { applySiblingBorrow } from './services/siblingBorrow';
 import { getLocalISOString } from './services/time';
 import { startOfflineQueueAutoFlush, subscribeQueueEvents } from './services/offlineQueue';
 
+// 26-Sep-26: moved out of MainApp's body (was declared as a local
+// `const MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG = 50;` right above
+// handleMaterialEntryFinishedPieces/handleMaterialEntryLongerPipe) after
+// finally tracing the "ReferenceError: <minified name> is not defined"
+// crash on Approve & Post to THIS binding, via a sourcemapped diagnostic
+// build — the earlier fixes in this file (pushPendingRMEntry,
+// normalizeInvoiceKey, and 7 other helpers) all assumed the esbuild/Vite
+// production dead-code-elimination bug only hit `const NAME = (...) =>`
+// FUNCTION bindings; it turns out the same bug also drops a plain
+// `const NAME = <value>` binding declared deep in this enormous
+// component's body, even though both its use sites (the weight-variance
+// checks in each handler) survive minification renamed to a short name.
+// It reproduced exactly: entry posts fully (RM stock, notification), then
+// throws the instant the weight-mismatch check runs, so status never
+// flips to 'approved' and the entry stays stuck showing PENDING while
+// already posted — re-clicking Approve re-posts it again. Moving this to
+// module scope (a plain top-level constant, not inside MainApp at all)
+// sidesteps the bug entirely, the same way a hoisted `function` does for
+// the helpers above. Do not move this back inside MainApp's body.
+const MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG = 50;
+
 const MainApp: React.FC = () => {
   const { appUser, logout } = useAuth();
   const role = appUser?.role || 'store';
@@ -2187,7 +2208,8 @@ const MainApp: React.FC = () => {
   // deliberately, same reasoning as services/photo.ts's header comment —
   // not switched to share this one so that already-working screen's
   // behavior can't be disturbed by a change made here).
-  const MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG = 50;
+  // MATERIAL_ENTRY_WEIGHT_VARIANCE_FLAG_KG now lives at module scope above
+  // MainApp — see its own comment there for why.
 
   function handleMaterialEntryFinishedPieces(header: MaterialEntryHeader, lines: FinishedPieceLine[]) {
     const finalTs = `${header.date}T12:00:00.000`;
