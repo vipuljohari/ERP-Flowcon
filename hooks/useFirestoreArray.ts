@@ -57,6 +57,20 @@ export function useFirestoreArray<T>(
       // Optimistic local update so the UI feels instant; the onSnapshot
       // listener above will reconcile shortly after with the server truth.
       setDataLocal(next);
+      // 26-Sep-26 bug fix: dataRef.current used to only get refreshed by the
+      // `useEffect(() => { dataRef.current = data }, [data])` above, which
+      // doesn't run until AFTER this render commits. That's a full tick too
+      // late for a caller that fires the setter twice back-to-back in the
+      // same synchronous handler (e.g. App.tsx's finalizeGateDocument: push
+      // a brand-new PendingRMEntry via setPendingRMEntries, then immediately
+      // patch it with the gate photo/slip photo via a second
+      // setPendingRMEntries call). The second call's `prev` was still the
+      // pre-push array, so `.map()` never found the just-created id and the
+      // patch silently no-op'd — the entry posted fine but its photo(s)
+      // never landed. Setting the ref synchronously here closes that gap for
+      // every caller of every setter this hook returns, not just this one
+      // call site.
+      dataRef.current = next;
 
       const nextIds = new Set(next.map((n) => getId(n)));
       const batch = writeBatch(db);
