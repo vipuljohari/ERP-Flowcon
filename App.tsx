@@ -2580,7 +2580,19 @@ const MainApp: React.FC = () => {
   // Upload / manual entry with no gate photo involved at all, and acts as
   // a backstop if a gate photo's invoice number was corrected by hand
   // after intake.
-  const normalizeInvoiceKey = (s: string): string => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // 26-Sep-26: same production-only esbuild dead-code-elimination bug as the
+  // one documented on pushPendingRMEntry above — this was a `const ... = () =>`
+  // arrow function, and the minifier silently dropped its declaration from
+  // the bundle while still renaming every call site (e.g. to "Zs"), so Store
+  // hit "Uncaught ReferenceError: Zs is not defined" the instant they clicked
+  // Post for Approval on ANY of the 3 entry screens — all three call
+  // findDuplicateBookedInvoice, which calls this first. Converted to a
+  // hoisted `function` declaration, which is immune to that bug, exactly
+  // like pushPendingRMEntry was. Do not change this back to a const arrow
+  // function.
+  function normalizeInvoiceKey(s: string): string {
+    return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  }
 
   // Fallback matching (added 24-Sep-26): Vipul hit a real case where a gate
   // person resent an A.S.T. Pipes invoice photo and the OCR read the invoice
