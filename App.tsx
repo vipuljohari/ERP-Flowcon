@@ -63,21 +63,40 @@ const MainApp: React.FC = () => {
   // Track settings changes to reset interval
   const [syncSettingsTrigger, setSyncSettingsTrigger] = useState(0);
 
-  const addNotification = (message: string, type: 'success' | 'warning' = 'success', action?: () => void) => {
+  // 26-Sep-26: this and every other top-level helper below it in this
+  // component were converted from `const NAME = (...) => {...}` to hoisted
+  // `function NAME(...) {...}` declarations as a blanket, proactive fix for
+  // the recurring production-only esbuild/Vite dead-code-elimination bug
+  // documented in detail on approvePendingRMEntryInner's
+  // normalizeInvoiceKey fix and on pushPendingRMEntry above (search this
+  // file for "dead-code-elimination" for the full writeup) — a `const ... =>`
+  // binding in this enormous component can get silently dropped from the
+  // production bundle while every call site survives (renamed to a short
+  // minified name), throwing "Uncaught ReferenceError: <name> is not
+  // defined" the instant it's called. This has now hit 3 different helpers
+  // in 3 different flows within 24 hours (pushPendingRMEntry,
+  // normalizeInvoiceKey, and a third one inside the Approve & Post chain
+  // that couldn't be pinned to an exact line from the minified stack trace
+  // alone). Rather than keep chasing single instances one at a time, every
+  // remaining const-arrow helper at this scope is converted here — hoisted
+  // function declarations are immune to this bug. Do not add a new
+  // `const NAME = (...) => {...}` helper at this level; always use
+  // `function NAME(...) {...}` instead.
+  function addNotification(message: string, type: 'success' | 'warning' = 'success', action?: () => void) {
     const id = Math.random().toString(36).substr(2, 9);
     setSyncNotifications(prev => [...prev, { id, message, type, action }]);
     setSyncLog(prev => [{ timestamp: new Date().toLocaleTimeString(), message }, ...prev].slice(0, 50));
     if (type === 'success') {
       setTimeout(() => setSyncNotifications(prev => prev.filter(n => n.id !== id)), 8000);
     }
-  };
+  }
 
   // Creates a persisted Admin Notifications entry. Called only from
   // human-initiated actions (Discrepancy Control Entry, RM Inward, manual
   // Dispatch Slip, Tally Excel/XML import) — never from the automatic
   // Tally sync — so Admin can cross-check/cross-question exactly what was
   // entered, by whom, and when.
-  const pushAdminAlert = (partial: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) => {
+  function pushAdminAlert(partial: Partial<AdminAlert> & Pick<AdminAlert, 'type'>) {
     const merged: AdminAlert = {
       id: Math.random().toString(36).substr(2, 9),
       timestamp: getLocalISOString(),
@@ -93,22 +112,22 @@ const MainApp: React.FC = () => {
       Object.entries(merged).filter(([, v]) => v !== undefined)
     ) as AdminAlert;
     setAdminAlerts(prev => [newAlert, ...prev]);
-  };
+  }
 
-  const verifyAdminAlert = (id: string) => {
+  function verifyAdminAlert(id: string) {
     setAdminAlerts(prev => prev.map(a => a.id === id ? {
       ...a,
       verified: true,
       verifiedAt: getLocalISOString(),
       verifiedBy: appUser?.displayName || userName,
     } : a));
-  };
+  }
 
   // Dismisses/sets aside a notification with a required reason — for a
   // stray or duplicate alert (e.g. one whose underlying entry never
   // actually saved) where there's nothing real to verify. Distinct from
   // Verify, which implies the underlying data was checked and is correct.
-  const flagAdminAlert = (id: string, remark: string) => {
+  function flagAdminAlert(id: string, remark: string) {
     setAdminAlerts(prev => prev.map(a => a.id === id ? {
       ...a,
       flagged: true,
@@ -116,7 +135,7 @@ const MainApp: React.FC = () => {
       flaggedBy: appUser?.displayName || userName,
       flagRemark: remark,
     } : a));
-  };
+  }
 
   // Safety net for when a save fails outright (Firestore quota exhausted,
   // no network, etc.) — see services/offlineQueue.ts. Every
@@ -594,8 +613,9 @@ const MainApp: React.FC = () => {
   // formula and RM's own audit action write these; excluded everywhere a
   // "how much actually came in this month" total is computed, so an audit
   // correction never gets double-counted as if goods had arrived.
-  const isAuditDeltaRemark = (remarks?: string) =>
-    !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
+  function isAuditDeltaRemark(remarks?: string) {
+    return !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
+  }
 
   // Item-wise (Part) Opening Balance — same month-by-month rolling
   // simulation as resolvedRMOpeningBalances above, just without RM's
@@ -1128,7 +1148,7 @@ const MainApp: React.FC = () => {
   }, [syncSettingsTrigger, userName]);
 
   // MONTH TRANSITION LOGIC
-  const checkAndHandleMonthTransition = (currentParts: Part[], currentArchives: MonthlyArchive[], forceLastActiveMonth?: string) => {
+  function checkAndHandleMonthTransition(currentParts: Part[], currentArchives: MonthlyArchive[], forceLastActiveMonth?: string) {
     const now = new Date();
     const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     // Use override (from backup) or localStorage, or compute from cloud timestamp if possible
@@ -1168,13 +1188,13 @@ const MainApp: React.FC = () => {
       const nextMonthLabel = now.toLocaleDateString('en-GB', { month: 'short' });
       addNotification(`Monthly Cycle: ${monthLabel.split(' ')[0]} archived. ${nextMonthLabel} targets reset to Zero.`, "success");
     }
-  };
+  }
 
   useEffect(() => {
     checkAndHandleMonthTransition(parts, archives);
-  }, []); 
+  }, []);
 
-  const handleFullImport = (data: any) => {
+  function handleFullImport(data: any) {
     if (!data || !data.parts) return;
     
     setParts(data.parts);
@@ -1225,8 +1245,8 @@ const MainApp: React.FC = () => {
     setTimeout(() => {
       checkAndHandleMonthTransition(data.parts, data.archives || [], dataMonthKey);
     }, 200);
-  };
-  
+  }
+
   const startOfSelectedMonth = useMemo(() => {
     const d = new Date(sD.getFullYear(), sD.getMonth(), 1, 0, 0, 0);
     return d;
