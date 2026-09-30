@@ -21,8 +21,25 @@ const BUILD_TIME_MS = Date.parse((process.env as any).BUILD_TIME || '') || 0;
 // Generous on both sides — this only needs to catch a clock that's wrong by
 // months/years (the actual failure mode seen in production), never flag an
 // ordinary few-minutes/hours clock skew or a stretch between deploys.
+//
+// 30-Sep-26: MAX_FUTURE_DRIFT_MS used to be only 3 days. This app is
+// deployed by hand (Vipul uploads changed files to GitHub whenever there's
+// a fix) rather than on any fixed schedule, so it's completely normal for
+// the live bundle to go a week or more between deploys. Once real "now"
+// drifted more than 3 days past BUILD_TIME, correctedNow() started
+// treating every genuine, correct clock as "drifted" and clamping it back
+// to the last build date — which silently capped every date-picker's `max`
+// (Store's RM Cross-Bill Check / Material Entry date fields) at the build
+// day and would have started mis-timestamping every new
+// dispatch/inward/approval entry app-wide the same way. Root-caused via a
+// support report: Store could only pick dates up to the 26th no matter
+// what the real date was, which was exactly BUILD_TIME + 3 days for the
+// last deploy. Widened to match MAX_PAST_DRIFT_MS (~6 months) — still
+// catches a clock that's wrong by months/years (the actual documented
+// failure mode above), but no longer misfires just because the app hasn't
+// been redeployed in a few days.
 const MAX_PAST_DRIFT_MS = 180 * 24 * 60 * 60 * 1000; // ~6 months before build
-const MAX_FUTURE_DRIFT_MS = 3 * 24 * 60 * 60 * 1000; // ~3 days after build
+const MAX_FUTURE_DRIFT_MS = 180 * 24 * 60 * 60 * 1000; // ~6 months after build
 
 // Best-effort corrected "now": the local clock, unless it's implausible
 // relative to when this exact code was built, in which case falls back to
