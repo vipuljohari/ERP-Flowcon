@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { GateDocumentForApproval, PendingRMEntryType, UnmatchedDharamkantaSlip, DharamkantaSlipExtractedFields } from '../types';
+import React, { useState, useMemo } from 'react';
+import { GateDocumentForApproval, PendingRMEntryType, PendingRMEntry, UnmatchedDharamkantaSlip, DharamkantaSlipExtractedFields } from '../types';
 import { readAndCompressPhoto } from '../services/photo';
 import { extractDharamkantaSlipPhoto } from '../services/gemini';
 import PhotoViewerModal from './PhotoViewerModal';
@@ -41,6 +41,14 @@ import PhotoViewerModal from './PhotoViewerModal';
 interface GateDocumentsQueueProps {
   gateDocuments: GateDocumentForApproval[];
   isAdmin: boolean;
+  // 30-Sep-26 — read-only, for the Admin-only History tab below: once a
+  // gate document is 'consumed' its own imageBase64/slipImageBase64 are
+  // cleared and the final approve/reject decision happens on the
+  // PendingRMEntry it was turned into (linkedPendingRMEntryId), not on the
+  // gate document itself — so History needs both collections to render the
+  // full received → picked → approved/rejected timeline for a 'consumed'
+  // entry. Not needed by the existing Active queue below.
+  pendingRMEntries: PendingRMEntry[];
   onProcess: (doc: GateDocumentForApproval, mode: PendingRMEntryType) => void;
   // Admin-only "unstick" action — puts an 'in_progress' card back to
   // 'pending' without touching anything else, for when whoever picked it
@@ -83,6 +91,307 @@ const fmtWhen = (iso?: string | null) => {
 // exactly like 'awaiting' everywhere — see types.ts's design-note comment
 // on GateDocumentForApproval.
 const isSlipAttached = (doc: GateDocumentForApproval) => (doc.slipStatus || 'awaiting') === 'attached';
+
+// Same as fmtWhen above but with the year included — the Active queue only
+// ever shows entries from the last few hours/days so the year is obvious,
+// but History can span back months or into a prior year, so leaving it out
+// there would be ambiguous.
+const fmtWhenFull = (iso?: string | null) => {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+  catch { return iso; }
+};
+
+// ============================================================
+// Gate Documents — History (Admin-only, 30-Sep-26)
+// ============================================================
+// The Active queue above only ever shows 'pending'/'in_progress' cards —
+// the instant an entry is completed ('consumed') or rejected, it vanishes
+// from there with no record left in this screen. This is the read-only
+// audit trail Vipul asked for: every 'consumed'/'rejected' gate document,
+// filterable by month and by manufacturer, each showing the full
+// received → slip attached → picked up → approved/rejected workflow with
+// who did each step and when. Nothing here is editable — it's reporting.
+// ============================================================
+
+type HistoryStep = {
+  icon: string;
+  label: string;
+  when?: string | null;
+  by?: string | null;
+  extra?: string | null;
+  tone: 'default' | 'emerald' | 'rose' | 'amber';
+};
+
+type HistoryOutcome = {
+  badgeLabel: string;
+  badgeTone: 'emerald' | 'rose' | 'amber' | 'slate';
+};
+
+const SLIP_VIA_LABEL: Record<NonNullable<GateDocumentForApproval['slipAttachedVia']>, string> = {
+  auto_whatsapp: 'auto-matched by vehicle number',
+  manual_pick: 'picked from WhatsApp unmatched photos',
+  manual_upload: 'uploaded directly',
+};
+
+// Builds the 4-step workflow timeline for one History card, and the
+// overall outcome badge shown on the collapsed header. `entry` is the
+// linked PendingRMEntry (via linkedPendingRMEntryId) when doc.status is
+// 'consumed' — undefined for a doc rejected before ever becoming one.
+function buildHistorySteps(doc: GateDocumentForApproval, entry: PendingRMEntry | undefined): { steps: HistoryStep[]; outcome: HistoryOutcome } {
+  const steps: HistoryStep[] = [
+    {
+      icon: '📱',
+      label: 'Sent on WhatsApp',
+      when: doc.capturedAt,
+      by: doc.pushName || 'Gate guard',
+      extra: doc.caption ? `"${doc.caption}"` : undefined,
+      tone: 'default',
+    },
+  ];
+
+  if (doc.slipAttachedAt) {
+    steps.push({
+      icon: '⚖️',
+      label: 'Dharamkanta slip attached',
+      when: doc.slipAttachedAt,
+      by: doc.slipAttachedBy || '—',
+      extra: doc.slipAttachedVia ? SLIP_VIA_LABEL[doc.slipAttachedVia] : undefined,
+      tone: 'default',
+    });
+  }
+
+  if (doc.pickedAt) {
+    steps.push({
+      icon: '🧾',
+      label: 'Picked up & processed',
+      when: doc.pickedAt,
+      by: doc.pickedBy,
+      extra: doc.pickedEntryType ? MODE_LABEL[doc.pickedEntryType] : undefined,
+      tone: 'default',
+    });
+  }
+
+  let outcome: HistoryOutcome;
+
+  if (doc.status === 'rejected') {
+    steps.push({
+      icon: '❌',
+      label: 'Rejected (before posting)',
+      when: doc.rejectedAt,
+      by: doc.rejectedBy,
+      extra: doc.rejectReason || 'No reason given',
+      tone: 'rose',
+    });
+    outcome = { badgeLabel: 'Rejected', badgeTone: 'rose' };
+  } else if (entry) {
+    if (entry.status === 'approved') {
+      steps.push({ icon: '✅', label: 'Approved & posted to inventory', when: entry.reviewedAt, by: entry.reviewedBy, tone: 'emerald' });
+      outcome = { badgeLabel: 'Approved & Posted', badgeTone: 'emerald' };
+    } else if (entry.status === 'rejected') {
+      steps.push({ icon: '❌', label: 'Rejected by Admin (after review)', when: entry.reviewedAt, by: entry.reviewedBy, extra: entry.rejectionReason || 'No reason given', tone: 'rose' });
+      outcome = { badgeLabel: 'Rejected by Admin', badgeTone: 'rose' };
+    } else {
+      steps.push({
+        icon: '⏳',
+        label: entry.status === 'not_matched' ? 'Submitted — Raw Material not matched yet' : 'Submitted — awaiting Admin approval',
+        when: entry.submittedAt,
+        by: entry.submittedBy,
+        tone: 'amber',
+      });
+      outcome = { badgeLabel: 'Awaiting Approval', badgeTone: 'amber' };
+    }
+  } else {
+    // Defensive fallback — consumed with no findable PendingRMEntry (e.g.
+    // very old data). Shouldn't happen in normal operation.
+    outcome = { badgeLabel: 'Posted', badgeTone: 'slate' };
+  }
+
+  return { steps, outcome };
+}
+
+const OUTCOME_BADGE_CLASSES: Record<HistoryOutcome['badgeTone'], string> = {
+  emerald: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  rose: 'bg-rose-100 text-rose-700 border-rose-200',
+  amber: 'bg-amber-100 text-amber-700 border-amber-200',
+  slate: 'bg-slate-100 text-slate-600 border-slate-200',
+};
+
+const STEP_TONE_CLASSES: Record<HistoryStep['tone'], string> = {
+  default: 'bg-slate-100 text-slate-600',
+  emerald: 'bg-emerald-100 text-emerald-700',
+  rose: 'bg-rose-100 text-rose-700',
+  amber: 'bg-amber-100 text-amber-700',
+};
+
+const HistoryCard: React.FC<{ doc: GateDocumentForApproval; entry: PendingRMEntry | undefined; onViewPhoto: (base64: string, mimeType: string, label: string) => void }> = ({ doc, entry, onViewPhoto }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const { steps, outcome } = buildHistorySteps(doc, entry);
+  const ex = doc.extracted;
+
+  // Photos: the gate document's own copies are cleared the instant it's
+  // consumed/rejected (see types.ts). An approved entry's copies are also
+  // cleared (archived to Dropbox instead — photoDropboxPath/
+  // slipPhotoDropboxPath). A REJECTED entry's copies are never archived or
+  // cleared (rejectPendingRMEntry only touches status/reviewedAt/
+  // reviewedBy/rejectionReason), so those are still viewable here.
+  const invoicePhoto = entry?.photoImageBase64 && entry.photoMimeType ? { base64: entry.photoImageBase64, mimeType: entry.photoMimeType } : null;
+  const slipPhoto = entry?.slipPhotoImageBase64 && entry.slipPhotoMimeType ? { base64: entry.slipPhotoImageBase64, mimeType: entry.slipPhotoMimeType } : null;
+
+  return (
+    <div className="border-2 border-slate-100 rounded-2xl p-4 bg-white">
+      <button onClick={() => setIsOpen(v => !v)} className="w-full flex items-start justify-between gap-3 text-left">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-black text-slate-900 truncate">{doc.matchedSupplier}</p>
+            <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border whitespace-nowrap ${OUTCOME_BADGE_CLASSES[outcome.badgeTone]}`}>
+              {outcome.badgeLabel}
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Invoice {ex.invoiceNo || '—'} · {ex.date || '—'} · {ex.totalWeightKg ? `${ex.totalWeightKg} Kg` : '—'} · {ex.totalBillValue ? `₹${ex.totalBillValue.toLocaleString('en-IN')}` : '—'}
+          </p>
+          {entry?.summary && <p className="text-[11px] text-slate-400 mt-0.5 truncate">{entry.summary}</p>}
+        </div>
+        <span className="shrink-0 text-slate-400 text-xs font-black">{isOpen ? '▲' : '▼'}</span>
+      </button>
+
+      {isOpen && (
+        <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+          {(invoicePhoto || slipPhoto || entry?.photoDropboxPath || entry?.slipPhotoDropboxPath) && (
+            <div className="flex flex-wrap gap-2 mb-1">
+              {invoicePhoto ? (
+                <button onClick={() => onViewPhoto(invoicePhoto.base64, invoicePhoto.mimeType, 'Invoice Photo')} className="shrink-0 w-14 h-14 rounded-lg overflow-hidden border-2 border-slate-200 hover:border-indigo-400" title="View invoice photo">
+                  <img src={`data:${invoicePhoto.mimeType};base64,${invoicePhoto.base64}`} alt="Invoice" className="w-full h-full object-cover" />
+                </button>
+              ) : entry?.photoDropboxPath ? (
+                <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-2 py-1.5 max-w-[14rem] truncate" title={entry.photoDropboxPath}>
+                  📷 Archived — {entry.photoDropboxPath}
+                </div>
+              ) : null}
+              {slipPhoto ? (
+                <button onClick={() => onViewPhoto(slipPhoto.base64, slipPhoto.mimeType, 'Dharamkanta Slip')} className="shrink-0 w-14 h-14 rounded-lg overflow-hidden border-2 border-slate-200 hover:border-indigo-400" title="View dharamkanta slip">
+                  <img src={`data:${slipPhoto.mimeType};base64,${slipPhoto.base64}`} alt="Dharamkanta slip" className="w-full h-full object-cover" />
+                </button>
+              ) : entry?.slipPhotoDropboxPath ? (
+                <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-2 py-1.5 max-w-[14rem] truncate" title={entry.slipPhotoDropboxPath}>
+                  ⚖️ Archived — {entry.slipPhotoDropboxPath}
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {steps.map((step, idx) => (
+            <div key={idx} className="flex gap-3">
+              <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs ${STEP_TONE_CLASSES[step.tone]}`}>{step.icon}</div>
+              <div className="min-w-0 pb-1">
+                <p className="text-[12px] font-black text-slate-800">{step.label}</p>
+                <p className="text-[11px] text-slate-500">{fmtWhenFull(step.when)}{step.by ? ` — ${step.by}` : ''}</p>
+                {step.extra && <p className="text-[11px] text-slate-400 mt-0.5">{step.extra}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const GateDocumentHistoryPanel: React.FC<{ gateDocuments: GateDocumentForApproval[]; pendingRMEntries: PendingRMEntry[] }> = ({ gateDocuments, pendingRMEntries }) => {
+  const [monthFilter, setMonthFilter] = useState<string>('all');
+  const [supplierFilter, setSupplierFilter] = useState<string>('all');
+  const [viewingPhoto, setViewingPhoto] = useState<{ base64: string; mimeType: string; label: string } | null>(null);
+
+  const closed = useMemo(
+    () => gateDocuments.filter(d => d.status === 'consumed' || d.status === 'rejected'),
+    [gateDocuments]
+  );
+
+  const entryById = useMemo(() => {
+    const map = new Map<string, PendingRMEntry>();
+    for (const e of pendingRMEntries) map.set(e.id, e);
+    return map;
+  }, [pendingRMEntries]);
+
+  const monthOptions = useMemo(() => {
+    const keys = new Set<string>();
+    for (const d of closed) {
+      if (!d.capturedAt) continue;
+      const dt = new Date(d.capturedAt);
+      if (isNaN(dt.getTime())) continue;
+      keys.add(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`);
+    }
+    return Array.from(keys).sort((a, b) => b.localeCompare(a)).map(key => {
+      const [y, m] = key.split('-').map(Number);
+      const label = new Date(y, m - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+      return { key, label };
+    });
+  }, [closed]);
+
+  const supplierOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const d of closed) if (d.matchedSupplier) names.add(d.matchedSupplier);
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [closed]);
+
+  const filtered = useMemo(() => {
+    return closed
+      .filter(d => {
+        if (monthFilter !== 'all') {
+          if (!d.capturedAt) return false;
+          const dt = new Date(d.capturedAt);
+          if (isNaN(dt.getTime())) return false;
+          const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+          if (key !== monthFilter) return false;
+        }
+        if (supplierFilter !== 'all' && d.matchedSupplier !== supplierFilter) return false;
+        return true;
+      })
+      .sort((a, b) => (b.capturedAt || '').localeCompare(a.capturedAt || ''));
+  }, [closed, monthFilter, supplierFilter]);
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-4">
+        <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="px-3 py-2 border-2 border-slate-200 rounded-xl text-[12px] font-bold text-slate-700 bg-white">
+          <option value="all">All Months</option>
+          {monthOptions.map(opt => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+        </select>
+        <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)} className="px-3 py-2 border-2 border-slate-200 rounded-xl text-[12px] font-bold text-slate-700 bg-white">
+          <option value="all">All Manufacturers</option>
+          {supplierOptions.map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <span className="self-center text-[11px] text-slate-400 font-bold">{filtered.length} {filtered.length === 1 ? 'entry' : 'entries'}</span>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="border-2 border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
+          {closed.length === 0 ? 'No completed or rejected gate documents yet.' : 'Nothing matches these filters.'}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(doc => (
+            <HistoryCard
+              key={doc.id}
+              doc={doc}
+              entry={doc.linkedPendingRMEntryId ? entryById.get(doc.linkedPendingRMEntryId) : undefined}
+              onViewPhoto={(base64, mimeType, label) => setViewingPhoto({ base64, mimeType, label })}
+            />
+          ))}
+        </div>
+      )}
+
+      {viewingPhoto && (
+        <PhotoViewerModal
+          base64={viewingPhoto.base64}
+          mimeType={viewingPhoto.mimeType}
+          label={viewingPhoto.label}
+          onClose={() => setViewingPhoto(null)}
+        />
+      )}
+    </div>
+  );
+};
 
 // ------------------------------------------------------------
 // Attach Dharamkanta Slip modal — upload-in-app or pick-from-unmatched.
@@ -412,11 +721,14 @@ const GateDocumentCard: React.FC<{
   );
 };
 
-const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, isAdmin, onProcess, onResetInProgress, onReject, unmatchedSlips, onAttachSlipUpload, onAttachSlipFromUnmatched, onDeleteUnmatchedSlip }) => {
+const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, isAdmin, pendingRMEntries, onProcess, onResetInProgress, onReject, unmatchedSlips, onAttachSlipUpload, onAttachSlipFromUnmatched, onDeleteUnmatchedSlip }) => {
   const [viewingPhoto, setViewingPhoto] = useState<{ doc: GateDocumentForApproval; which: 'invoice' | 'slip' } | null>(null);
   const [attachingSlipFor, setAttachingSlipFor] = useState<GateDocumentForApproval | null>(null);
   const [rejectingDoc, setRejectingDoc] = useState<GateDocumentForApproval | null>(null);
   const [showUnmatchedSlips, setShowUnmatchedSlips] = useState(false);
+  // Admin-only tab — see GateDocumentHistoryPanel's own comment above for
+  // why this needs pendingRMEntries as well as gateDocuments.
+  const [tab, setTab] = useState<'active' | 'history'>('active');
 
   const active = gateDocuments
     .filter(d => d.status === 'pending' || d.status === 'in_progress')
@@ -455,8 +767,29 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
             {awaitingSlipCount} {awaitingSlipCount === 1 ? 'entry is' : 'entries are'} waiting on a dharamkanta slip photo.
           </p>
         )}
+
+        {isAdmin && (
+          <div className="flex gap-2 mt-4 border-b-2 border-slate-100">
+            <button
+              onClick={() => setTab('active')}
+              className={`px-4 py-2 text-[11px] font-black uppercase tracking-widest border-b-2 -mb-0.5 transition-colors ${tab === 'active' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+            >
+              Active{active.length > 0 ? ` (${active.length})` : ''}
+            </button>
+            <button
+              onClick={() => setTab('history')}
+              className={`px-4 py-2 text-[11px] font-black uppercase tracking-widest border-b-2 -mb-0.5 transition-colors ${tab === 'history' ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+            >
+              History
+            </button>
+          </div>
+        )}
       </div>
 
+      {tab === 'history' && isAdmin ? (
+        <GateDocumentHistoryPanel gateDocuments={gateDocuments} pendingRMEntries={pendingRMEntries} />
+      ) : (
+      <>
       {active.length === 0 ? (
         <div className="border-2 border-dashed border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
           No gate photos waiting right now.
@@ -527,6 +860,8 @@ const GateDocumentsQueue: React.FC<GateDocumentsQueueProps> = ({ gateDocuments, 
           onDelete={onDeleteUnmatchedSlip}
           onClose={() => setShowUnmatchedSlips(false)}
         />
+      )}
+      </>
       )}
     </div>
   );

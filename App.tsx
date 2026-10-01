@@ -1962,6 +1962,7 @@ const MainApp: React.FC = () => {
             <GateDocumentsQueue
               gateDocuments={gateDocuments}
               isAdmin={isAdmin}
+              pendingRMEntries={pendingRMEntries}
               onProcess={pickGateDocumentMode}
               onResetInProgress={isAdmin ? resetGateDocumentInProgress : undefined}
               onReject={isAdmin ? handleRejectGateDocument : undefined}
