@@ -60,7 +60,25 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   const handleOpenAdd = () => {
     setEditingId(null);
     const initialCustomer = customers[0]?.name || '';
-    const initialPartId = parts[0]?.id || '';
+    // 6-Oct-26 bug fix: this used to also default to `parts[0]?.id` —
+    // literally whichever Part happens to be first in the whole, UNFILTERED
+    // Item Master list (A- POST LH (HT) for Vipul), pre-checked in "Map to
+    // Finished Goods Items" the instant the modal opened, regardless of
+    // category or customer. If Admin's default `initialCustomer` above
+    // already happened to be the customer they wanted (common — it's just
+    // customers[0]), the "Map to Customer" dropdown's own onChange (which
+    // DOES correctly re-filter the part default) never fired, so that
+    // unrelated first part stayed silently checked. Admin would then check
+    // the box for the RM's actual intended item, see the list scroll by,
+    // and submit — never noticing a 2nd, unrelated item was ALSO still
+    // checked from the stale default. Both items ended up sharing this new
+    // RM's stock pool (services/rmYield.ts's partsSharingRM), corrupting
+    // the unrelated item's own consumption math (confirmed: a new
+    // 60x40x2.5 RM for SIAC-SKH Palwal silently also linked to A- POST LH
+    // (HT), driving that item's Performance Ledger stock to -1605). Fixed
+    // by never pre-selecting ANY part on a brand-new RM — Admin must now
+    // always make an explicit, deliberate choice in the checklist below, so
+    // there's no stale default left to silently ride along.
     setFormData({
       category: 'tube',
       size: '',
@@ -71,8 +89,8 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       customerName: initialCustomer,
       customerNames: [],
       model: '',
-      partId: initialPartId,
-      partIds: initialPartId ? [initialPartId] : [],
+      partId: '',
+      partIds: [],
     });
     setPartSearchTerm('');
     setShowModal(true);
