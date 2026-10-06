@@ -119,10 +119,22 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    let finalPartIds = formData.partIds;
-    if (finalPartIds.length === 0 && formData.partId) {
-      finalPartIds = [formData.partId];
-    }
+    // 6-Oct-26 bug fix: this used to fall back to `formData.partId` (the
+    // old single-select field) whenever `formData.partIds` was empty.
+    // `partId` is only ever written alongside `partIds` elsewhere in this
+    // file (handleOpenAdd/handleOpenEdit/"Map to Customer" onChange all set
+    // both together) EXCEPT the per-item checkbox toggle below, which only
+    // ever touched `partIds` — so unchecking the last/only checked item
+    // left `partIds` correctly empty but `partId` stale at whatever was
+    // last auto-picked. This fallback then silently "resurrected" that
+    // stale item right back into the submission, so Admin could untick the
+    // wrong item, see the checklist correctly show 0 selected, Save, and
+    // still have it come back assigned on reload — confirmed with a real
+    // case (A- POST LH (HT) kept reattaching to a 40x40x1 RM meant for Hop
+    // Electric no matter how many times it was unticked). `partIds` is the
+    // single source of truth now; `finalPartId` below is always derived
+    // FROM it, never the other way around.
+    const finalPartIds = formData.partIds;
 
     const selectedParts = parts.filter(p => finalPartIds.includes(p.id));
     const finalPartNames = selectedParts.map(p => p.name).join(', ') || 'Unmapped';
@@ -412,14 +424,26 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                       value={formData.customerName}
                       onChange={(e) => {
                         const nextCust = e.target.value;
-                        // Pre-populate with first item of this customer to make UX smooth
-                        const filtered = parts.filter(p => partMatchesRMCategory(p, formData.category) && (p.mappedCustomers?.some(c => c.toUpperCase().trim() === nextCust.toUpperCase().trim()) || (p.schedules && Object.keys(p.schedules).some(k => k.toUpperCase().trim() === nextCust.toUpperCase().trim()))));
-                        const nextPartId = filtered[0]?.id || '';
+                        // 6-Oct-26 bug fix: this used to auto-pick the
+                        // first Item Master part mapped to the newly
+                        // selected customer and silently check it — the
+                        // same "pre-select without a deliberate click"
+                        // pattern as handleOpenAdd's old parts[0] default
+                        // (see its own comment), just scoped to one
+                        // customer instead of unfiltered. Still caused the
+                        // same class of wrong-item mapping: confirmed with
+                        // a real case where switching this dropdown to Hop
+                        // Electric kept re-checking A- POST LH (HT), which
+                        // only even happened to be mapped to Hop Electric
+                        // incidentally. Changing the customer here now just
+                        // clears the item selection instead of guessing one
+                        // — Admin always picks explicitly from the
+                        // checklist below, same as a brand-new RM.
                         setFormData({
                           ...formData,
                           customerName: nextCust,
-                          partId: nextPartId,
-                          partIds: nextPartId ? [nextPartId] : [],
+                          partId: '',
+                          partIds: [],
                         });
                       }}
                     >
