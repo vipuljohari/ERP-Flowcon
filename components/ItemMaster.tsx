@@ -49,6 +49,13 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  // Filters the "Sibling Parts" checklist inside the modal, mirroring RM
+  // Master's "Map to Finished Goods Items" search box (6-Oct-26, Vipul's
+  // ask — the sibling list is unfiltered chips and gets unwieldy as Item
+  // Master grows). Separate from the page-level `searchTerm` above, and
+  // reset whenever the modal is (re)opened so it never carries over stale
+  // text between parts.
+  const [siblingSearchTerm, setSiblingSearchTerm] = useState('');
   const [customerFilter, setCustomerFilter] = useState('All');
   const [modelFilter, setModelFilter] = useState('All');
   const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
@@ -139,6 +146,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false,
       partType: 'tubular', netWeight: 0, grossWeight: 0, siblingIds: [],
     });
+    setSiblingSearchTerm('');
     setShowModal(true);
   };
 
@@ -160,6 +168,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       hasCustomScrap: false, customScrapMm: 0, excludeFromBTDispatch: false,
       partType: 'tubular', netWeight: 0, grossWeight: 0, siblingIds: [],
     });
+    setSiblingSearchTerm('');
     setShowModal(true);
     onDraftConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -181,6 +190,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
       grossWeight: p.grossWeight || 0,
       siblingIds: p.siblingIds || [],
     });
+    setSiblingSearchTerm('');
     setShowModal(true);
   };
 
@@ -542,29 +552,57 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                   </div>
                 </div>
                 <div className="col-span-2 text-left">
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Sibling Parts (share/borrow stock — e.g. an LH/RH pair)</label>
-                  <p className="text-[11px] text-slate-400 mb-3 -mt-2">Used by Material Entry to pre-check both sides together when receiving material cut from the same RM. Linking here is always two-way — the other part shows this one as a sibling too, automatically.</p>
-                  <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto p-1">
-                    {parts.filter(p => p.id !== editingId).map(p => {
-                      const checked = formData.siblingIds.includes(p.id);
-                      return (
-                        <label key={p.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-xs font-bold cursor-pointer ${checked ? 'bg-sky-50 border-sky-300 text-sky-700' : 'bg-slate-50 border-slate-100 text-slate-500 hover:border-slate-200'}`}>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => setFormData(prev => ({
-                              ...prev,
-                              siblingIds: checked ? prev.siblingIds.filter(id => id !== p.id) : [...prev.siblingIds, p.id],
-                            }))}
-                          />
-                          {p.name} <span className="text-slate-400 font-mono">({p.sapCode})</span>
-                        </label>
-                      );
-                    })}
-                    {parts.filter(p => p.id !== editingId).length === 0 && (
-                      <p className="text-[11px] text-slate-400">Add more items to Item Master before pairing siblings.</p>
-                    )}
-                  </div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 text-left">
+                    Sibling Parts (share/borrow stock — e.g. an LH/RH pair) ({formData.siblingIds.length} selected)
+                  </label>
+                  <p className="text-[11px] text-slate-400 mb-3">Used by Material Entry to pre-check both sides together when receiving material cut from the same RM. Linking here is always two-way — the other part shows this one as a sibling too, automatically.</p>
+                  {(() => {
+                    const candidates = parts.filter(p => p.id !== editingId);
+                    const q = siblingSearchTerm.trim().toLowerCase();
+                    const filtered = q
+                      ? candidates.filter(p =>
+                          p.name.toLowerCase().includes(q) ||
+                          p.sapCode.toLowerCase().includes(q) ||
+                          p.sku.toLowerCase().includes(q) ||
+                          p.size.toLowerCase().includes(q)
+                        )
+                      : candidates;
+                    return (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="Search items by name, SAP code, SKU or size..."
+                          className="w-full px-4 py-3 mb-2 border-2 border-slate-100 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-200 outline-none font-bold text-xs text-slate-700 bg-white"
+                          value={siblingSearchTerm}
+                          onChange={(e) => setSiblingSearchTerm(e.target.value)}
+                        />
+                        <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto p-1 border-2 border-slate-100 rounded-2xl bg-slate-50">
+                          {filtered.map(p => {
+                            const checked = formData.siblingIds.includes(p.id);
+                            return (
+                              <label key={p.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-xs font-bold cursor-pointer ${checked ? 'bg-sky-50 border-sky-300 text-sky-700' : 'bg-white border-slate-100 text-slate-500 hover:border-slate-200'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => setFormData(prev => ({
+                                    ...prev,
+                                    siblingIds: checked ? prev.siblingIds.filter(id => id !== p.id) : [...prev.siblingIds, p.id],
+                                  }))}
+                                />
+                                {p.name} <span className="text-slate-400 font-mono">({p.sapCode})</span>
+                              </label>
+                            );
+                          })}
+                          {candidates.length === 0 && (
+                            <p className="text-[11px] text-slate-400 p-2">Add more items to Item Master before pairing siblings.</p>
+                          )}
+                          {candidates.length > 0 && filtered.length === 0 && (
+                            <p className="text-[11px] text-slate-400 p-2">No items match "{siblingSearchTerm}".</p>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className="text-left">
                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Size/Specifications</label>

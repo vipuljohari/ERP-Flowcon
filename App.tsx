@@ -1857,10 +1857,12 @@ const MainApp: React.FC = () => {
             />
           )}
           {canAccessView(role, currentView) && currentView === 'customer_master' && isAdmin && (
-            <CustomerMaster 
-              customers={sortedCustomers} 
-              sales={sales} 
-              activeCustomerInSession={activeCustomer} 
+            <CustomerMaster
+              customers={sortedCustomers}
+              sales={sales}
+              parts={parts}
+              rawMaterials={rawMaterials}
+              activeCustomerInSession={activeCustomer}
               setCustomers={setCustomers}
               onAdd={(n, k) => {
                 const newCust: Customer = { id: Math.random().toString(36).substr(2, 9), name: n, matchKeywords: k };

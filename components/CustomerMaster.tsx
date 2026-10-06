@@ -1,9 +1,33 @@
-import React, { useState } from 'react';
-import { Customer, Sale } from '../types';
+import React, { useState, useMemo } from 'react';
+import { Customer, Sale, Part, RawMaterial } from '../types';
+
+const norm = (s?: string | null) => (s || '').toUpperCase().trim();
+
+// 6-Oct-26, Vipul's ask: the Tally connector auto-creates a Customer record
+// (autoCreated: true) for every consignee name it sees on an invoice it
+// can't match to an existing one — it doesn't check for a near-duplicate of
+// a name already sitting here, and it runs on every import, so the same
+// unmapped name can pile up as several identical rows over time (see
+// flowcon-erp-rm-master.md-adjacent project notes). A customer that's
+// genuinely in use would already show up via mapped Parts/RM/dispatches —
+// so "has this customer actually been assigned an Item or RM yet" is used
+// below to decide whether it belongs in the main list at all, exactly per
+// Vipul's ask: "these should only become active once i assign an item and
+// RM to them." This is a display-only filter — nothing is deleted or
+// changed until Admin acts on it from the Needs Review panel.
+const isCustomerUsed = (c: Customer, parts: Part[], rawMaterials: RawMaterial[], sales: Sale[]): boolean => {
+  const n = norm(c.name);
+  if (parts.some(p => p.mappedCustomers?.some(m => norm(m) === n) || Object.keys(p.schedules || {}).some(k => norm(k) === n))) return true;
+  if (rawMaterials.some(rm => norm(rm.customerName) === n || rm.customerNames?.some(cn => norm(cn) === n))) return true;
+  if (sales.some(s => norm(s.customer) === n)) return true;
+  return false;
+};
 
 interface CustomerMasterProps {
   customers: Customer[];
   sales: Sale[];
+  parts: Part[];
+  rawMaterials: RawMaterial[];
   onAdd: (name: string, keywords: string) => void;
   onEdit: (id: string, name: string, keywords: string) => void;
   onDelete: (id: string) => void;
@@ -11,11 +35,13 @@ interface CustomerMasterProps {
   setCustomers?: (update: Customer[] | ((prev: Customer[]) => Customer[])) => void;
 }
 
-const CustomerMaster: React.FC<CustomerMasterProps> = ({ 
-  customers, 
-  sales, 
-  onAdd, 
-  onEdit, 
+const CustomerMaster: React.FC<CustomerMasterProps> = ({
+  customers,
+  sales,
+  parts,
+  rawMaterials,
+  onAdd,
+  onEdit,
   onDelete,
   activeCustomerInSession,
   setCustomers
@@ -24,6 +50,45 @@ const CustomerMaster: React.FC<CustomerMasterProps> = ({
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [name, setName] = useState('');
   const [keywords, setKeywords] = useState('');
+  const [showNeedsReview, setShowNeedsReview] = useState(false);
+
+  // Split: a manually-added customer, or an auto-created one that's already
+  // mapped to at least one Item/RM/dispatch, shows in the main list as
+  // before. An auto-created customer with nothing mapped to it yet — the
+  // clutter Vipul's screenshot showed — moves into the collapsed Needs
+  // Review panel below instead, grouped by name so exact duplicates (the
+  // Tally connector doesn't dedupe against existing rows) are obvious and
+  // easy to clean up in one place rather than scattered through the main
+  // table.
+  const { mainCustomers, reviewGroups } = useMemo(() => {
+    const main: Customer[] = [];
+    const unused: Customer[] = [];
+    customers.forEach(c => {
+      if (c.autoCreated && !isCustomerUsed(c, parts, rawMaterials, sales)) unused.push(c);
+      else main.push(c);
+    });
+    const groups = new Map<string, Customer[]>();
+    unused.forEach(c => {
+      const key = norm(c.name);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(c);
+    });
+    const reviewGroups = Array.from(groups.values()).sort((a, b) => a[0].name.localeCompare(b[0].name));
+    return { mainCustomers: main, reviewGroups };
+  }, [customers, parts, rawMaterials, sales]);
+
+  const needsReviewCount = reviewGroups.reduce((sum, g) => sum + g.length, 0);
+
+  // Safe because these are, by construction, customers nothing is mapped
+  // to yet — no Part, RawMaterial or Sale references them, so deleting the
+  // extras has no cascading data to touch (unlike handleDelete's cascading-
+  // sales warning below, which is for the main, in-use list).
+  const keepOneDeleteRest = (group: Customer[]) => {
+    if (group.length <= 1) return;
+    const [, ...extras] = group;
+    if (!window.confirm(`Delete ${extras.length} duplicate "${group[0].name}" record${extras.length === 1 ? '' : 's'}, keeping one? None of these are mapped to anything yet, so nothing else is affected.`)) return;
+    extras.forEach(c => onDelete(c.id));
+  };
 
   // --- Admin reorder mode ---
   const [reorderMode, setReorderMode] = useState(false);
@@ -174,7 +239,7 @@ const CustomerMaster: React.FC<CustomerMasterProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {customers.map(c => {
+            {mainCustomers.map(c => {
               const salesCount = sales.filter(s => s.customer && s.customer.toUpperCase().trim() === c.name.toUpperCase().trim()).length;
               const isActive = activeCustomerInSession === c.name;
               return (
@@ -230,6 +295,70 @@ const CustomerMaster: React.FC<CustomerMasterProps> = ({
           </tbody>
         </table>
       </div>
+      )}
+
+      {!reorderMode && needsReviewCount > 0 && (
+        <div className="bg-amber-50/40 rounded-[2rem] border-2 border-dashed border-amber-200 overflow-hidden">
+          <button
+            onClick={() => setShowNeedsReview(v => !v)}
+            className="w-full flex items-center justify-between px-8 py-5 text-left"
+          >
+            <div>
+              <p className="text-sm font-black text-amber-800 uppercase tracking-wide">
+                Needs Review — Not Yet Used ({needsReviewCount})
+              </p>
+              <p className="text-xs text-amber-700/80 font-medium mt-0.5">
+                Auto-created from Tally, nothing mapped to any of these yet — they'll move to the main list above on their own once you assign an Item or RM Master to one.
+              </p>
+            </div>
+            <span className="shrink-0 text-amber-600 text-sm font-black ml-4">{showNeedsReview ? '▲' : '▼'}</span>
+          </button>
+          {showNeedsReview && (
+            <div className="px-8 pb-6 space-y-3">
+              {reviewGroups.map(group => (
+                <div key={norm(group[0].name)} className="bg-white border border-amber-100 rounded-2xl px-5 py-4 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="font-black text-slate-900 text-sm uppercase truncate">
+                      {group[0].name}
+                      {group.length > 1 && (
+                        <span className="ml-2 bg-rose-100 text-rose-700 px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest align-middle">
+                          {group.length}× duplicate
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[11px] text-slate-400 font-medium mt-0.5">
+                      {group.map(c => c.autoCreatedAt ? new Date(c.autoCreatedAt).toLocaleDateString() : null).filter(Boolean).join(' · ') || 'Auto-created'}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    {group.length > 1 && (
+                      <button
+                        onClick={() => keepOneDeleteRest(group)}
+                        className="px-3 py-2 bg-rose-50 text-rose-600 border-2 border-rose-200 hover:bg-rose-600 hover:text-white hover:border-rose-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                      >
+                        Keep 1, Delete {group.length - 1}
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => handleOpenEdit(e, group[0])}
+                      className="w-10 h-10 bg-white border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-100 transition-all flex items-center justify-center shadow-sm"
+                      title="Edit Record"
+                    >
+                      ✏️
+                    </button>
+                    <button
+                      onClick={(e) => handleDelete(e, group[0])}
+                      className="w-10 h-10 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center shadow-sm"
+                      title="Delete Record"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {showAddModal && (
