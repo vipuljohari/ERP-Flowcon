@@ -27,11 +27,20 @@ interface RMApprovalQueueProps {
   rawMaterials: RawMaterial[];
   isAdmin?: boolean;
   // Async in App.tsx (archives any pending photo to Dropbox before
-  // posting) — this screen fires it and moves on, same as any other button
-  // click here; nothing in this component needs to await it.
+  // posting) — this screen now awaits it (see approvingId above) so the
+  // Approve button can disable itself for the exact window a double-click
+  // used to slip through in.
   onApprove: (entry: PendingRMEntry) => void | Promise<void>;
   onUpdate: (id: string, updater: (e: PendingRMEntry) => PendingRMEntry) => void;
   onReject: (id: string, reason: string) => void;
+  // 6-Oct-26, Vipul's ask — the alternative to Reject for a gate-photo
+  // entry (entry.fromGateDocumentId set): instead of closing it out,
+  // send it back to the Gate Documents Active queue with the same photos
+  // so Store can fix their mistake and resubmit. Offered alongside Reject
+  // in the same confirm box, only when fromGateDocumentId is present — a
+  // direct Store/PPC Camera or Manual entry has no gate document to send
+  // back to.
+  onResubmitToStore: (entry: PendingRMEntry, reason: string) => void;
   // Universal RM Receiving entry-mode switch — set from here, applies to RM
   // Cross-Bill Check's Manufacturer Invoice wizard AND Material Entry's
   // Finished Pieces / Longer Pipe all at once, not per-screen. When
@@ -72,13 +81,21 @@ const TYPE_LABEL: Record<PendingRMEntry['entryType'], string> = {
 };
 
 const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
-  entries, parts, rawMaterials, isAdmin, onApprove, onUpdate, onReject,
+  entries, parts, rawMaterials, isAdmin, onApprove, onUpdate, onReject, onResubmitToStore,
   cameraEnabled, manualEnabled, onSetCameraEnabled, onSetManualEnabled,
 }) => {
   const [filterStatus, setFilterStatus] = useState<'open' | 'all' | PendingRMEntry['status']>('open');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  // Bug fix, 24-Sep-26: Approve archives a photo to Dropbox before it posts
+  // (see App.tsx's approvePendingRMEntry), which can take several seconds —
+  // long enough that a second click looked necessary and fired a second,
+  // fully independent approval on the same entry, double-posting stock.
+  // App.tsx now has its own guard against that race, but disabling the
+  // button here too (and showing "Posting…") is what actually stops the
+  // second click from happening in the first place.
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   // Full-screen view for a pending entry's own photo(s) — see the
   // photoImageBase64/slipPhotoImageBase64 thumbnails below. Only ever
   // populated while the entry hasn't been approved yet (see types.ts's
@@ -315,6 +332,16 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
     setRejectingId(null);
     setRejectReason('');
   };
+  // 6-Oct-26 — same confirm box as a plain Reject, but sends it back to
+  // Store instead of closing it out. Needs the full entry (not just the
+  // id) since App.tsx's resubmitGateEntryToStore reads its photos/
+  // fromGateDocumentId to rebuild the gate document.
+  const submitResubmit = (entry: PendingRMEntry) => {
+    if (!rejectReason.trim()) return;
+    onResubmitToStore(entry, rejectReason.trim());
+    setRejectingId(null);
+    setRejectReason('');
+  };
 
   const canApprove = (e: PendingRMEntry): boolean => {
     if (e.status === 'approved' || e.status === 'rejected') return false;
@@ -408,7 +435,11 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                   <p className="text-sm font-bold text-slate-800">{e.summary}</p>
                   {e.notMatchedReason && <p className="text-xs font-bold text-rose-600">{e.notMatchedReason}</p>}
                   {e.status === 'rejected' && e.rejectionReason && (
-                    <p className="text-xs font-bold text-slate-500 italic">Rejected by {e.reviewedBy}: "{e.rejectionReason}"</p>
+                    e.returnedForCorrection ? (
+                      <p className="text-xs font-bold text-violet-600 italic">↩ Returned to Store for correction by {e.reviewedBy}: "{e.rejectionReason}"</p>
+                    ) : (
+                      <p className="text-xs font-bold text-slate-500 italic">Rejected by {e.reviewedBy}: "{e.rejectionReason}"</p>
+                    )
                   )}
                   {e.status === 'approved' && (
                     <p className="text-xs font-bold text-emerald-600">Approved & posted by {e.reviewedBy} on {e.reviewedAt ? new Date(e.reviewedAt).toLocaleString('en-GB') : ''}</p>
@@ -422,11 +453,19 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
                     <>
                       <button onClick={() => startRejecting(e.id)} className="px-5 py-2.5 border-2 border-rose-300 text-rose-600 hover:bg-rose-50 rounded-xl font-black uppercase text-[10px] tracking-widest">Reject</button>
                       <button
-                        onClick={() => onApprove(e)}
-                        disabled={!canApprove(e)}
+                        onClick={async () => {
+                          if (approvingId) return;
+                          setApprovingId(e.id);
+                          try {
+                            await onApprove(e);
+                          } finally {
+                            setApprovingId(null);
+                          }
+                        }}
+                        disabled={!canApprove(e) || approvingId === e.id}
                         className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md active:scale-95 transition-all"
                       >
-                        ✓ Approve & Post
+                        {approvingId === e.id ? 'Posting…' : '✓ Approve & Post'}
                       </button>
                     </>
                   )}
@@ -436,8 +475,14 @@ const RMApprovalQueue: React.FC<RMApprovalQueueProps> = ({
               {rejectingId === e.id && (
                 <div className="space-y-2 bg-slate-50 border border-slate-100 rounded-xl p-4">
                   <textarea autoFocus placeholder="Why is this being rejected?" value={rejectReason} onChange={(ev) => setRejectReason(ev.target.value)} className="w-full px-4 py-3 bg-white border-2 border-slate-200 rounded-xl outline-none text-xs font-bold min-h-[60px]" />
+                  {e.fromGateDocumentId && (
+                    <p className="text-[10px] text-slate-400 font-bold">This came from a WhatsApp gate photo — you can send it back to Store to fix instead of closing it out.</p>
+                  )}
                   <div className="flex gap-2">
                     <button onClick={() => setRejectingId(null)} className="flex-1 py-2 border-2 border-slate-200 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest">Cancel</button>
+                    {e.fromGateDocumentId && (
+                      <button onClick={() => submitResubmit(e)} disabled={!rejectReason.trim()} className="flex-1 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">↩ Resubmit to Store</button>
+                    )}
                     <button onClick={() => submitReject(e.id)} disabled={!rejectReason.trim()} className="flex-1 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-black uppercase text-[10px] tracking-widest">Confirm Reject</button>
                   </div>
                 </div>

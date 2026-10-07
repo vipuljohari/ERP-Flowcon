@@ -1911,6 +1911,7 @@ const MainApp: React.FC = () => {
               onApprove={approvePendingRMEntry}
               onUpdate={updatePendingRMEntry}
               onReject={rejectPendingRMEntry}
+              onResubmitToStore={resubmitGateEntryToStore}
               cameraEnabled={rmEntryModeSettings.cameraEnabled !== false}
               manualEnabled={rmEntryModeSettings.manualEnabled !== false}
               onSetCameraEnabled={(v: boolean) => setRmEntryModeSettings(prev => ({ ...prev, cameraEnabled: v }))}
@@ -2993,8 +2994,101 @@ const MainApp: React.FC = () => {
     setPendingRMEntries(prev => prev.map(e => e.id === id ? updater(e) : e));
   }
 
-  function rejectPendingRMEntry(id: string, reason: string) {
-    setPendingRMEntries(prev => prev.map(e => e.id === id ? { ...e, status: 'rejected', reviewedAt: getLocalISOString(), reviewedBy: appUser?.displayName || userName, rejectionReason: reason } : e));
+  // 6-Oct-26, Vipul's ask — this used to just flip status to 'rejected' and
+  // leave the base64 photo(s) sitting in Firestore forever ("the 2 photos
+  // should not be in firebase forever consuming the space"). Now mirrors
+  // approvePendingRMEntryInner's own archive step: same supplier/invoice/
+  // date filename, archived to the "Rejected" Dropbox root instead of the
+  // normal "Inwards" one (archiveRoot: 'rejected', same root
+  // handleRejectGateDocument above already uses for a gate-level reject),
+  // with a "-rejected" tag on the name so it's never mistaken for a
+  // genuinely posted photo, and the slip keeps the same "_2" pairing
+  // suffix the approve path already established (so the two still sit
+  // together in Dropbox) rather than inventing a different suffix just for
+  // this path. The flow-chart record itself (status/reviewedAt/reviewedBy/
+  // rejectionReason) is never deleted — stays in pendingRMEntries and in
+  // Gate Documents History forever, same as before; only the photo bytes
+  // move out of Firestore.
+  async function rejectPendingRMEntry(id: string, reason: string) {
+    const entry = pendingRMEntries.find(e => e.id === id);
+    if (!entry) return;
+    const archiveCtx =
+      entry.finishedPiecesPayload ? { supplier: entry.finishedPiecesPayload.header.supplierName, invoiceNo: entry.finishedPiecesPayload.header.invoiceNo, date: entry.finishedPiecesPayload.header.date } :
+      entry.longerPipePayload ? { supplier: entry.longerPipePayload.header.supplierName, invoiceNo: entry.longerPipePayload.header.invoiceNo, date: entry.longerPipePayload.header.date } :
+      entry.manufacturerInvoicePayload ? { supplier: entry.manufacturerInvoicePayload.manufacturerName, invoiceNo: entry.manufacturerInvoicePayload.invoiceNo, date: entry.manufacturerInvoicePayload.date } :
+      null;
+
+    let archivedPath: string | undefined;
+    if (entry.photoImageBase64 && entry.photoMimeType && archiveCtx) {
+      archivedPath = (await archivePhotoToDropbox(
+        entry.photoImageBase64, entry.photoMimeType,
+        `${buildArchiveFileName(archiveCtx.supplier, archiveCtx.invoiceNo, archiveCtx.date)}-rejected`,
+        buildArchiveMonthFolder(archiveCtx.date), 'rejected'
+      )) || undefined;
+    }
+    let slipArchivedPath: string | undefined;
+    if (entry.slipPhotoImageBase64 && entry.slipPhotoMimeType && archiveCtx) {
+      slipArchivedPath = (await archivePhotoToDropbox(
+        entry.slipPhotoImageBase64, entry.slipPhotoMimeType,
+        `${buildArchiveFileName(archiveCtx.supplier, archiveCtx.invoiceNo, archiveCtx.date)}-rejected_2`,
+        buildArchiveMonthFolder(archiveCtx.date), 'rejected'
+      )) || undefined;
+    }
+
+    setPendingRMEntries(prev => prev.map(e => e.id === id ? {
+      ...e,
+      status: 'rejected',
+      reviewedAt: getLocalISOString(),
+      reviewedBy: appUser?.displayName || userName,
+      rejectionReason: reason,
+      photoDropboxPath: archivedPath || e.photoDropboxPath,
+      slipPhotoDropboxPath: slipArchivedPath || e.slipPhotoDropboxPath,
+      photoImageBase64: '',
+      photoMimeType: '',
+      slipPhotoImageBase64: '',
+      slipPhotoMimeType: '',
+    } : e));
+  }
+
+  // 6-Oct-26, Vipul's ask — the alternative to the terminal reject above,
+  // for a gate-photo entry (fromGateDocumentId set) that's wrong because
+  // STORE made a mistake filling it in, not because the entry itself is
+  // junk: instead of archiving the photos away, send the whole thing back
+  // to the Gate Documents Active queue so Store can fix it and resubmit,
+  // with the SAME photos (and the dharamkanta slip, if already attached —
+  // slipStatus/slipExtracted are untouched here so Store doesn't have to
+  // re-attach it) rather than starting over from nothing. The old
+  // PendingRMEntry is marked 'rejected' + returnedForCorrection so it
+  // still reads correctly everywhere a plain reject already does, and
+  // because fromGateDocumentId/pendingRMEntries entries are never deleted,
+  // this round's own trail (submitted/picked/rejected) stays in the system
+  // permanently even after Store re-does it and a new entry gets created.
+  function resubmitGateEntryToStore(entry: PendingRMEntry, reason: string) {
+    if (!entry.fromGateDocumentId) return;
+    const gateDocId = entry.fromGateDocumentId;
+    setPendingRMEntries(prev => prev.map(e => e.id === entry.id ? {
+      ...e,
+      status: 'rejected',
+      returnedForCorrection: true,
+      reviewedAt: getLocalISOString(),
+      reviewedBy: appUser?.displayName || userName,
+      rejectionReason: reason,
+    } : e));
+    setGateDocuments(prev => prev.map(d => d.id === gateDocId ? {
+      ...d,
+      status: 'pending',
+      imageBase64: entry.photoImageBase64 || d.imageBase64,
+      mimeType: entry.photoMimeType || d.mimeType,
+      slipImageBase64: entry.slipPhotoImageBase64 || d.slipImageBase64,
+      slipMimeType: entry.slipPhotoMimeType || d.slipMimeType,
+      pickedEntryType: undefined,
+      pickedAt: undefined,
+      pickedBy: undefined,
+      returnedForCorrectionAt: getLocalISOString(),
+      returnedForCorrectionBy: appUser?.displayName || userName,
+      returnedForCorrectionReason: reason,
+      correctionRounds: (d.correctionRounds || 0) + 1,
+    } : d));
   }
 
   // Bulk Item Master upload (Admin only, see components/BulkItemImport.tsx).

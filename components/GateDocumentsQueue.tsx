@@ -120,12 +120,12 @@ type HistoryStep = {
   when?: string | null;
   by?: string | null;
   extra?: string | null;
-  tone: 'default' | 'emerald' | 'rose' | 'amber';
+  tone: 'default' | 'emerald' | 'rose' | 'amber' | 'violet';
 };
 
 type HistoryOutcome = {
   badgeLabel: string;
-  badgeTone: 'emerald' | 'rose' | 'amber' | 'slate';
+  badgeTone: 'emerald' | 'rose' | 'amber' | 'slate' | 'violet';
 };
 
 const SLIP_VIA_LABEL: Record<NonNullable<GateDocumentForApproval['slipAttachedVia']>, string> = {
@@ -188,6 +188,9 @@ function buildHistorySteps(doc: GateDocumentForApproval, entry: PendingRMEntry |
     if (entry.status === 'approved') {
       steps.push({ icon: '✅', label: 'Approved & posted to inventory', when: entry.reviewedAt, by: entry.reviewedBy, tone: 'emerald' });
       outcome = { badgeLabel: 'Approved & Posted', badgeTone: 'emerald' };
+    } else if (entry.status === 'rejected' && entry.returnedForCorrection) {
+      steps.push({ icon: '↩', label: 'Returned to Store for correction', when: entry.reviewedAt, by: entry.reviewedBy, extra: entry.rejectionReason || 'No reason given', tone: 'violet' });
+      outcome = { badgeLabel: 'Returned for Correction', badgeTone: 'violet' };
     } else if (entry.status === 'rejected') {
       steps.push({ icon: '❌', label: 'Rejected by Admin (after review)', when: entry.reviewedAt, by: entry.reviewedBy, extra: entry.rejectionReason || 'No reason given', tone: 'rose' });
       outcome = { badgeLabel: 'Rejected by Admin', badgeTone: 'rose' };
@@ -215,6 +218,7 @@ const OUTCOME_BADGE_CLASSES: Record<HistoryOutcome['badgeTone'], string> = {
   rose: 'bg-rose-100 text-rose-700 border-rose-200',
   amber: 'bg-amber-100 text-amber-700 border-amber-200',
   slate: 'bg-slate-100 text-slate-600 border-slate-200',
+  violet: 'bg-violet-100 text-violet-700 border-violet-200',
 };
 
 const STEP_TONE_CLASSES: Record<HistoryStep['tone'], string> = {
@@ -222,9 +226,21 @@ const STEP_TONE_CLASSES: Record<HistoryStep['tone'], string> = {
   emerald: 'bg-emerald-100 text-emerald-700',
   rose: 'bg-rose-100 text-rose-700',
   amber: 'bg-amber-100 text-amber-700',
+  violet: 'bg-violet-100 text-violet-700',
 };
 
-const HistoryCard: React.FC<{ doc: GateDocumentForApproval; entry: PendingRMEntry | undefined; onViewPhoto: (base64: string, mimeType: string, label: string) => void }> = ({ doc, entry, onViewPhoto }) => {
+const HistoryCard: React.FC<{
+  doc: GateDocumentForApproval;
+  entry: PendingRMEntry | undefined;
+  // 6-Oct-26 — every PendingRMEntry this gate document has ever produced
+  // EXCEPT the currently-linked one, i.e. earlier rounds that got sent
+  // back via "Resubmit to Store for Correction" before Store redid the
+  // entry. These are never deleted (fromGateDocumentId never changes once
+  // set), so this is how a resubmitted doc's full history survives even
+  // though doc.linkedPendingRMEntryId only ever points at the latest round.
+  priorEntries: PendingRMEntry[];
+  onViewPhoto: (base64: string, mimeType: string, label: string) => void;
+}> = ({ doc, entry, priorEntries, onViewPhoto }) => {
   const [isOpen, setIsOpen] = useState(false);
   const { steps, outcome } = buildHistorySteps(doc, entry);
   const ex = doc.extracted;
@@ -291,15 +307,55 @@ const HistoryCard: React.FC<{ doc: GateDocumentForApproval; entry: PendingRMEntr
               </div>
             </div>
           ))}
+
+          {priorEntries.length > 0 && (
+            <div className="pt-2 mt-2 border-t border-dashed border-slate-200">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
+                Earlier Round{priorEntries.length > 1 ? 's' : ''} ({priorEntries.length}) — sent back before this one
+              </p>
+              <div className="space-y-2">
+                {priorEntries.map(pe => (
+                  <div key={pe.id} className="flex gap-3">
+                    <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs ${pe.returnedForCorrection ? STEP_TONE_CLASSES.violet : STEP_TONE_CLASSES.rose}`}>
+                      {pe.returnedForCorrection ? '↩' : '❌'}
+                    </div>
+                    <div className="min-w-0 pb-1">
+                      <p className="text-[12px] font-black text-slate-800">
+                        {pe.returnedForCorrection ? 'Returned to Store for correction' : 'Rejected by Admin'}
+                      </p>
+                      <p className="text-[11px] text-slate-500">{fmtWhenFull(pe.reviewedAt)}{pe.reviewedBy ? ` — ${pe.reviewedBy}` : ''}</p>
+                      {pe.rejectionReason && <p className="text-[11px] text-slate-400 mt-0.5">"{pe.rejectionReason}"</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 };
 
+// 7-Oct-26, Vipul's ask — a 4th History filter, by final outcome. Values
+// are exactly the outcome.badgeLabel strings buildHistorySteps already
+// computes (so the filter and the badge text can never drift apart), with
+// Vipul's own wording as the dropdown label where it differs. Deliberately
+// just these 4 — the other outcomes buildHistorySteps can produce
+// ('Awaiting Approval', the defensive 'Posted' fallback) aren't real
+// closed-out states worth filtering by, so they're left off the list; "All
+// Statuses" still shows them same as before.
+const STATUS_FILTER_OPTIONS: { value: HistoryOutcome['badgeLabel']; label: string }[] = [
+  { value: 'Rejected', label: 'Rejected Before Posting' },
+  { value: 'Approved & Posted', label: 'Approved & Posted by Admin' },
+  { value: 'Rejected by Admin', label: 'Rejected by Admin' },
+  { value: 'Returned for Correction', label: 'Resubmitted by Admin to Store' },
+];
+
 const GateDocumentHistoryPanel: React.FC<{ gateDocuments: GateDocumentForApproval[]; pendingRMEntries: PendingRMEntry[] }> = ({ gateDocuments, pendingRMEntries }) => {
   const [monthFilter, setMonthFilter] = useState<string>('all');
   const [supplierFilter, setSupplierFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
   const [viewingPhoto, setViewingPhoto] = useState<{ base64: string; mimeType: string; label: string } | null>(null);
 
   const closed = useMemo(
@@ -345,10 +401,14 @@ const GateDocumentHistoryPanel: React.FC<{ gateDocuments: GateDocumentForApprova
           if (key !== monthFilter) return false;
         }
         if (supplierFilter !== 'all' && d.matchedSupplier !== supplierFilter) return false;
+        if (statusFilter !== 'all') {
+          const outcome = buildHistorySteps(d, d.linkedPendingRMEntryId ? entryById.get(d.linkedPendingRMEntryId) : undefined).outcome;
+          if (outcome.badgeLabel !== statusFilter) return false;
+        }
         return true;
       })
       .sort((a, b) => (b.capturedAt || '').localeCompare(a.capturedAt || ''));
-  }, [closed, monthFilter, supplierFilter]);
+  }, [closed, monthFilter, supplierFilter, statusFilter, entryById]);
 
   return (
     <div>
@@ -360,6 +420,10 @@ const GateDocumentHistoryPanel: React.FC<{ gateDocuments: GateDocumentForApprova
         <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)} className="px-3 py-2 border-2 border-slate-200 rounded-xl text-[12px] font-bold text-slate-700 bg-white">
           <option value="all">All Manufacturers</option>
           {supplierOptions.map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-2 border-2 border-slate-200 rounded-xl text-[12px] font-bold text-slate-700 bg-white">
+          <option value="all">All Statuses</option>
+          {STATUS_FILTER_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
         </select>
         <span className="self-center text-[11px] text-slate-400 font-bold">{filtered.length} {filtered.length === 1 ? 'entry' : 'entries'}</span>
       </div>
@@ -375,6 +439,9 @@ const GateDocumentHistoryPanel: React.FC<{ gateDocuments: GateDocumentForApprova
               key={doc.id}
               doc={doc}
               entry={doc.linkedPendingRMEntryId ? entryById.get(doc.linkedPendingRMEntryId) : undefined}
+              priorEntries={pendingRMEntries
+                .filter(e => e.fromGateDocumentId === doc.id && e.id !== doc.linkedPendingRMEntryId)
+                .sort((a, b) => (a.submittedAt || '').localeCompare(b.submittedAt || ''))}
               onViewPhoto={(base64, mimeType, label) => setViewingPhoto({ base64, mimeType, label })}
             />
           ))}
@@ -633,8 +700,14 @@ const GateDocumentCard: React.FC<{
 }> = ({ doc, isAdmin, onProcess, onResetInProgress, onReject, onViewPhoto, onAttachSlip }) => {
   const ex = doc.extracted;
   const slipAttached = isSlipAttached(doc);
+  // 6-Oct-26, Vipul's ask — a doc that bounced back from "Resubmit to
+  // Store for Correction" (App.tsx's resubmitGateEntryToStore) needs to
+  // look visibly different from a fresh card, so whoever in Store picks it
+  // up knows it's an old entry back for a fix, not a new photo. Violet so
+  // it doesn't collide with the existing amber "In Progress" look.
+  const returnedForCorrection = !!doc.returnedForCorrectionAt;
   return (
-    <div className={`border-2 rounded-2xl p-4 ${doc.status === 'in_progress' ? 'border-amber-300 bg-amber-50/40' : 'border-slate-100 bg-white'}`}>
+    <div className={`border-2 rounded-2xl p-4 ${returnedForCorrection ? 'border-violet-300 bg-violet-50/50' : doc.status === 'in_progress' ? 'border-amber-300 bg-amber-50/40' : 'border-slate-100 bg-white'}`}>
       <div className="flex gap-4">
         <button onClick={() => onViewPhoto('invoice')} className="shrink-0 w-20 h-20 rounded-xl overflow-hidden border-2 border-slate-200 hover:border-indigo-400" title="View invoice photo">
           {doc.imageBase64 ? (
@@ -657,6 +730,11 @@ const GateDocumentCard: React.FC<{
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-black text-slate-900 truncate">{doc.matchedSupplier}</p>
+            {returnedForCorrection && (
+              <span className="text-[9px] font-black uppercase tracking-widest text-violet-700 bg-violet-100 px-2 py-0.5 rounded-full whitespace-nowrap">
+                ↩ Returned for Correction{doc.correctionRounds && doc.correctionRounds > 1 ? ` ×${doc.correctionRounds}` : ''}
+              </span>
+            )}
             {doc.status === 'in_progress' && (
               <span className="text-[9px] font-black uppercase tracking-widest text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full whitespace-nowrap">
                 In Progress{doc.pickedEntryType ? ` — ${MODE_LABEL[doc.pickedEntryType]}` : ''}
@@ -679,6 +757,17 @@ const GateDocumentCard: React.FC<{
           </p>
         </div>
       </div>
+
+      {returnedForCorrection && (
+        <div className="mt-3 border-l-4 border-violet-400 bg-violet-50/70 rounded-xl px-3 py-2">
+          <p className="text-[11px] text-violet-700 font-bold">
+            ↩ Sent back by {doc.returnedForCorrectionBy || 'Admin'} on {fmtWhen(doc.returnedForCorrectionAt)} for correction
+          </p>
+          {doc.returnedForCorrectionReason && (
+            <p className="text-[11px] text-violet-600 mt-0.5">"{doc.returnedForCorrectionReason}"</p>
+          )}
+        </div>
+      )}
 
       {!slipAttached && (
         <div className="mt-3 border-2 border-dashed border-amber-200 bg-amber-50/60 rounded-xl px-3 py-2 flex items-center justify-between gap-2">

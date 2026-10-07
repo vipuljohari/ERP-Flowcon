@@ -584,6 +584,16 @@ export interface PendingRMEntry {
   // approval screen can show "from WhatsApp gate photo" context. Absent for
   // every entry created the normal way.
   fromGateDocumentId?: string;
+  // 6-Oct-26, Vipul's ask — a gate-photo entry Admin rejects can be sent
+  // back to Store for correction instead of closed out for good (see
+  // App.tsx's resubmitGateEntryToStore). This entry is still marked
+  // status: 'rejected' (so every existing approve/reject filter keeps
+  // working unchanged) — this flag is purely a display distinction, set
+  // alongside it, so RMApprovalQueue/History can show "Returned to Store"
+  // instead of a plain "Rejected". Photos are NOT archived/cleared on this
+  // path (unlike a normal reject) — they move back onto the gate document
+  // for Store to see again; see GateDocumentForApproval.returnedForCorrectionAt.
+  returnedForCorrection?: boolean;
 }
 
 // --- Gate-photo capture (WhatsApp "Unit 2 Inward" group) ---
@@ -696,6 +706,20 @@ export interface GateDocumentForApproval {
   rejectedAt?: string;
   rejectedBy?: string; // display name
   rejectReason?: string; // free text Admin typed in, optional
+  // 6-Oct-26, Vipul's ask — "Resubmit to Store for Correction": instead of
+  // closing a gate-photo entry out for good, Admin can send it back here
+  // with status reset to 'pending' and the SAME photos restored (from the
+  // PendingRMEntry's own base64 copies, which a normal reject would have
+  // archived/cleared but this path leaves alone) — see App.tsx's
+  // resubmitGateEntryToStore. These fields just record that this round
+  // happened, so GateDocumentCard can show a visibly different card (not
+  // the plain 'pending' look) telling Store this is an old entry come back
+  // for a fix, not a fresh one. Never cleared once set — correctionRounds
+  // increments if it happens more than once on the same document.
+  returnedForCorrectionAt?: string;
+  returnedForCorrectionBy?: string; // Admin who sent it back
+  returnedForCorrectionReason?: string;
+  correctionRounds?: number;
 }
 
 // One doc per dharamkanta slip photo bot.js relayed that services/
