@@ -259,8 +259,20 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
   };
 
   const filteredParts = parts.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.sapCode.toLowerCase().includes(searchTerm.toLowerCase());
+    // 8-Oct-26 — search box used to only match name/SAP code, so typing a
+    // size (e.g. "60x40") or a customer model (e.g. "3DX") returned nothing
+    // even though both are shown right there in the table. Now also matches
+    // the Size/Specifications badge (p.size) and every model this part is
+    // mapped to across ALL customers (p.customerModels values) — not just
+    // the currently selected customerFilter — so the search box works the
+    // same regardless of which customer filter is active.
+    const term = searchTerm.trim().toLowerCase();
+    const matchesSearch = term === '' ||
+      p.name.toLowerCase().includes(term) ||
+      p.sapCode.toLowerCase().includes(term) ||
+      (p.size || '').toLowerCase().includes(term) ||
+      (p.sku || '').toLowerCase().includes(term) ||
+      Object.values(p.customerModels || {}).some(m => (m || '').toLowerCase().includes(term));
     const matchesCustomer = customerFilter === 'All' || (p.mappedCustomers || []).includes(customerFilter);
     const matchesModel = modelFilter === 'All' || p.customerModels?.[customerFilter] === modelFilter;
     const matchesUnmapped = !showUnmappedOnly || !isMappedToAnyRM(p);
