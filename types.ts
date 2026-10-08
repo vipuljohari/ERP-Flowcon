@@ -309,6 +309,27 @@ export interface RawMaterial {
   // membership in [customerName, ...customerNames] (see rmYield.ts's
   // rmMatchesCustomer/rmAllCustomers), not just equality to `customerName`.
   customerNames?: string[];
+
+  // 8-Oct-26, Vipul's ask — for an RM where some of the end-piece "scrap"
+  // the normal per-mapped-item remainder calculation (rmLength % itemLength,
+  // see computeRMStockAsOnDate in services/rmYield.ts) counts is actually
+  // being cut into a smaller usable part he hasn't modelled as drawing from
+  // this RM (his example: 40x25x1 — a 100mm part recovered from the
+  // 150/270/810mm leftovers of 3 other mapped items, which the app has no
+  // way to know about, so it overstates scrap). Rather than building full
+  // recovered-sub-part tracking, this is the deliberately simple opt-in
+  // escape hatch he asked for: tick it ONLY for an RM where he can see this
+  // happening, and scrap for that RM becomes a flat percentage of total
+  // consumed metres instead of the per-item remainder breakdown. Off (the
+  // default/undefined) keeps today's exact end-piece math unchanged for
+  // every RM he doesn't touch. Consumption (Dispatches) is never affected
+  // either way — only End-Piece Scrap.
+  useFlatScrapPercent?: boolean;
+  // Percent of total consumed metres to count as scrap when the flag above
+  // is on. Defaults to 1.5 (Vipul's stated default) the moment the checkbox
+  // is first ticked in RM Master — Admin can change it to any value from
+  // there. Meaningless/unread when useFlatScrapPercent is false.
+  flatScrapPercent?: number;
 }
 
 export interface RMInwardLog {

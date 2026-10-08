@@ -570,33 +570,43 @@ const MainApp: React.FC = () => {
           const itemMeters = salesQty * lengthFactorMeters;
           totalConsumedMeters += itemMeters;
 
-          // Scrap calculation
-          const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
-          let scrapMmPerPipe = 0;
-          let yieldFactor = 0;
+          // Scrap calculation — 8-Oct-26: skipped per-item here too when
+          // the RM is in flat-% mode (RawMaterial.useFlatScrapPercent, see
+          // services/rmYield.ts's computeRMStockAsOnDate for the canonical
+          // version of this same split); totalScrapMeters is set once,
+          // after this loop, as a flat percentage of totalConsumedMeters.
+          if (!rm.useFlatScrapPercent) {
+            const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
+            let scrapMmPerPipe = 0;
+            let yieldFactor = 0;
 
-          if (item.hasCustomScrap) {
-            scrapMmPerPipe = item.customScrapMm || 0;
-            if (itemLengthMm > 0) {
-              yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+            if (item.hasCustomScrap) {
+              scrapMmPerPipe = item.customScrapMm || 0;
+              if (itemLengthMm > 0) {
+                yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+              }
+            } else {
+              if (itemLengthMm > 0) {
+                yieldFactor = Math.floor(rmLength / itemLengthMm);
+                scrapMmPerPipe = rmLength % itemLengthMm;
+              }
             }
-          } else {
-            if (itemLengthMm > 0) {
-              yieldFactor = Math.floor(rmLength / itemLengthMm);
-              scrapMmPerPipe = rmLength % itemLengthMm;
+
+            let pipesUsed = 0;
+            if (yieldFactor > 0) {
+              pipesUsed = Math.ceil(salesQty / yieldFactor);
+            } else if (rmStandardMeters > 0 && salesQty > 0) {
+              pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
             }
-          }
 
-          let pipesUsed = 0;
-          if (yieldFactor > 0) {
-            pipesUsed = Math.ceil(salesQty / yieldFactor);
-          } else if (rmStandardMeters > 0 && salesQty > 0) {
-            pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
+            const itemScrapMeters = pipesUsed * (scrapMmPerPipe / 1000);
+            totalScrapMeters += itemScrapMeters;
           }
-
-          const itemScrapMeters = pipesUsed * (scrapMmPerPipe / 1000);
-          totalScrapMeters += itemScrapMeters;
         });
+
+        if (rm.useFlatScrapPercent) {
+          totalScrapMeters = totalConsumedMeters * ((rm.flatScrapPercent ?? 1.5) / 100);
+        }
 
         // 4. Calculate closing stock for simMonth
         const openingMeters = currentPipes * rmStandardMeters;

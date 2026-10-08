@@ -55,6 +55,8 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
     model: '',
     partId: '',
     partIds: [] as string[],
+    useFlatScrapPercent: false,
+    flatScrapPercent: 1.5,
   });
 
   const handleOpenAdd = () => {
@@ -91,6 +93,8 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       model: '',
       partId: '',
       partIds: [],
+      useFlatScrapPercent: false,
+      flatScrapPercent: 1.5,
     });
     setPartSearchTerm('');
     setShowModal(true);
@@ -112,6 +116,8 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
       model: rm.model || '',
       partId: rm.partId || '',
       partIds: rm.partIds || (rm.partId ? [rm.partId] : []),
+      useFlatScrapPercent: rm.useFlatScrapPercent || false,
+      flatScrapPercent: rm.flatScrapPercent ?? 1.5,
     });
     setShowModal(true);
   };
@@ -391,6 +397,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                     </p>
                   </div>
                 ) : (
+                <>
                 <div className="grid grid-cols-2 gap-4 text-left">
                   <div className="text-left">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">Standard Length (mm)</label>
@@ -415,6 +422,47 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                     />
                   </div>
                 </div>
+                <div className="text-left bg-amber-50/50 border-2 border-amber-100 rounded-2xl p-4">
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="w-5 h-5 mt-0.5 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
+                      checked={formData.useFlatScrapPercent}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        useFlatScrapPercent: e.target.checked,
+                        // 8-Oct-26, Vipul's ask: default to 1.5% the moment
+                        // it's first ticked, editable from there. Keeps
+                        // whatever value was already set if re-ticking
+                        // after an earlier edit instead of resetting it —
+                        // `??` not `||` here deliberately, so a genuine 0%
+                        // Admin typed in isn't mistaken for "unset" and
+                        // silently bumped back to 1.5 on a re-tick.
+                        flatScrapPercent: e.target.checked ? (formData.flatScrapPercent ?? 1.5) : formData.flatScrapPercent,
+                      })}
+                    />
+                    <div className="text-left">
+                      <span className="text-xs font-black text-amber-800 uppercase tracking-wide block">Use Flat % Wastage Instead of End-Piece Scrap</span>
+                      <span className="text-[11px] text-amber-700/80 font-medium">
+                        Only for an RM where you know a cut-off end piece is being reused as another part — the normal per-item remainder calculation has no way to know that and overstates scrap. Leave unticked for every other RM.
+                      </span>
+                    </div>
+                  </label>
+                  {formData.useFlatScrapPercent && (
+                    <div className="mt-3 pl-8">
+                      <label className="block text-[9px] font-black text-amber-700 uppercase tracking-widest mb-1.5">Flat Wastage %</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        className="w-32 px-4 py-2.5 bg-white border-2 border-amber-200 rounded-xl focus:border-amber-500 outline-none font-black text-slate-900"
+                        value={formData.flatScrapPercent ?? 1.5}
+                        onChange={(e) => setFormData({...formData, flatScrapPercent: parseFloat(e.target.value) || 0})}
+                      />
+                    </div>
+                  )}
+                </div>
+                </>
                 )}
                 <div className="grid grid-cols-2 gap-4 text-left">
                   <div className="text-left col-span-2 sm:col-span-1">

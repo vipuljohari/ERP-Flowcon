@@ -1546,34 +1546,46 @@ const Inventory: React.FC<InventoryProps> = ({
 
                   // Scrap Calculation: Find number of pipes actually cut & remaining end piece scrap
                   const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
-                  
+
                   let scrapMmPerPipe = 0;
-                  let yieldFactor = 0;
-                  
-                  if (item.hasCustomScrap) {
-                    scrapMmPerPipe = item.customScrapMm || 0;
-                    if (itemLengthMm > 0) {
-                      yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
-                    }
-                  } else {
-                    if (itemLengthMm > 0) {
-                      yieldFactor = Math.floor(rmLength / itemLengthMm);
-                      scrapMmPerPipe = rmLength % itemLengthMm;
-                    }
-                  }
-                  
                   let pipesUsed = 0;
-                  if (yieldFactor > 0) {
-                    pipesUsed = Math.ceil(salesQty / yieldFactor);
-                  } else if (rmStandardMeters > 0 && salesQty > 0) {
-                    pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
+                  let itemScrapMeters = 0;
+                  let itemScrapKg = 0;
+
+                  // 8-Oct-26 — skip this per-item end-piece remainder calc
+                  // entirely when the RM is in flat-% scrap mode (see
+                  // RawMaterial.useFlatScrapPercent, types.ts); totalScrapMeters/
+                  // totalScrapKg get set once, after this loop, as a flat
+                  // percentage of totalConsumedMeters instead. Mirrors
+                  // services/rmYield.ts's computeRMStockAsOnDate — keep both in
+                  // lockstep, same as the rest of this calculation already is.
+                  if (!rm.useFlatScrapPercent) {
+                    let yieldFactor = 0;
+
+                    if (item.hasCustomScrap) {
+                      scrapMmPerPipe = item.customScrapMm || 0;
+                      if (itemLengthMm > 0) {
+                        yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+                      }
+                    } else {
+                      if (itemLengthMm > 0) {
+                        yieldFactor = Math.floor(rmLength / itemLengthMm);
+                        scrapMmPerPipe = rmLength % itemLengthMm;
+                      }
+                    }
+
+                    if (yieldFactor > 0) {
+                      pipesUsed = Math.ceil(salesQty / yieldFactor);
+                    } else if (rmStandardMeters > 0 && salesQty > 0) {
+                      pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
+                    }
+
+                    itemScrapMeters = pipesUsed * (scrapMmPerPipe / 1000);
+                    itemScrapKg = itemScrapMeters * (rm.weightPer1000 || 0);
+
+                    totalScrapMeters += itemScrapMeters;
+                    totalScrapKg += itemScrapKg;
                   }
-
-                  const itemScrapMeters = pipesUsed * (scrapMmPerPipe / 1000);
-                  const itemScrapKg = itemScrapMeters * (rm.weightPer1000 || 0);
-
-                  totalScrapMeters += itemScrapMeters;
-                  totalScrapKg += itemScrapKg;
 
                   if (salesQty > 0) {
                     itemConsumptionBreakdown.push({
@@ -1594,6 +1606,11 @@ const Inventory: React.FC<InventoryProps> = ({
                   rmConsumedProduction += prodQty * factor;
                   totalProdQty += prodQty;
                 });
+
+                if (rm.useFlatScrapPercent) {
+                  totalScrapMeters = totalConsumedMeters * ((rm.flatScrapPercent ?? 1.5) / 100);
+                  totalScrapKg = totalScrapMeters * (rm.weightPer1000 || 0);
+                }
 
                 rmConsumedDispatch = parseFloat(rmConsumedDispatch.toFixed(2));
                 rmConsumedProduction = parseFloat(rmConsumedProduction.toFixed(2));
@@ -1646,36 +1663,50 @@ const Inventory: React.FC<InventoryProps> = ({
                   const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
                   const balanceMetersCurrentMonth = rmBalanceQtyNeeded * lengthFactorMeters;
 
-                  let scrapMmPerPipe = 0;
-                  let yieldFactor = 0;
+                  let scheduleScrapMeters = 0;
+                  let scheduleScrapKg = 0;
 
-                  if (item.hasCustomScrap) {
-                    scrapMmPerPipe = item.customScrapMm || 0;
-                    if (itemLengthMm > 0) {
-                      yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+                  // 8-Oct-26 — same flat-% skip as the actual consumption loop
+                  // above, applied here to the forward-looking "Tentative
+                  // Opening Inventory Next Month" projection too, so it stays
+                  // consistent with the current month's own numbers.
+                  if (!rm.useFlatScrapPercent) {
+                    let scrapMmPerPipe = 0;
+                    let yieldFactor = 0;
+
+                    if (item.hasCustomScrap) {
+                      scrapMmPerPipe = item.customScrapMm || 0;
+                      if (itemLengthMm > 0) {
+                        yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+                      }
+                    } else {
+                      if (itemLengthMm > 0) {
+                        yieldFactor = Math.floor(rmLength / itemLengthMm);
+                        scrapMmPerPipe = rmLength % itemLengthMm;
+                      }
                     }
-                  } else {
-                    if (itemLengthMm > 0) {
-                      yieldFactor = Math.floor(rmLength / itemLengthMm);
-                      scrapMmPerPipe = rmLength % itemLengthMm;
+
+                    let pipesNeededForSchedule = 0;
+                    if (yieldFactor > 0) {
+                      pipesNeededForSchedule = Math.ceil(rmBalanceQtyNeeded / yieldFactor);
+                    } else if (rmStandardMeters > 0 && rmBalanceQtyNeeded > 0) {
+                      pipesNeededForSchedule = Math.ceil(balanceMetersCurrentMonth / rmStandardMeters);
                     }
-                  }
 
-                  let pipesNeededForSchedule = 0;
-                  if (yieldFactor > 0) {
-                    pipesNeededForSchedule = Math.ceil(rmBalanceQtyNeeded / yieldFactor);
-                  } else if (rmStandardMeters > 0 && rmBalanceQtyNeeded > 0) {
-                    pipesNeededForSchedule = Math.ceil(balanceMetersCurrentMonth / rmStandardMeters);
+                    scheduleScrapMeters = pipesNeededForSchedule * (scrapMmPerPipe / 1000);
+                    scheduleScrapKg = scheduleScrapMeters * (rm.weightPer1000 || 0);
                   }
-
-                  const scheduleScrapMeters = pipesNeededForSchedule * (scrapMmPerPipe / 1000);
-                  const scheduleScrapKg = scheduleScrapMeters * (rm.weightPer1000 || 0);
 
                   totalScheduleMetersNeeded += balanceMetersCurrentMonth;
                   totalScheduleScrapMetersNeeded += scheduleScrapMeters;
                   totalSchedulePartWeightNeeded += rmBalanceQtyNeeded * factor;
                   totalScheduleScrapKgNeeded += scheduleScrapKg;
                 });
+
+                if (rm.useFlatScrapPercent) {
+                  totalScheduleScrapMetersNeeded = totalScheduleMetersNeeded * ((rm.flatScrapPercent ?? 1.5) / 100);
+                  totalScheduleScrapKgNeeded = totalScheduleScrapMetersNeeded * (rm.weightPer1000 || 0);
+                }
 
                 const tentativeMeters = Math.max(0, parseFloat((closingBalanceMeters - (totalScheduleMetersNeeded + totalScheduleScrapMetersNeeded)).toFixed(2)));
                 const tentativePipes = rmStandardMeters > 0 ? parseFloat((tentativeMeters / rmStandardMeters).toFixed(1)) : 0;
@@ -1829,15 +1860,30 @@ const Inventory: React.FC<InventoryProps> = ({
                             </span>
                             <div className="mt-2.5 space-y-1 w-full max-w-[13rem] bg-amber-50/30 shadow-inner rounded-xl p-2 border border-amber-100/40 text-left">
                               <div className="text-[8px] font-black uppercase text-amber-500 tracking-wider mb-1">Scrap Breakdown</div>
-                              {itemConsumptionBreakdown.map((item, idx) => item.pipesUsed > 0 && (
-                                <div key={idx} className="text-[8.5px] text-slate-600 flex flex-col border-b border-dashed border-amber-100 pb-1 last:border-0 last:pb-0">
-                                  <span className="font-extrabold truncate text-slate-700">{item.name}</span>
+                              {rm.useFlatScrapPercent ? (
+                                // 8-Oct-26 — flat-% mode has no per-item cuts to
+                                // list (the whole point is skipping that
+                                // calculation), so this is one line instead:
+                                // the % Admin set in RM Master applied to total
+                                // consumed metres, not a breakdown per part.
+                                <div className="text-[8.5px] text-slate-600 flex flex-col">
+                                  <span className="font-extrabold text-slate-700">Flat Wastage — {(rm.flatScrapPercent ?? 1.5)}% of Consumption</span>
                                   <span className="font-mono text-[8.5px] mt-0.5 text-amber-700 flex justify-between">
-                                    <span>{item.pipesUsed} Cuts × {item.scrapMmPerPipe}mm</span>
-                                    <span className="font-bold">-{item.scrapMeters.toFixed(2)} m</span>
+                                    <span>{(rm.flatScrapPercent ?? 1.5)}% × {totalConsumedMeters.toFixed(1)}m</span>
+                                    <span className="font-bold">-{totalScrapMeters.toFixed(2)} m</span>
                                   </span>
                                 </div>
-                              ))}
+                              ) : (
+                                itemConsumptionBreakdown.map((item, idx) => item.pipesUsed > 0 && (
+                                  <div key={idx} className="text-[8.5px] text-slate-600 flex flex-col border-b border-dashed border-amber-100 pb-1 last:border-0 last:pb-0">
+                                    <span className="font-extrabold truncate text-slate-700">{item.name}</span>
+                                    <span className="font-mono text-[8.5px] mt-0.5 text-amber-700 flex justify-between">
+                                      <span>{item.pipesUsed} Cuts × {item.scrapMmPerPipe}mm</span>
+                                      <span className="font-bold">-{item.scrapMeters.toFixed(2)} m</span>
+                                    </span>
+                                  </div>
+                                ))
+                              )}
                             </div>
                           </>
                         )}

@@ -120,23 +120,34 @@ export const computeRMStockAsOnDate = (
     const itemMeters = salesQty * lengthFactorMeters;
     totalConsumedMeters += itemMeters;
 
-    const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
-    let scrapMmPerPipe = 0;
-    let yieldFactor = 0;
-    if (item.hasCustomScrap) {
-      scrapMmPerPipe = item.customScrapMm || 0;
-      if (itemLengthMm > 0) yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
-    } else if (itemLengthMm > 0) {
-      yieldFactor = Math.floor(rmLength / itemLengthMm);
-      scrapMmPerPipe = rmLength % itemLengthMm;
+    // 8-Oct-26 — skip the per-item end-piece remainder math entirely when
+    // this RM is in flat-% scrap mode (see RawMaterial.useFlatScrapPercent
+    // in types.ts); totalScrapMeters is set once, after this loop, as a
+    // flat percentage of totalConsumedMeters instead. Consumption itself
+    // (totalConsumedMeters/itemMeters above) is never affected either way.
+    if (!rm.useFlatScrapPercent) {
+      const itemLengthMm = item.itemLength || (lengthFactorMeters * 1000);
+      let scrapMmPerPipe = 0;
+      let yieldFactor = 0;
+      if (item.hasCustomScrap) {
+        scrapMmPerPipe = item.customScrapMm || 0;
+        if (itemLengthMm > 0) yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+      } else if (itemLengthMm > 0) {
+        yieldFactor = Math.floor(rmLength / itemLengthMm);
+        scrapMmPerPipe = rmLength % itemLengthMm;
+      }
+
+      let pipesUsed = 0;
+      if (yieldFactor > 0) pipesUsed = Math.ceil(salesQty / yieldFactor);
+      else if (rmStandardMeters > 0 && salesQty > 0) pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
+
+      totalScrapMeters += pipesUsed * (scrapMmPerPipe / 1000);
     }
-
-    let pipesUsed = 0;
-    if (yieldFactor > 0) pipesUsed = Math.ceil(salesQty / yieldFactor);
-    else if (rmStandardMeters > 0 && salesQty > 0) pipesUsed = Math.ceil(itemMeters / rmStandardMeters);
-
-    totalScrapMeters += pipesUsed * (scrapMmPerPipe / 1000);
   });
+
+  if (rm.useFlatScrapPercent) {
+    totalScrapMeters = totalConsumedMeters * ((rm.flatScrapPercent ?? 1.5) / 100);
+  }
 
   const openingBalancePipes = parseFloat(openingBalancePipesStr || '0');
   const openingBalanceMeters = openingBalancePipes * rmStandardMeters;

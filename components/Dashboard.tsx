@@ -256,28 +256,44 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         }
         const itemLengthMm = p.itemLength || (lengthFactorMeters * 1000);
 
+        // 8-Oct-26 — flat-% RMs (RawMaterial.useFlatScrapPercent, see
+        // services/rmYield.ts's computeRMStockAsOnDate for the canonical
+        // split) skip the end-piece remainder math entirely here too;
+        // pipesShort falls back to the plain metres/standard-length
+        // estimate (same fallback this already used when yieldFactor was
+        // 0), and scrapMeters is a flat percentage of the metres needed
+        // for this part's gap instead of a per-bar remainder.
         let scrapMmPerPipe = 0;
         let yieldFactor = 0;
-        if (p.hasCustomScrap) {
-          scrapMmPerPipe = p.customScrapMm || 0;
-          if (itemLengthMm > 0) {
-            yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
-          }
-        } else {
-          if (itemLengthMm > 0) {
-            yieldFactor = Math.floor(rmLength / itemLengthMm);
-            scrapMmPerPipe = rmLength % itemLengthMm;
+        if (!rm.useFlatScrapPercent) {
+          if (p.hasCustomScrap) {
+            scrapMmPerPipe = p.customScrapMm || 0;
+            if (itemLengthMm > 0) {
+              yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+            }
+          } else {
+            if (itemLengthMm > 0) {
+              yieldFactor = Math.floor(rmLength / itemLengthMm);
+              scrapMmPerPipe = rmLength % itemLengthMm;
+            }
           }
         }
 
         if (gap > 0) {
-          if (yieldFactor > 0) {
-            pipesShort = Math.ceil(gap / yieldFactor);
-          } else if (rmStandardMeters > 0) {
-            pipesShort = Math.ceil((gap * lengthFactorMeters) / rmStandardMeters);
+          const metersNeeded = gap * lengthFactorMeters;
+          let scrapMeters = 0;
+          if (rm.useFlatScrapPercent) {
+            pipesShort = rmStandardMeters > 0 ? Math.ceil(metersNeeded / rmStandardMeters) : 0;
+            scrapMeters = metersNeeded * ((rm.flatScrapPercent ?? 1.5) / 100);
+          } else {
+            if (yieldFactor > 0) {
+              pipesShort = Math.ceil(gap / yieldFactor);
+            } else if (rmStandardMeters > 0) {
+              pipesShort = Math.ceil(metersNeeded / rmStandardMeters);
+            }
+            scrapMeters = pipesShort * (scrapMmPerPipe / 1000);
           }
-          const scrapMeters = pipesShort * (scrapMmPerPipe / 1000);
-          const totalMetersShort = (gap * lengthFactorMeters) + scrapMeters;
+          const totalMetersShort = metersNeeded + scrapMeters;
           kgShort = totalMetersShort * (rm.weightPer1000 || 0);
         }
       }
@@ -438,28 +454,40 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
         const itemLengthMm = p.itemLength || (lengthFactorMeters * 1000);
         const balanceMetersNeeded = balanceNeeded * lengthFactorMeters;
 
-        let scrapMmPerPipe = 0;
-        let yieldFactor = 0;
-        if (p.hasCustomScrap) {
-          scrapMmPerPipe = p.customScrapMm || 0;
-          if (itemLengthMm > 0) {
-            yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
-          }
+        // 8-Oct-26 — flat-% RMs skip the per-item remainder math here too
+        // (see services/rmYield.ts's computeRMStockAsOnDate for the
+        // canonical split); each part's share of scrap is just that flat %
+        // of its own balanceMetersNeeded, which sums to exactly flat % of
+        // totalTargetMetersNeeded below — same end result as doing it once
+        // after the loop, just computed per-part since partDetails needs a
+        // per-part figure to display either way.
+        let balanceScrapMeters = 0;
+        if (rm.useFlatScrapPercent) {
+          balanceScrapMeters = balanceMetersNeeded * ((rm.flatScrapPercent ?? 1.5) / 100);
         } else {
-          if (itemLengthMm > 0) {
-            yieldFactor = Math.floor(rmLength / itemLengthMm);
-            scrapMmPerPipe = rmLength % itemLengthMm;
+          let scrapMmPerPipe = 0;
+          let yieldFactor = 0;
+          if (p.hasCustomScrap) {
+            scrapMmPerPipe = p.customScrapMm || 0;
+            if (itemLengthMm > 0) {
+              yieldFactor = Math.floor(Math.max(0, rmLength - scrapMmPerPipe) / itemLengthMm);
+            }
+          } else {
+            if (itemLengthMm > 0) {
+              yieldFactor = Math.floor(rmLength / itemLengthMm);
+              scrapMmPerPipe = rmLength % itemLengthMm;
+            }
           }
-        }
 
-        let balancePipesUsed = 0;
-        if (yieldFactor > 0) {
-          balancePipesUsed = Math.ceil(balanceNeeded / yieldFactor);
-        } else if (rmStandardMeters > 0 && balanceNeeded > 0) {
-          balancePipesUsed = Math.ceil(balanceMetersNeeded / rmStandardMeters);
-        }
+          let balancePipesUsed = 0;
+          if (yieldFactor > 0) {
+            balancePipesUsed = Math.ceil(balanceNeeded / yieldFactor);
+          } else if (rmStandardMeters > 0 && balanceNeeded > 0) {
+            balancePipesUsed = Math.ceil(balanceMetersNeeded / rmStandardMeters);
+          }
 
-        const balanceScrapMeters = balancePipesUsed * (scrapMmPerPipe / 1000);
+          balanceScrapMeters = balancePipesUsed * (scrapMmPerPipe / 1000);
+        }
 
         totalTargetMetersNeeded += balanceMetersNeeded;
         totalTargetScrapMetersNeeded += balanceScrapMeters;
