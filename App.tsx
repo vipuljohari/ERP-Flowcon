@@ -13,6 +13,7 @@ import DataManagement from './components/DataManagement';
 import CustomerMaster from './components/CustomerMaster';
 import ItemMaster from './components/ItemMaster';
 import RMMaster from './components/RMMaster';
+import RMToleranceMaster from './components/RMToleranceMaster';
 import Login from './components/Login';
 import UserMaster from './components/UserMaster';
 import CompanyMaster from './components/CompanyMaster';
@@ -202,7 +203,9 @@ const MainApp: React.FC = () => {
   // Admin-editable tolerance table for Material Entry's Camera Upload — see
   // services/dimensionTolerance.ts for why this is an explicit lookup
   // table rather than a formula. Seeded once with Vipul's 11-Sep-26 rules;
-  // Admin can add more from Material Entry's "Dimension Tolerances" editor.
+  // Admin can manage the full list from its own "RM Tolerance Master" tab
+  // (9-Oct-26), or from the smaller inline editor still inside Material
+  // Entry's Longer Pipe form — both read/write this same array.
   const [dimensionTolerances, setDimensionTolerances] = useFirestoreArray<DimensionTolerance>('dimensionTolerances', SEED_DIMENSION_TOLERANCES);
   // Admin on/off switch for Material Entry's Camera Upload (both Finished
   // Pieces and Longer Pipe) — defaults to true so this ships already
@@ -1932,6 +1935,13 @@ const MainApp: React.FC = () => {
           {isAdmin && currentView === 'company_master' && <CompanyMaster />}
           {isAdmin && currentView === 'import_legacy' && <ImportLegacyData />}
           {isAdmin && currentView === 'trial_rm_receiving' && <TrialRMReceiving />}
+          {isAdmin && currentView === 'rm_tolerance_master' && (
+            <RMToleranceMaster
+              dimensionTolerances={dimensionTolerances}
+              setDimensionTolerances={setDimensionTolerances}
+              rawMaterials={sortedRawMaterials}
+            />
+          )}
           {canAccessView(role, currentView) && currentView === 'import_issues' && (
             <ImportIssues
               isAdmin={isAdmin}

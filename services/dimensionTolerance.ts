@@ -50,13 +50,7 @@ export const matchesNominal = (
 };
 
 // Splits a Raw Material's free-text `size` (e.g. "40X1.6X5710 mm",
-// "70.30X50X30X3.2X3600", "38x38x3") into its numeric tokens. Thickness is
-// reliably the SECOND-TO-LAST number in every size format this app uses —
-// square/rectangular tube just has more leading width/height numbers before
-// it. OD only has a clean meaning for a round tube, i.e. exactly 3 tokens
-// (OD, Thickness, Length) or 2 (OD, Thickness — length tracked separately
-// in rm.length instead); anything with 4+ tokens is square/rectangular, and
-// only Thickness is compared for those.
+// "70.30X50X30X3.2X3600", "38x38x3") into its numeric tokens.
 const parseSizeTokens = (size: string): number[] =>
   (size || '')
     .replace(/mm/gi, '')
@@ -69,6 +63,52 @@ export interface ExtractedRMDimensions {
   thicknessMm?: number;
   lengthMm?: number;
 }
+
+export interface RMCrossSection {
+  thicknessMm?: number;
+  odMm?: number; // only set for a round tube (OD, Thickness[, Length])
+}
+
+// 9-Oct-26 — Vipul's "40X40X1" RM (Hop Electric, 40x40 square tube,
+// 1mm thick, Standard Length 6000mm stored separately) wasn't matching its
+// invoice even though it's entered correctly. Root cause: `size` is pure
+// free text, and a 3-number size is genuinely ambiguous by token count
+// alone — a ROUND tube can be written "OD x Thickness x Length" (3 numbers,
+// e.g. "45 x 1.6 x 5910"), while a SQUARE/RECT tube is written
+// "Width x Height x Thickness" with NO length at all (length always lives
+// separately in `rm.length`, same as every other RM in this app) — e.g.
+// "40 x 40 x 1". Both have exactly 3 tokens but mean completely different
+// things. The old code assumed ANY size with <=3 tokens was the round
+// format, which silently misread "40X40X1" as OD=40/Thickness=40/Length=1
+// (comparing the invoice's real thickness, 1, against the RM's second "40"
+// instead) — guaranteed to never match. It also had a smaller bug for a
+// genuine 2-token round tube ("OD x Thickness", no length suffix at all):
+// it read thickness as `tokens[length-2]`, which for exactly 2 tokens is
+// index 0 — the OD again, not the thickness.
+//
+// Fix: don't guess the shape from token count. Instead, check whether the
+// size string's LAST number actually matches this RM's own `length` field
+// (its Standard Length, within 5mm) — only THEN treat that last token as an
+// embedded length and drop it before reading the cross-section. Whatever's
+// left is the real cross-section: 1 number = Thickness only (sheet-like,
+// rare for tube), 2 numbers = [OD, Thickness] (round), 3+ numbers =
+// [Width, Height, ..., Thickness] (square/rect) — Thickness is always the
+// LAST cross-section number, OD only has meaning when there are exactly 2.
+// Used both by the Camera Upload matcher below AND by RM Tolerance Master's
+// "values currently in RM Master" helper, so both read sizes identically.
+export const parseRMCrossSection = (size: string, rmLengthMm: number | undefined): RMCrossSection => {
+  const tokens = parseSizeTokens(size);
+  if (tokens.length < 1) return {};
+
+  const lastToken = tokens[tokens.length - 1];
+  const lengthEmbedded = tokens.length >= 3 && !!rmLengthMm && rmLengthMm > 0 && Math.abs(lastToken - rmLengthMm) <= 5;
+  const crossSection = lengthEmbedded ? tokens.slice(0, -1) : tokens;
+  if (crossSection.length < 1) return {};
+
+  const thicknessMm = crossSection[crossSection.length - 1];
+  const odMm = crossSection.length === 2 ? crossSection[0] : undefined;
+  return { thicknessMm, odMm };
+};
 
 // Ranks every RawMaterial against a photo/invoice's extracted dimensions,
 // best match first. Returns [] when nothing was actually extracted (no
@@ -88,18 +128,15 @@ export const suggestMatchingRawMaterials = (
   const scored = rawMaterials
     .filter(rm => rm.category !== 'sheet')
     .map(rm => {
-      const tokens = parseSizeTokens(rm.size);
-      if (tokens.length < 2) return null;
-      const thicknessToken = tokens[tokens.length - 2];
-      const isRound = tokens.length <= 3; // OD, Thickness[, Length]
-      const odToken = isRound ? tokens[0] : undefined;
+      const { thicknessMm: thicknessToken, odMm: odToken } = parseRMCrossSection(rm.size, rm.length);
+      if (thicknessToken === undefined) return null;
 
       let score = 0;
       if (hasThickness) {
         if (!matchesNominal(extracted.thicknessMm as number, thicknessToken, table, 'Thickness')) return null;
         score += 1;
       }
-      if (hasOD && isRound && odToken !== undefined) {
+      if (hasOD && odToken !== undefined) {
         if (!matchesNominal(extracted.odMm as number, odToken, table, 'OD')) return null;
         score += 1;
       }

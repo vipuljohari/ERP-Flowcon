@@ -104,6 +104,13 @@ const Sidebar: React.FC<SidebarProps> = ({
       { id: 'party_name_master', label: 'Party Name Master', icon: '✅' },
       { id: 'import_legacy', label: 'Import Legacy Data', icon: '📤' },
       { id: 'trial_rm_receiving', label: '🧪 RM Receiving (Trial)', icon: '🧪' },
+      // 9-Oct-26 — promoted out of the small collapsible editor buried
+      // inside Material Entry's Longer Pipe camera-upload form, into its
+      // own proper tab, per Vipul's explicit ask ("build a tab in admin
+      // account - RM Tolerance Master"). Same underlying data
+      // (dimensionTolerances/setDimensionTolerances) — this is just a
+      // better home for managing the full list at once.
+      { id: 'rm_tolerance_master', label: 'RM Tolerance Master', icon: '📐' },
     );
   }
 
