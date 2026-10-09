@@ -407,7 +407,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                   <span className="text-sm font-black text-slate-800 text-left">{formatDateDisplay(startDate)}</span>
                 </div>
                 <div className="relative">
-                  <input type="date" className="absolute inset-0 opacity-0 cursor-pointer w-full" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                  <input type="date" className="date-icon-overlay absolute inset-0 opacity-0 cursor-pointer w-full" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
                   <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center group-hover:bg-emerald-600 group-hover:text-white transition-all">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                   </div>
@@ -424,7 +424,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                   <span className="text-sm font-black text-slate-800 text-left">{formatDateDisplay(endDate)}</span>
                 </div>
                 <div className="relative">
-                  <input type="date" className="absolute inset-0 opacity-0 cursor-pointer w-full" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+                  <input type="date" className="date-icon-overlay absolute inset-0 opacity-0 cursor-pointer w-full" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
                   <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center group-hover:bg-emerald-600 group-hover:text-white transition-all">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                   </div>

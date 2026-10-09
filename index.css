@@ -2,11 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 8-Oct-26 — Vipul: the calendar icon buttons on Dispatch Report, Inward
-   Report and every other date-range filter in the app (SalesLog.tsx,
-   InwardLogs.tsx, DailyDispatch.tsx, Inventory.tsx, RMCrossBillCheck.tsx,
-   MaterialEntry.tsx, TrialRMReceiving.tsx) are all built the same way: a
-   fully-transparent native <input type="date"> stretched with
+/* 8-Oct-26 — Vipul: the calendar icon buttons on Dispatch Report and Inward
+   Report (SalesLog.tsx, InwardLogs.tsx ONLY — see 9-Oct-26 correction below)
+   are built as a fully-transparent native <input type="date"> stretched with
    `absolute inset-0 opacity-0` over a custom-styled icon, so clicking the
    icon clicks the real (invisible) input and the browser opens its native
    calendar. The flakiness Vipul hit ("sometimes 1 click, sometimes 4-5")
@@ -19,8 +17,31 @@
    several tries to land on the few pixels that actually open it. Fix:
    stretch the indicator itself to fill the entire input, so every click
    anywhere on the custom icon hits it directly and the calendar opens on
-   the first click, every time. */
-input[type="date"]::-webkit-calendar-picker-indicator {
+   the first click, every time.
+
+   9-Oct-26 CORRECTION — this rule originally targeted EVERY
+   `input[type="date"]` app-wide, not just the icon-overlay pattern above.
+   That broke Material Entry's camera-upload Date field (a plain, big,
+   fully-visible native date input, w-full) the very next day: Store got
+   stuck unable to proceed past the Date field at all (reported via
+   screenshots — selecting a date then clicking "Next: Add Bar-Length
+   Line(s)" reopened the calendar instead, with no way out except F5).
+   Reason: stretching + hiding the indicator across the WHOLE of a large
+   visible date field makes literally every click anywhere inside that
+   field re-open Chrome's native calendar overlay — which, being a
+   browser-level popup, paints on top of whatever sits right below it on
+   the page (here, the Next button), so a click aimed at Next often lands
+   on the still-open calendar instead and selects/reopens rather than
+   submitting. Plain visible date inputs never had this problem before —
+   Chrome's own small default icon already worked fine there with ordinary
+   single clicks; only the deliberately-hidden icon-overlay inputs in
+   SalesLog.tsx/InwardLogs.tsx needed the stretch fix.
+   Scoped the rule to a dedicated `.date-icon-overlay` class, applied ONLY
+   to those 4 inputs (SalesLog.tsx ×2, InwardLogs.tsx ×2) — every other
+   date input in the app (MaterialEntry.tsx, RMCrossBillCheck.tsx,
+   TrialRMReceiving.tsx, DailyDispatch.tsx, Inventory.tsx) is now back to
+   plain unmodified native behavior, exactly as it was before 8-Oct-26. */
+input[type="date"].date-icon-overlay::-webkit-calendar-picker-indicator {
   position: absolute;
   inset: 0;
   width: 100%;
