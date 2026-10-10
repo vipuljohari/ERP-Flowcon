@@ -387,7 +387,19 @@ export interface InwardLog {
 // Dispatch Slip posting, or a Tally Excel/XML import. Persisted in
 // Firestore (see useFirestoreArray('adminAlerts') in App.tsx) so an alert
 // raised from one login is visible to Admin on any other device/session.
-export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow' | 'gate_slip_not_matched' | 'duplicate_invoice_blocked';
+// 'data_save_failed' (10-Oct-26) is different from the rest of this list —
+// not a human-initiated business event, but a safety net: useFirestoreArray
+// raises one automatically whenever a Firestore write it issues actually
+// fails (document too large, offline, permission error, etc.). Before this
+// existed, a failed write only logged to that one browser's console —
+// invisible to Admin unless they happened to be looking right then on that
+// exact device — which is exactly how a real gate-photo entry's invoice/
+// dharamkanta photos silently vanished (9-Oct-26, Banke Bihari Steel
+// Traders): the submitting Store login's own optimistic UI showed it as
+// saved, but the actual write never reached the server, and nobody found
+// out until Admin reviewed it later on a different device. See
+// hooks/useFirestoreArray.ts for where this fires.
+export type AdminAlertType = 'discrepancy' | 'rm_inward' | 'item_inward' | 'dispatch_manual' | 'tally_import' | 'schedule_bulk_import' | 'rm_cross_bill' | 'rm_weight_mismatch' | 'material_entry_scrap' | 'sibling_stock_borrow' | 'gate_slip_not_matched' | 'duplicate_invoice_blocked' | 'data_save_failed';
 
 export interface AdminAlert {
   id: string;

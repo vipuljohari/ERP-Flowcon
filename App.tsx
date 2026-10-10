@@ -30,7 +30,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
-import { useFirestoreArray } from './hooks/useFirestoreArray';
+import { useFirestoreArray, setFirestoreWriteErrorHandler } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, UnmatchedDharamkantaSlip, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole } from './types';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
@@ -186,6 +186,28 @@ const MainApp: React.FC = () => {
       stopAutoFlush();
       unsubscribe();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 10-Oct-26 — registers the one handler every useFirestoreArray instance
+  // in the app calls when its batch.commit() fails outright (not merely
+  // offline — a write that will keep failing on retry too, e.g. a document
+  // over Firestore's 1 MiB limit). Until this existed, that failure only
+  // hit console.error: invisible to anyone not already staring at that
+  // exact browser's DevTools. That's exactly how a real gate-photo entry's
+  // invoice/dharamkanta photos silently vanished (Banke Bihari Steel
+  // Traders, 9-Oct-26 — see services/apiHandlers.ts's
+  // GATE_PHOTO_MAX_RAW_BYTES). Routing it through pushAdminAlert means it
+  // now shows up in Notifications for Admin on any device, same as any
+  // other alert, instead of depending on Store or Admin happening to notice
+  // something looked wrong.
+  useEffect(() => {
+    setFirestoreWriteErrorHandler((collectionName, err) => {
+      pushAdminAlert({
+        type: 'data_save_failed',
+        remarks: `An entry in "${collectionName}" failed to save to the server (${err?.message || err}). It may still show on this device, but it has NOT reached the cloud — please check this with the person who entered it and have them re-submit if needed.`,
+      });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

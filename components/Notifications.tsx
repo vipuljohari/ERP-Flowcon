@@ -21,6 +21,7 @@ const TYPE_META: Record<AdminAlertType, { label: string; icon: string; color: st
   sibling_stock_borrow: { label: 'Sibling Stock Borrow (Auto)', icon: '🔄', color: 'cyan' },
   gate_slip_not_matched: { label: 'Gate Slip Not Auto-Matched', icon: '🚚', color: 'pink' },
   duplicate_invoice_blocked: { label: 'Duplicate Invoice Blocked', icon: '⛔', color: 'red' },
+  data_save_failed: { label: 'Save Failed — Data Did Not Reach The Server', icon: '🚨', color: 'red' },
 };
 
 const colorClasses: Record<string, { badge: string; border: string }> = {

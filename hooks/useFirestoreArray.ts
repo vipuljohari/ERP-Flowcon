@@ -4,6 +4,27 @@ import { db } from '../services/firebase';
 import { stripUndefinedDeep } from '../services/firestoreSanitize';
 import { enqueueWrites } from '../services/offlineQueue';
 
+// 10-Oct-26 — before this, a failed batch.commit() below only hit
+// console.error: invisible to anyone not already staring at that exact
+// browser's DevTools at that exact moment. That's exactly how a real gate-
+// photo entry's invoice/dharamkanta photos silently vanished (Banke Bihari
+// Steel Traders, 9-Oct-26, oversized document — see services/
+// apiHandlers.ts's GATE_PHOTO_MAX_RAW_BYTES) — Store's own browser showed
+// it as saved (the optimistic local update below always applies regardless
+// of whether the real write succeeds), the write itself failed server-side,
+// and nobody found out until Admin reviewed it later on a different
+// device. This is a tiny pub/sub of exactly one subscriber: App.tsx
+// registers a single handler once (wired to pushAdminAlert, so a failure
+// shows up in Notifications for Admin on any device) via
+// setFirestoreWriteErrorHandler, and every useFirestoreArray instance for
+// every collection in the app calls it on a failed write. Deliberately a
+// module-level variable rather than a parameter threaded through all 16+
+// useFirestoreArray call sites — one registration covers all of them.
+let writeErrorHandler: ((collectionName: string, error: any) => void) | null = null;
+export function setFirestoreWriteErrorHandler(handler: (collectionName: string, error: any) => void) {
+  writeErrorHandler = handler;
+}
+
 /**
  * Keeps a React array in sync with a Firestore collection, live, across every
  * device that has this hook open — while looking exactly like useState() to
@@ -110,6 +131,13 @@ export function useFirestoreArray<T>(
           // let it silently vanish. Queue exactly what failed so it uploads
           // automatically as soon as Firestore is reachable again.
           enqueueWrites(pendingWrites);
+          // ALSO surface it where a human can actually see it — see the
+          // 10-Oct-26 comment above setFirestoreWriteErrorHandler. The
+          // offline-queue retry above only helps a transient/offline
+          // failure; it does nothing for a write that fails for a reason
+          // that'll fail again on retry too (e.g. a document over
+          // Firestore's 1 MiB limit) — this is what catches that case.
+          writeErrorHandler?.(collectionName, err);
         });
       }
     },
