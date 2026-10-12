@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 // ============================================================
 // Shared full-screen photo viewer — 24-Sep-26.
@@ -34,13 +34,56 @@ const ZOOM_MAX = 3;
 const PhotoViewerModal: React.FC<PhotoViewerModalProps> = ({ base64, mimeType, label, onClose }) => {
   const [rotation, setRotation] = useState(0); // 0 | 90 | 180 | 270
   const [zoom, setZoom] = useState(1);
+  const imgWrapRef = useRef<HTMLDivElement>(null);
 
   const rotate = () => setRotation(r => (r + 90) % 360);
   const zoomIn = () => setZoom(z => Math.min(ZOOM_MAX, Math.round((z + ZOOM_STEP) * 100) / 100));
   const zoomOut = () => setZoom(z => Math.max(ZOOM_MIN, Math.round((z - ZOOM_STEP) * 100) / 100));
 
+  // 12-Oct-26, Vipul's ask — mouse-wheel zoom as a faster alternative to
+  // the +/- buttons. This needs a real (non-React-synthetic) listener:
+  // React delegates 'wheel' as a passive listener by default (matching
+  // browsers' own scroll-perf guidance), and a passive listener is not
+  // allowed to call preventDefault() — without going native here, the
+  // browser would ALSO scroll this backdrop every time Vipul spun the
+  // wheel to zoom, instead of just zooming in place.
+  useEffect(() => {
+    const el = imgWrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setZoom(z => {
+        const next = e.deltaY < 0 ? z + ZOOM_STEP : z - ZOOM_STEP;
+        return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(next * 100) / 100));
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // 12-Oct-26, Vipul's ask — the mouse wheel's middle-click as a two-stage
+  // shortcut: from any zoomed/rotated state, the first middle-click resets
+  // back to the default view (100% zoom, no rotation) instead of making
+  // Vipul find both the zoom-out and rotate buttons separately; a second
+  // middle-click while ALREADY at that default view closes the viewer
+  // entirely, the same way a middle-click closes a browser tab.
+  // preventDefault stops the browser's own middle-click autoscroll cursor
+  // from kicking in. Attached on the outer backdrop (not just the image)
+  // so it works wherever inside the viewer Vipul clicks — same reach as
+  // the existing click-anywhere-on-backdrop-to-close behavior below.
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    if (zoom === 1 && rotation === 0) {
+      onClose();
+    } else {
+      setZoom(1);
+      setRotation(0);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-[110] overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-[110] overflow-y-auto" onClick={onClose} onMouseDown={handleMouseDown}>
       {/* Pinned toolbar — stays on screen regardless of image size, zoom,
           rotation, or scroll position. This is the fix: Close is always
           reachable. */}
@@ -70,7 +113,7 @@ const PhotoViewerModal: React.FC<PhotoViewerModalProps> = ({ base64, mimeType, l
         </div>
       </div>
 
-      <div className="min-h-full w-full flex items-center justify-center p-4 pt-20 pb-6" onClick={(e) => e.stopPropagation()}>
+      <div ref={imgWrapRef} className="min-h-full w-full flex items-center justify-center p-4 pt-20 pb-6" onClick={(e) => e.stopPropagation()}>
         <img
           src={`data:${mimeType};base64,${base64}`}
           alt={label || 'Photo'}

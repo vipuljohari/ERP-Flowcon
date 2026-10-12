@@ -43,6 +43,14 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
 }) => {
   const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
   const [selectedSize, setSelectedSize] = useState<string>('All');
+  // 12-Oct-26, Vipul's ask — this report mixes two different units in the
+  // same list (Part-allotted rows are always Pcs; RM-only rows are Pipes,
+  // or occasionally Kg — see unitLabel below), which made it hard to see
+  // just one side at a time. 'Pipes' here means "every RM-kind row" (kind
+  // === 'rm'), not literally unit === 'pipes' — a Kg-denominated RM
+  // receipt is still an RM row, not a Pcs row, and Vipul only asked for
+  // these two buckets rather than a third Kg option.
+  const [selectedUom, setSelectedUom] = useState<'All' | 'Pipes' | 'Pcs'>('All');
 
   const toLocalISO = (date: Date) => {
     const y = date.getFullYear();
@@ -180,6 +188,8 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     const end = new Date(endDate);
     end.setHours(23,59,59,999);
 
+    if (selectedUom === 'Pipes') return [];
+
     return allLogsWithAudits.filter(log => {
       const d = new Date(log.timestamp);
       const matchesDate = d >= start && d <= end;
@@ -202,7 +212,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
 
       return matchesDate;
     });
-  }, [allLogsWithAudits, parts, startDate, endDate, selectedSize]);
+  }, [allLogsWithAudits, parts, startDate, endDate, selectedSize, selectedUom]);
 
   // RM-only rows for the same date/size window. 'Opening inventory
   // correction' stays a Part-level-only concept (RM has no equivalent
@@ -215,6 +225,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
   // Part) they were posted against.
   const filteredRmLogs = useMemo(() => {
     if (selectedSize === 'Opening inventory correction') return [];
+    if (selectedUom === 'Pcs') return [];
     const start = new Date(startDate);
     start.setHours(0, 0, 0, 0);
     const end = new Date(endDate);
@@ -234,7 +245,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
       }
       return matchesDate;
     });
-  }, [rmLogs, rawMaterials, startDate, endDate, selectedSize]);
+  }, [rmLogs, rawMaterials, startDate, endDate, selectedSize, selectedUom]);
 
   // Separate from totalRangeInward below on purpose — Pipes/Kg (RM) and
   // Pcs (Part) are different units and summing them into one number would
@@ -395,6 +406,19 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
               {uniqueRmNames.map(size => (
                 <option key={size} value={size}>{size}</option>
               ))}
+            </select>
+          </div>
+
+          <div className="space-y-3 text-left">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 text-left">UOM</label>
+            <select
+              className="px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl focus:border-emerald-500 outline-none w-full transition-all shadow-inner font-bold text-slate-800"
+              value={selectedUom}
+              onChange={(e) => setSelectedUom(e.target.value as 'All' | 'Pipes' | 'Pcs')}
+            >
+              <option value="All">All</option>
+              <option value="Pipes">Pipes</option>
+              <option value="Pcs">Pcs</option>
             </select>
           </div>
 
