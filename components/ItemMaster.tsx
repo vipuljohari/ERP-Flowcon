@@ -3,6 +3,7 @@ import { Part, Customer, RawMaterial, PartType } from '../types';
 import { CATEGORIES } from '../constants';
 import BulkItemImport from './BulkItemImport';
 import { rmMatchesCustomer } from '../services/rmYield';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 
 // Mirrors RMMaster.tsx's partMatchesRMCategory (inverse direction) — an RM
 // with no category set is a pre-existing Tube RM (see types.ts's
@@ -314,7 +315,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
             className="px-4 py-4 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-indigo-500/10 outline-none font-bold text-slate-700 bg-white shadow-sm"
           >
             <option value="All">All customers</option>
-            {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+            {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
           </select>
           {customerFilter !== 'All' && (modelsByCustomer[customerFilter]?.length || 0) > 0 && (
             <select
@@ -719,7 +720,7 @@ const ItemMaster: React.FC<ItemMasterProps> = ({ parts, onAdd, onEdit, onDelete,
                         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 text-left">
                           <label className="flex items-center gap-3 cursor-pointer flex-1">
                             <input type="checkbox" className="w-5 h-5 rounded border-slate-300 text-indigo-600" checked={isSelected} onChange={() => toggleCustomerMapping(c.name)} />
-                            <span className={`text-[11px] font-black uppercase tracking-tight ${isSelected ? 'text-indigo-600' : 'text-slate-400'}`}>{c.name}</span>
+                            <span className={`text-[11px] font-black uppercase tracking-tight ${isSelected ? 'text-indigo-600' : 'text-slate-400'}`}>{getCustomerDisplayName(c.name)}</span>
                           </label>
                           {isSelected && (
                             <div className="flex items-center gap-2">

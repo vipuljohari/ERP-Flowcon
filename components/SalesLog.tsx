@@ -1,6 +1,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, Customer } from '../types';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 // Loaded on demand inside exportToExcel (below), not statically here —
 // exceljs is a large library and a static import put it in every user's
 // initial page load, nearly doubling the app's main JS bundle, even for
@@ -269,7 +270,7 @@ const SalesLog: React.FC<SalesLogProps> = ({
               }}
             >
               <option value={ALL_CUSTOMERS_VALUE}>All Customers</option>
-              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
             </select>
           </div>
         </div>
@@ -383,7 +384,7 @@ const SalesLog: React.FC<SalesLogProps> = ({
                 <tr key={r.sale.id} className="hover:bg-indigo-50/20 transition-colors">
                   <td className="px-3 py-2.5 truncate" title={r.date.toLocaleDateString('en-GB')}>{r.date.toLocaleDateString('en-GB')}</td>
                   <td className="px-3 py-2.5 truncate" title={r.sale.invoiceNumber || '-'}>{r.sale.invoiceNumber || '-'}</td>
-                  <td className="px-3 py-2.5 truncate font-bold text-indigo-700" title={r.sale.customer}>{r.sale.customer}</td>
+                  <td className="px-3 py-2.5 truncate font-bold text-indigo-700" title={r.sale.customer}>{getCustomerDisplayName(r.sale.customer)}</td>
                   <td className="px-3 py-2.5 truncate font-mono" title={r.sale.sapCode}>{r.sale.sapCode}</td>
                   <td className="px-3 py-2.5 truncate" title={r.sale.partName}>{r.sale.partName}</td>
                   <td className="px-3 py-2.5 truncate" title={r.sizeSpec}>{r.sizeSpec}</td>

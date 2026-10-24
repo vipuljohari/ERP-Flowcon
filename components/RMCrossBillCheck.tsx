@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, Customer, AdminAlert, RMInwardLog, RMPurchaseVoucher, RawMaterial, Part, GateDocumentForApproval } from '../types';
 import { extractInvoiceFromPhoto, extractCustomerInvoiceFromPhoto } from '../services/gemini';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 import { getLocalDateStr, correctedNow } from '../services/time';
 import {
   normalizeMaterialCode,
@@ -1558,7 +1559,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 <select required value={mfgForm.customerName} onChange={(e) => setMfgForm({ ...mfgForm, customerName: e.target.value })}
                   className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
                   <option value="">Which customer will cross-invoice you?</option>
-                  {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
                 </select>
               </FormField>
               <div className="grid grid-cols-2 gap-3">
@@ -1949,7 +1950,7 @@ const RMCrossBillCheck: React.FC<RMCrossBillCheckProps> = ({
                 <select required value={crossForm.customerName} onChange={(e) => setCrossForm({ ...crossForm, customerName: e.target.value })}
                   className="w-full border-2 border-slate-200 rounded-xl px-3 py-2 text-sm">
                   <option value="">Customer</option>
-                  {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
                 </select>
               </FormField>
               <div className="grid grid-cols-2 gap-3">

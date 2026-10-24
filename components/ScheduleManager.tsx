@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Part, Customer, AdminAlert } from '../types';
 import BulkScheduleImport from './BulkScheduleImport';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 
 interface ScheduleManagerProps {
   parts: Part[];
@@ -95,7 +96,7 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
               value={activeCustomer}
               onChange={(e) => onCustomerChange(e.target.value)}
             >
-              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
             </select>
           </div>
           <input
@@ -133,7 +134,7 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
             <div className="w-16 h-16 bg-white/20 rounded-3xl flex items-center justify-center text-3xl shadow-inner backdrop-blur-md">📅</div>
             <div className="text-left">
               <h4 className="font-black uppercase tracking-widest text-sm text-left">New Month Detected</h4>
-              <p className="text-xs font-bold text-indigo-100 text-left">Delivery schedules have been reset to zero. Please enter the new monthly commitments for <span className="underline decoration-white/30">{activeCustomer}</span> below.</p>
+              <p className="text-xs font-bold text-indigo-100 text-left">Delivery schedules have been reset to zero. Please enter the new monthly commitments for <span className="underline decoration-white/30">{getCustomerDisplayName(activeCustomer)}</span> below.</p>
             </div>
           </div>
           <div className="bg-white/10 px-6 py-3 rounded-2xl border border-white/20">
@@ -179,7 +180,7 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
                     <div className="text-[9px] text-indigo-500 font-black mt-1.5 uppercase tracking-tighter bg-indigo-50 px-2 py-0.5 rounded inline-block">{p.category}</div>
                   </td>
                   <td className="px-8 py-6 text-center text-slate-500 font-black text-[10px] uppercase tracking-widest">
-                    {activeCustomer}
+                    {getCustomerDisplayName(activeCustomer)}
                   </td>
                   <td className="px-8 py-6 text-center">
                     <span className={`font-black text-lg ${currentSchedule === 0 ? 'text-slate-300' : (isHistorical ? 'text-slate-600' : 'text-slate-900')}`}>
@@ -225,7 +226,7 @@ const ScheduleManager: React.FC<ScheduleManagerProps> = ({
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-[2.5rem] shadow-2xl max-w-md w-full p-10 border border-white/20 animate-in zoom-in-95 duration-200 text-left">
             <h3 className="text-2xl font-black text-slate-900 mb-2 leading-none text-left">Schedule Revision</h3>
-            <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2 text-left">Customer: {activeCustomer}</p>
+            <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-2 text-left">Customer: {getCustomerDisplayName(activeCustomer)}</p>
             <p className="text-sm text-slate-500 mb-8 font-medium text-left">Updating commit for: <span className="text-indigo-600 font-black">{selectedPart.name}</span></p>
             
             <form onSubmit={handleUpdateSubmit} className="space-y-6 text-left">

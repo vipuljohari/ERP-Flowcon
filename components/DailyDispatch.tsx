@@ -6,6 +6,7 @@ import { Part, Customer, Sale, InwardLog, AdminAlert } from '../types';
 import { TallyService, TallyImportResult, TallyMatchedItem } from '../services/tally';
 // Clock-corrected timestamp helpers — see services/time.ts.
 import { getLocalISOString, correctedNow } from '../services/time';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 
 interface DailyDispatchProps {
   parts: Part[];
@@ -460,7 +461,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
               value={activeCustomer}
               onChange={(e) => onCustomerChange(e.target.value)}
             >
-              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
             </select>
         </div>
       </header>
@@ -523,7 +524,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
             </div>
             <div className="text-left">
                 <p className="text-sm font-black uppercase tracking-widest text-left">{isHistorical ? `BACK-DATED DISPATCH: ${selectedDateDisplay}` : 'ITEMS TO DISPATCH'}</p>
-                <p className="text-xs text-slate-400 font-bold uppercase tracking-tighter text-left">Target consignee: {activeCustomer}</p>
+                <p className="text-xs text-slate-400 font-bold uppercase tracking-tighter text-left">Target consignee: {getCustomerDisplayName(activeCustomer)}</p>
             </div>
         </div>
         <button 
@@ -577,7 +578,7 @@ const DailyDispatch: React.FC<DailyDispatchProps> = ({
                           disabled={true}
                           className="w-full px-4 py-3 bg-slate-100 border border-slate-200 rounded-xl font-bold text-slate-400 text-xs cursor-not-allowed outline-none select-none"
                         >
-                          {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                          {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
                         </select>
                       </div>
 

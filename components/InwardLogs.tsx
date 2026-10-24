@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { InwardLog, Part, RawMaterial, RMInwardLog, InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS } from '../types';
-import * as XLSX from 'xlsx';
 import { isSheetRM, rmAllCustomers } from '../services/rmYield';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 
 // 21-Sep-26: this report was Part/SAP-code-only (InwardLog) — a raw
 // material receipt only ever showed up here if its bars/pieces were
@@ -17,6 +17,31 @@ import { isSheetRM, rmAllCustomers } from '../services/rmYield';
 // are kept in a SEPARATE stat from the Part Pcs headline (different units
 // — Pipes/Kg vs Pcs — summing them together would be meaningless).
 type LedgerRow = { kind: 'part'; log: InwardLog } | { kind: 'rm'; log: RMInwardLog };
+
+// 24-Oct-26 — one normalized shape both the on-screen table and the Excel
+// export read from, same pattern as SalesLog.tsx's Dispatch Report: build
+// it once per row (whichever kind it is), render it twice. `customerName`
+// is always the FULL real name here (used for the Excel export and as the
+// un-shortened source value) — the table applies getCustomerDisplayName()
+// only at render time, same as Dispatch Report.
+interface NormalizedRow {
+  key: string;
+  kind: 'part' | 'rm';
+  date: Date;
+  invoiceNo: string;
+  customerName: string;
+  sapCode: string;
+  description: string;
+  sizeSpec: string;
+  supplier: string;
+  qty: number;
+  unit: 'Pcs' | 'Pipes' | 'Kg';
+  isAdj: boolean;
+  isAudit: boolean;
+  remarkBadge: string;
+  remarkNote: string;
+  deleteId: string;
+}
 
 interface InwardLogsProps {
   logs: InwardLog[];
@@ -41,7 +66,6 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
   rawMaterials = [],
   localRMOpeningBalances = {}
 }) => {
-  const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
   const [selectedSize, setSelectedSize] = useState<string>('All');
   // 12-Oct-26, Vipul's ask — this report mixes two different units in the
   // same list (Part-allotted rows are always Pcs; RM-only rows are Pipes,
@@ -63,7 +87,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     const d = new Date(auditDate);
     return toLocalISO(new Date(d.getFullYear(), d.getMonth(), 1));
   }, [auditDate]);
-  
+
   const defaultEnd = useMemo(() => {
     return toLocalISO(auditDate);
   }, [auditDate]);
@@ -129,7 +153,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
         const unit = isRM ? 'Pipes' : 'Pcs';
         const label = isRM ? 'RM Opening Balance' : 'Item Opening Balance';
         const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
-        
+
         let context = raw.replace(/\[(RM_)?OPENING_BALANCE_SET:[^\]]+\]\s*/g, '').trim();
         if (context.toLowerCase().includes('opening balance set to')) {
           context = context.replace(/RM Opening Balance set to [\d.-]+ Pipes/i, '')
@@ -261,36 +285,85 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     ...filteredRmLogs.map((log): LedgerRow => ({ kind: 'rm', log })),
   ], [filteredLogs, filteredRmLogs]);
 
-  const groupedLogs = useMemo(() => {
-    const groups: Record<string, LedgerRow[]> = {};
-    combinedRows.forEach(row => {
-      const dateKey = new Date(row.log.timestamp).toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      });
-      if (!groups[dateKey]) {
-        groups[dateKey] = [];
-      }
-      groups[dateKey] = [...groups[dateKey], row];
-    });
-
-    Object.keys(groups).forEach(k => {
-      groups[k].sort((a, b) => new Date(b.log.timestamp).getTime() - new Date(a.log.timestamp).getTime());
-    });
-
-    return Object.entries(groups).sort((a, b) => {
-      return new Date(b[1][0].log.timestamp).getTime() - new Date(a[1][0].log.timestamp).getTime();
-    });
-  }, [combinedRows]);
-
   const totalRangeInward = useMemo(() => {
     return filteredLogs.reduce((acc, l) => acc + l.quantity, 0);
   }, [filteredLogs]);
 
-  const toggleDate = (date: string) => {
-    setExpandedDates(prev => ({ ...prev, [date]: !prev[date] }));
-  };
+  // 24-Oct-26 — one normalized row per entry (whichever kind), newest
+  // first (same net ordering the old date-grouped accordion produced:
+  // dates newest-first, and within a date, entries newest-first too — a
+  // single descending sort by full timestamp reproduces that exactly).
+  // Feeds both the flat table below and the Excel export, so they always
+  // show the same rows in the same order.
+  const reportRows = useMemo((): NormalizedRow[] => {
+    const rows: NormalizedRow[] = combinedRows.map(row => {
+      if (row.kind === 'rm') {
+        const log = row.log;
+        const isAdj = log.quantity < 0;
+        const rm = rawMaterials.find(r => r.id === log.rmId);
+        const correctionTag = isAdj ? parseInventoryCorrectionTag(log.remarks) : null;
+        return {
+          key: `rm_${log.id}`,
+          kind: 'rm',
+          date: new Date(log.timestamp),
+          invoiceNo: log.invoiceNumber || '-',
+          customerName: rm ? rmAllCustomers(rm).join(', ') : 'N/A',
+          sapCode: '—',
+          description: `RM Receipt — ${rm?.size || log.rmSize}`,
+          sizeSpec: rm?.size || log.rmSize,
+          supplier: log.supplier,
+          qty: log.quantity,
+          unit: log.unit === 'kg' ? 'Kg' : 'Pipes',
+          isAdj,
+          isAudit: false,
+          remarkBadge: correctionTag ? `📋 ${correctionTag.reasonLabel}` : '🔧 RM Receipt',
+          remarkNote: correctionTag ? correctionTag.note : (log.remarks || 'Standard RM Inward — not yet allotted to a specific item'),
+          deleteId: log.id,
+        };
+      }
+
+      const log = row.log;
+      const isAdj = log.quantity < 0;
+      const isAudit = isAuditLog(log);
+      const part = parts.find(p => p.id === log.partId);
+      const rm = rawMaterials.find(r => r.partId === log.partId || r.id === log.partId);
+      const correctionTag = isAdj ? parseInventoryCorrectionTag(log.remarks) : null;
+
+      let remarkBadge = '📝 Standard Inward';
+      let remarkNote = '';
+      if (isAudit) {
+        remarkBadge = '⚙️ Opening Audit Record';
+        remarkNote = formatAuditRemarks(log);
+      } else if (correctionTag) {
+        remarkBadge = `📋 ${correctionTag.reasonLabel}`;
+        remarkNote = correctionTag.note;
+      } else if (isAdj) {
+        remarkBadge = '⚠️ Adjustment';
+        remarkNote = log.remarks || '';
+      }
+
+      return {
+        key: `part_${log.id}`,
+        kind: 'part',
+        date: new Date(log.timestamp),
+        invoiceNo: log.invoiceNumber || (isAudit ? 'ADMIN_AUDIT' : '-'),
+        customerName: part?.mappedCustomers?.join(', ') || rm?.customerName || 'N/A',
+        sapCode: log.sapCode,
+        description: log.partName,
+        sizeSpec: part?.size || rm?.size || 'N/A',
+        supplier: log.supplier,
+        qty: log.quantity,
+        unit: 'Pcs',
+        isAdj,
+        isAudit,
+        remarkBadge,
+        remarkNote,
+        deleteId: log.id,
+      };
+    });
+
+    return rows.sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [combinedRows, parts, rawMaterials]);
 
   const formatDateDisplay = (dateStr: string) => {
     if (!dateStr) return '';
@@ -298,76 +371,108 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     return `${d}-${m}-${y}`;
   };
 
-  const exportToExcel = () => {
-    if (combinedRows.length === 0) return;
-    const worksheetData = combinedRows.map(row => {
-      if (row.kind === 'rm') {
-        const log = row.log;
-        const date = new Date(log.timestamp);
-        const rm = rawMaterials.find(r => r.id === log.rmId);
-        return {
-          'Date': date.toLocaleDateString('en-GB'),
-          'Time': date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          'Customer Name': rm ? rmAllCustomers(rm).join(', ') : 'N/A',
-          'Invoice / Ref No.': log.invoiceNumber || '-',
-          'SAP Code': '—',
-          'Part / Material Description': `RM Receipt — ${rm?.size || log.rmSize}`,
-          'RM Size/Specifications': rm?.size || log.rmSize,
-          'Supplier/Authorized By': log.supplier,
-          'Quantity / Adjustment': log.quantity,
-          'Unit': log.unit === 'kg' ? 'Kg' : 'Pipes',
-          'Remarks / Audit Record': log.remarks || 'Standard RM Inward — not yet allotted to a specific item',
-        };
-      }
-      const log = row.log;
-      const date = new Date(log.timestamp);
-      const part = parts.find(p => p.id === log.partId);
-      const rm = rawMaterials.find(r => r.partId === log.partId || r.id === log.partId);
-      const isAudit = isAuditLog(log);
+  // 24-Oct-26 rewrite — same move as Dispatch Report's exportToExcel:
+  // switched from the free `xlsx` package (can't style cells at all) to
+  // `exceljs`, loaded on demand (not a static import) so it doesn't bloat
+  // every user's initial page load. Column set/order is unchanged from
+  // before — only the styling (bold colored header, grid borders) and a
+  // new TOTAL row are new.
+  const exportToExcel = async () => {
+    if (reportRows.length === 0) return;
 
-      return {
-        'Date': date.toLocaleDateString('en-GB'),
-        'Time': date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        'Customer Name': part?.mappedCustomers?.join(', ') || rm?.customerName || 'N/A',
-        'Invoice / Ref No.': log.invoiceNumber || (isAudit ? 'ADMIN_AUDIT' : '-'),
-        'SAP Code': log.sapCode,
-        'Part / Material Description': log.partName,
-        'RM Size/Specifications': part?.size || rm?.size || 'N/A',
-        'Supplier/Authorized By': log.supplier,
-        'Quantity / Adjustment': log.quantity,
-        'Unit': 'Pcs',
-        'Remarks / Audit Record': formatAuditRemarks(log)
-      };
-    });
-    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
-    const workbook = XLSX.utils.book_new();
+    const { default: ExcelJS } = await import('exceljs');
+    const workbook = new ExcelJS.Workbook();
 
     const sheetName =
       selectedSize === 'Discrepancy Control Entry' ? 'Discrepancy Control' :
       selectedSize === 'Opening inventory correction' ? 'Opening Corrections' :
       'Inward Logs';
+    const worksheet = workbook.addWorksheet(sheetName);
 
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
-    worksheet['!cols'] = [
-      { wch: 12 },
-      { wch: 12 },
-      { wch: 25 },
-      { wch: 20 },
-      { wch: 15 },
-      { wch: 30 },
-      { wch: 25 },
-      { wch: 20 },
-      { wch: 18 },
-      { wch: 10 },
-      { wch: 55 }
+    worksheet.columns = [
+      { width: 10.375 }, // Date
+      { width: 9 },      // Time
+      { width: 24 },     // Customer Name
+      { width: 17.375 }, // Invoice / Ref No.
+      { width: 13 },     // SAP Code
+      { width: 28 },     // Part / Material Description
+      { width: 16.75 },  // RM Size/Specifications
+      { width: 18 },     // Supplier/Authorized By
+      { width: 13 },     // Quantity / Adjustment
+      { width: 8 },      // Unit
+      { width: 45 },     // Remarks / Audit Record
     ];
 
-    const specName = 
+    const headerRow = worksheet.addRow([
+      'Date', 'Time', 'Customer Name', 'Invoice / Ref No.', 'SAP Code',
+      'Part / Material Description', 'RM Size/\nSpecifications', 'Supplier/Authorized By',
+      'Quantity / Adjustment', 'Unit', 'Remarks / Audit Record',
+    ]);
+    headerRow.height = 30;
+    headerRow.eachCell(cell => {
+      cell.font = { bold: true, size: 11 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+      cell.border = {
+        top: { style: 'thin' }, left: { style: 'thin' },
+        bottom: { style: 'thin' }, right: { style: 'thin' },
+      };
+    });
+
+    reportRows.forEach(r => {
+      const row = worksheet.addRow([
+        r.date.toLocaleDateString('en-GB'),
+        r.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        r.customerName,
+        r.invoiceNo,
+        r.sapCode,
+        r.description,
+        r.sizeSpec,
+        r.supplier,
+        r.qty,
+        r.unit,
+        [r.remarkBadge.replace(/^[^\s]+\s/, ''), r.remarkNote].filter(Boolean).join(' — '),
+      ]);
+      row.getCell(9).numFmt = '#,##0';
+      row.eachCell(cell => {
+        cell.border = {
+          top: { style: 'thin' }, left: { style: 'thin' },
+          bottom: { style: 'thin' }, right: { style: 'thin' },
+        };
+      });
+    });
+
+    const totalParts = [
+      totalRangeInward !== 0 ? `${totalRangeInward.toLocaleString()} Pcs` : null,
+      rmTotals.pipes !== 0 ? `${rmTotals.pipes > 0 ? '+' : ''}${rmTotals.pipes.toLocaleString()} Pipes` : null,
+      rmTotals.kg !== 0 ? `${rmTotals.kg > 0 ? '+' : ''}${rmTotals.kg.toLocaleString()} Kg` : null,
+    ].filter(Boolean).join(' / ');
+    const totalRow = worksheet.addRow(['TOTAL', '', '', '', '', '', '', '', totalParts, '', '']);
+    totalRow.eachCell(cell => {
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+      cell.border = {
+        top: { style: 'thin' }, left: { style: 'thin' },
+        bottom: { style: 'thin' }, right: { style: 'thin' },
+      };
+    });
+    worksheet.mergeCells(`A${totalRow.number}:H${totalRow.number}`);
+
+    const specName =
       selectedSize === 'Discrepancy Control Entry' ? 'Discrepancy_Control_Entry' :
       selectedSize === 'Opening inventory correction' ? 'Opening_Inventory_Correction' :
       selectedSize.replace(/[/\\?%*:|"<>]/g, '-');
 
-    XLSX.writeFile(workbook, `RM_Ledger_Report_${specName}_${startDate}_to_${endDate}.xlsx`);
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `RM_Ledger_Report_${specName}_${startDate}_to_${endDate}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   const handleDelete = (id: string) => {
@@ -382,6 +487,27 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     }
   };
 
+  const qtyColorClass = (r: NormalizedRow) => {
+    if (r.kind === 'rm') return r.isAdj ? 'text-rose-600' : 'text-indigo-600';
+    if (r.isAudit) return 'text-amber-700';
+    return r.isAdj ? 'text-rose-600' : 'text-emerald-600';
+  };
+
+  const rowTintClass = (r: NormalizedRow) => {
+    if (r.kind === 'rm') return r.isAdj ? 'bg-rose-50/40 border-l-4 border-l-rose-400' : 'bg-indigo-50/40 border-l-4 border-l-indigo-400';
+    if (r.isAudit) return 'bg-amber-50/60 border-l-4 border-l-amber-400';
+    if (r.isAdj) return 'bg-rose-50/40 border-l-4 border-l-rose-400';
+    return '';
+  };
+
+  const badgeClass = (r: NormalizedRow) => {
+    if (r.isAudit) return 'bg-amber-100 text-amber-800 border-amber-300';
+    if (r.kind === 'rm' && !r.isAdj) return 'bg-indigo-100 text-indigo-800 border-indigo-300';
+    if (r.isAdj && r.remarkBadge.includes('📋')) return 'bg-amber-100 text-amber-800 border-amber-300';
+    if (r.isAdj) return 'bg-rose-100 text-rose-700 border-rose-200';
+    return 'bg-slate-100 text-slate-400 border-slate-200';
+  };
+
   return (
     <div className="space-y-8 text-left">
       <header className="flex flex-col gap-6 text-left">
@@ -391,11 +517,11 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
             <p className="text-slate-500 font-medium leading-none text-left">Register of inward deliveries and stock adjustments</p>
           </div>
         </div>
-        
+
         <div className={`p-8 rounded-[2.5rem] shadow-sm border flex flex-col xl:flex-row gap-8 items-stretch xl:items-end transition-all ${isAdmin ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
           <div className="flex-1 space-y-3 text-left">
             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 text-left">RM Size/Specifications</label>
-            <select 
+            <select
               className="px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl focus:border-emerald-500 outline-none w-full transition-all shadow-inner font-bold text-slate-800"
               value={selectedSize}
               onChange={(e) => setSelectedSize(e.target.value)}
@@ -458,7 +584,7 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
           </div>
 
           <div className="flex gap-4 min-w-[180px]">
-            <button onClick={exportToExcel} disabled={combinedRows.length === 0} className="flex-1 bg-emerald-600 text-white px-8 py-4 h-[72px] rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-emerald-700 transition-all flex items-center justify-center gap-3 shadow-xl shadow-emerald-100 active:scale-95 disabled:opacity-50 disabled:grayscale">
+            <button onClick={exportToExcel} disabled={reportRows.length === 0} className="flex-1 bg-emerald-600 text-white px-8 py-4 h-[72px] rounded-2xl font-black uppercase text-[11px] tracking-widest hover:bg-emerald-700 transition-all flex items-center justify-center gap-3 shadow-xl shadow-emerald-100 active:scale-95 disabled:opacity-50 disabled:grayscale">
               <span>Download Excel</span>
               <span className="text-2xl leading-none">📊</span>
             </button>
@@ -467,12 +593,12 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
       </header>
 
       <div className={`rounded-[2.5rem] p-8 text-white flex items-center justify-between shadow-2xl transition-all ${
-        isAdmin 
-          ? 'bg-amber-600 shadow-amber-100' 
-          : (selectedSize === 'Discrepancy Control Entry' 
-              ? 'bg-rose-600 shadow-rose-100' 
-              : (selectedSize === 'Opening inventory correction' 
-                  ? 'bg-indigo-600 shadow-indigo-100' 
+        isAdmin
+          ? 'bg-amber-600 shadow-amber-100'
+          : (selectedSize === 'Discrepancy Control Entry'
+              ? 'bg-rose-600 shadow-rose-100'
+              : (selectedSize === 'Opening inventory correction'
+                  ? 'bg-indigo-600 shadow-indigo-100'
                   : 'bg-emerald-600 shadow-emerald-100'))
       }`}>
          <div className="flex items-center gap-6 text-left">
@@ -481,10 +607,10 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
             </div>
             <div className="text-left">
               <p className="text-[10px] font-black uppercase tracking-widest opacity-60 mb-1 text-left">
-                {selectedSize === 'Discrepancy Control Entry' 
-                  ? 'Discrepancy Control Total (Negative Values)' 
-                  : (selectedSize === 'Opening inventory correction' 
-                      ? 'Opening Inventory Corrections (Admin Audit Log)' 
+                {selectedSize === 'Discrepancy Control Entry'
+                  ? 'Discrepancy Control Total (Negative Values)'
+                  : (selectedSize === 'Opening inventory correction'
+                      ? 'Opening Inventory Corrections (Admin Audit Log)'
                       : 'Net Period Change (Inward - Adj)')}
               </p>
               <h4 className="text-3xl font-black tracking-tighter leading-none text-left">{totalRangeInward.toLocaleString()} Pcs</h4>
@@ -510,184 +636,96 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
          )}
       </div>
 
-      <div className="space-y-4 pb-12 text-left">
-        {groupedLogs.map(([date, dailyLogs]) => (
-          <div key={date} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden text-left">
-            <button onClick={() => toggleDate(date)} className={`w-full flex items-center justify-between p-8 text-left transition-colors ${expandedDates[date] ? 'bg-emerald-50/30' : 'hover:bg-slate-50'}`}>
-              <div className="flex items-center gap-12 text-left">
-                <div className="flex flex-col items-center text-center">
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Entries</span>
-                    <span className="text-2xl font-black text-emerald-600 leading-none">{dailyLogs.length}</span>
-                </div>
-                <div className="flex flex-col border-l border-slate-100 pl-12 text-left">
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 text-left">Receipt Date</span>
-                  <span className="text-lg font-black text-slate-900 uppercase tracking-tight leading-none text-left">{date}</span>
-                </div>
-              </div>
-              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-300 ${expandedDates[date] ? 'rotate-180 bg-emerald-600 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7"></path></svg>
-              </div>
-            </button>
-
-            {expandedDates[date] && (
-              <div className="border-t border-slate-100 bg-white text-left">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
-                      <tr>
-                        <th className="px-10 py-6 text-left border-r border-slate-200/40">Part / RM & Size</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Customer Name</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Invoice No.</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Responsible</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Qty</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Type / Remark</th>
-                        <th className="px-10 py-6 text-center">Time</th>
-                        {isAdmin && <th className="px-10 py-6 text-center">Admin</th>}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {dailyLogs.map(row => {
-                        if (row.kind === 'rm') {
-                          const log = row.log;
-                          const isAdj = log.quantity < 0;
-                          const rm = rawMaterials.find(r => r.id === log.rmId);
-                          const unitLabel = log.unit === 'kg' ? 'Kg' : 'Pipes';
-
-                          return (
-                            <tr key={log.id} className={`${isAdj ? 'bg-rose-50/30' : 'bg-indigo-50/30'} hover:bg-indigo-100/30 border-l-4 border-l-indigo-400 transition-colors group`}>
-                              <td className="px-10 py-6 text-left border-r border-slate-200/40">
-                                <div className="text-[10px] text-indigo-500 font-mono tracking-tighter uppercase mb-0.5 text-left">RM Receipt</div>
-                                <div className="text-sm font-black text-slate-800 uppercase text-left">{rm?.size || log.rmSize}</div>
-                                <div className="text-[9px] text-indigo-500 font-bold uppercase mt-1 text-left">{rm && isSheetRM(rm) ? 'Sheet Metal' : 'Tube / Pipe'}</div>
-                              </td>
-                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                                <span className="text-xs font-black text-slate-700 uppercase">
-                                  {rm ? rmAllCustomers(rm).join(', ') : 'N/A'}
-                                </span>
-                              </td>
-                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                                <span className="text-xs font-mono font-bold text-indigo-600">
-                                  {log.invoiceNumber || '-'}
-                                </span>
-                              </td>
-                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                                <span className={`inline-block px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border ${
-                                  isAdj ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-indigo-50 text-indigo-700 border-indigo-100'
-                                }`}>
-                                  {log.supplier}
-                                </span>
-                              </td>
-                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                                <span className={`font-black text-base ${isAdj ? 'text-rose-600' : 'text-indigo-600'}`}>
-                                  {log.quantity > 0 ? `+${log.quantity}` : log.quantity} <span className="text-[9px] font-bold uppercase">{unitLabel}</span>
-                                </span>
-                              </td>
-                              <td className="px-10 py-6 text-center border-r border-slate-200/40 max-w-[300px]">
-                                {isAdj && parseInventoryCorrectionTag(log.remarks) ? (
-                                  <div className="flex flex-col items-center">
-                                    <span className="text-[8px] font-black text-amber-800 uppercase tracking-widest mb-1 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">📋 {parseInventoryCorrectionTag(log.remarks)!.reasonLabel}</span>
-                                    {parseInventoryCorrectionTag(log.remarks)!.note && (
-                                      <span className="text-[10px] font-bold text-slate-500 line-clamp-2 italic leading-tight">"{parseInventoryCorrectionTag(log.remarks)!.note}"</span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="flex flex-col items-center">
-                                    <span className="text-[8px] font-black text-indigo-800 uppercase tracking-widest mb-1 bg-indigo-100 border border-indigo-300 px-2 py-0.5 rounded">🔧 RM Receipt</span>
-                                    <span className="text-[10px] font-bold text-slate-500 leading-snug text-center mt-0.5">{log.remarks || 'Standard RM Inward — not yet allotted to a specific item'}</span>
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                                <div className="text-xs font-black text-slate-600 font-mono">{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
-                              </td>
-                              {isAdmin && (
-                                <td className="px-10 py-6 text-center">
-                                  <button onClick={() => handleDeleteRm(log.id)} className="w-10 h-10 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center">
-                                    🗑️
-                                  </button>
-                                </td>
-                              )}
-                            </tr>
-                          );
-                        }
-
-                        const log = row.log;
-                        const isAdj = log.quantity < 0;
-                        const isAudit = isAuditLog(log);
-                        const part = parts.find(p => p.id === log.partId);
-                        const rm = rawMaterials.find(r => r.partId === log.partId || r.id === log.partId);
-
-                        return (
-                          <tr key={log.id} className={`${isAudit ? 'bg-amber-50/50 hover:bg-amber-100/50 border-l-4 border-l-amber-500' : (isAdj ? 'bg-rose-50/30' : 'hover:bg-emerald-50/10')} transition-colors group`}>
-                            <td className="px-10 py-6 text-left border-r border-slate-200/40">
-                              <div className="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5 text-left">{log.sapCode}</div>
-                              <div className="text-sm font-black text-slate-800 uppercase text-left">{log.partName}</div>
-                              <div className="text-[9px] text-indigo-500 font-bold uppercase mt-1 text-left">{part?.size || rm?.size || 'N/A'}</div>
-                            </td>
-                            <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                              <span className="text-xs font-black text-slate-700 uppercase">
-                                {part?.mappedCustomers?.join(', ') || rm?.customerName || 'N/A'}
-                              </span>
-                            </td>
-                            <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                              <span className="text-xs font-mono font-bold text-indigo-600">
-                                {log.invoiceNumber || (isAudit ? 'ADMIN_AUDIT' : '-')}
-                              </span>
-                            </td>
-                            <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                              <span className={`inline-block px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border ${
-                                isAudit ? 'bg-amber-100 text-amber-800 border-amber-300' : (isAdj ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-100')
-                              }`}>
-                                {log.supplier}
-                              </span>
-                            </td>
-                            <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                              <span className={`font-black text-base ${isAudit ? 'text-amber-700' : (isAdj ? 'text-rose-600' : 'text-emerald-600')}`}>
-                                {log.quantity > 0 ? `+${log.quantity}` : log.quantity} <span className="text-[9px] font-bold uppercase">Pcs</span>
-                              </span>
-                            </td>
-                            <td className="px-10 py-6 text-center border-r border-slate-200/40 max-w-[300px]">
-                              {isAudit ? (
-                                <div className="flex flex-col items-center">
-                                  <span className="text-[8px] font-black text-amber-800 uppercase tracking-widest mb-1 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">⚙️ Opening Audit Record</span>
-                                  <span className="text-[11px] font-bold text-slate-800 leading-snug text-center mt-0.5">{formatAuditRemarks(log)}</span>
-                                </div>
-                              ) : isAdj && parseInventoryCorrectionTag(log.remarks) ? (
-                                <div className="flex flex-col items-center">
-                                  <span className="text-[8px] font-black text-amber-800 uppercase tracking-widest mb-1 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">📋 {parseInventoryCorrectionTag(log.remarks)!.reasonLabel}</span>
-                                  {parseInventoryCorrectionTag(log.remarks)!.note && (
-                                    <span className="text-[10px] font-bold text-slate-500 line-clamp-2 italic leading-tight">"{parseInventoryCorrectionTag(log.remarks)!.note}"</span>
-                                  )}
-                                </div>
-                              ) : isAdj ? (
-                                <div className="flex flex-col items-center">
-                                  <span className="text-[8px] font-black text-rose-500 uppercase tracking-widest mb-1">Adjustment</span>
-                                  <span className="text-[10px] font-bold text-slate-500 line-clamp-2 italic leading-tight">"{log.remarks}"</span>
-                                </div>
-                              ) : (
-                                <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest italic">Standard Inward</span>
-                              )}
-                            </td>
-                            <td className="px-10 py-6 text-center border-r border-slate-200/40">
-                              <div className="text-xs font-black text-slate-600 font-mono">{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
-                            </td>
-                            {isAdmin && (
-                              <td className="px-10 py-6 text-center">
-                                <button onClick={() => handleDelete(log.id)} className="w-10 h-10 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center">
-                                  🗑️
-                                </button>
-                              </td>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+      {/* 24-Oct-26 — date-grouped expand/collapse accordion replaced with a
+          flat table + pinned TOTAL row, same pattern as Dispatch Report.
+          Fixed percentage column widths (table-layout: fixed) so this never
+          needs a horizontal scrollbar — long text truncates with the full
+          value on hover via title. Pcs/Pipes/Kg are kept as separate
+          figures in the total row, same as the banner above — summing them
+          together would be meaningless. */}
+      <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden pb-2">
+        <div className="max-h-[70vh] overflow-y-auto">
+          <table className="w-full text-left border-collapse table-fixed text-[11px]">
+            <colgroup>
+              <col style={{ width: '9%' }} />
+              <col style={{ width: isAdmin ? '8%' : '9%' }} />
+              <col style={{ width: isAdmin ? '13%' : '14%' }} />
+              <col style={{ width: '6%' }} />
+              <col style={{ width: isAdmin ? '14%' : '15%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: isAdmin ? '15%' : '18%' }} />
+              {isAdmin && <col style={{ width: '5%' }} />}
+            </colgroup>
+            <thead className="bg-slate-50 sticky top-0 z-10">
+              <tr className="text-slate-900 uppercase font-black tracking-widest border-b-2 border-slate-200">
+                <th className="px-3 py-3">Date</th>
+                <th className="px-3 py-3">Invoice No.</th>
+                <th className="px-3 py-3">Customer</th>
+                <th className="px-3 py-3">SAP Code</th>
+                <th className="px-3 py-3">Description</th>
+                <th className="px-3 py-3">Size/Spec</th>
+                <th className="px-3 py-3">Supplier</th>
+                <th className="px-3 py-3 text-right">Qty</th>
+                <th className="px-3 py-3">Remark</th>
+                {isAdmin && <th className="px-3 py-3 text-center">Admin</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {reportRows.map(r => (
+                <tr key={r.key} className={`hover:bg-slate-50 transition-colors ${rowTintClass(r)}`}>
+                  <td className="px-3 py-2.5 truncate" title={r.date.toLocaleString('en-GB')}>
+                    {r.date.toLocaleDateString('en-GB')} <span className="text-slate-400">{r.date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </td>
+                  <td className="px-3 py-2.5 truncate font-mono text-indigo-600" title={r.invoiceNo}>{r.invoiceNo}</td>
+                  <td className="px-3 py-2.5 truncate" title={r.customerName}>{getCustomerDisplayName(r.customerName)}</td>
+                  <td className="px-3 py-2.5 truncate font-mono" title={r.sapCode}>{r.sapCode}</td>
+                  <td className="px-3 py-2.5 truncate font-bold" title={r.description}>{r.description}</td>
+                  <td className="px-3 py-2.5 truncate" title={r.sizeSpec}>{r.sizeSpec}</td>
+                  <td className="px-3 py-2.5 truncate" title={r.supplier}>{r.supplier}</td>
+                  <td className={`px-3 py-2.5 text-right font-black ${qtyColorClass(r)}`}>
+                    {r.qty > 0 ? `+${r.qty.toLocaleString()}` : r.qty.toLocaleString()} <span className="text-[9px] font-bold uppercase">{r.unit}</span>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <span className={`inline-block px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-tight border ${badgeClass(r)}`}>{r.remarkBadge}</span>
+                    {r.remarkNote && <div className="text-[10px] text-slate-500 italic truncate mt-0.5" title={r.remarkNote}>{r.remarkNote}</div>}
+                  </td>
+                  {isAdmin && (
+                    <td className="px-3 py-2.5 text-center">
+                      <button onClick={() => r.kind === 'rm' ? handleDeleteRm(r.deleteId) : handleDelete(r.deleteId)} className="w-7 h-7 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center mx-auto">
+                        🗑️
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {reportRows.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 10 : 9} className="px-3 py-10 text-center text-slate-400 font-bold">
+                    No inward entries match this filter.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {reportRows.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-amber-50 border-t-2 border-amber-200 font-black text-slate-900">
+                  <td className="px-3 py-3" colSpan={7}>TOTAL</td>
+                  <td className="px-3 py-3 text-right whitespace-normal leading-tight">
+                    {[
+                      totalRangeInward !== 0 ? `${totalRangeInward.toLocaleString()} Pcs` : null,
+                      rmTotals.pipes !== 0 ? `${rmTotals.pipes > 0 ? '+' : ''}${rmTotals.pipes.toLocaleString()} Pipes` : null,
+                      rmTotals.kg !== 0 ? `${rmTotals.kg > 0 ? '+' : ''}${rmTotals.kg.toLocaleString()} Kg` : null,
+                    ].filter(Boolean).map((t, i) => <div key={i}>{t}</div>)}
+                  </td>
+                  <td className="px-3 py-3"></td>
+                  {isAdmin && <td className="px-3 py-3"></td>}
+                </tr>
+              </tfoot>
             )}
-          </div>
-        ))}
+          </table>
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { RawMaterial, Customer, Part, RMCategory } from '../types';
 import { rmAllCustomers, rmMatchesCustomer } from '../services/rmYield';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 
 // A Part with no partType set is a pre-existing Tubular part (see
 // types.ts's PartType comment) — treat undefined the same as 'tubular'
@@ -248,7 +249,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
             onChange={(e) => setSelectedCustFilter(e.target.value)}
           >
             <option value="All">All Customers</option>
-            {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+            {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
           </select>
           <button
             onClick={handleOpenAdd}
@@ -495,7 +496,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                         });
                       }}
                     >
-                      {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                      {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
                     </select>
                   </div>
 
@@ -522,7 +523,7 @@ const RMMaster: React.FC<RMMasterProps> = ({ rawMaterials, parts, customers, onA
                                 setFormData({ ...formData, customerNames: updated });
                               }}
                             />
-                            <span className="text-xs font-bold text-slate-800">{c.name}</span>
+                            <span className="text-xs font-bold text-slate-800">{getCustomerDisplayName(c.name)}</span>
                           </label>
                         );
                       })}

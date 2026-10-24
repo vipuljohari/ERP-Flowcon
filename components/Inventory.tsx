@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance, GateDocumentForApproval, PendingInventoryCorrectionPayload, InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS } from '../types';
 import { CATEGORIES } from '../constants';
 import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate } from '../services/rmYield';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
 // used to be computed from a raw `new Date()`, so a device with a badly
 // wrong system clock would validate against its OWN wrong idea of "today",
@@ -1026,7 +1027,7 @@ const Inventory: React.FC<InventoryProps> = ({
               onChange={(e) => setSelectedCustomer(e.target.value)}
             >
               <option value="All">All Customers</option>
-              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
             </select>
           </div>
 

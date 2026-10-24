@@ -4,6 +4,7 @@ import { Part, Sale, InventoryStats, Customer, RawMaterial, InwardLog } from '..
 import ReportGenerator from './ReportGenerator';
 import { useBrandName } from '../contexts/CompanyContext';
 import { isSheetRM, rmKgPerPart, rmMatchesCustomer, partsSharingRM, partsPerRMUnit, computeRMStockAsOnDate } from '../services/rmYield';
+import { getCustomerDisplayName } from '../services/customerDisplay';
 
 const getCustomerSchedule = (p: Part, customerName: string) => {
   if (!p.schedules) return 0;
@@ -635,7 +636,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
               value={activeCustomer}
               onChange={(e) => onCustomerChange(e.target.value)}
             >
-              {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              {customers.map(c => <option key={c.id} value={c.name}>{getCustomerDisplayName(c.name)}</option>)}
             </select>
           </div>
         </div>
@@ -643,7 +644,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 text-left">
         {[
-          { label: 'Qty Dispatched Period', val: `${filteredSales.reduce((a,b) => a + b.quantity, 0).toLocaleString()} Pcs`, color: 'text-indigo-600', sub: `${activeCustomer} Output` },
+          { label: 'Qty Dispatched Period', val: `${filteredSales.reduce((a,b) => a + b.quantity, 0).toLocaleString()} Pcs`, color: 'text-indigo-600', sub: `${getCustomerDisplayName(activeCustomer)} Output` },
           { label: 'Shortage Alerts', val: shortageAnalysis.length, color: 'text-rose-500', sub: 'Action Required', onClick: () => setShowShortageModal(true) },
           { label: 'PERIOD ACHIEVEMENT', val: `${stats.overallAchievement.toFixed(1)}%`, color: 'text-indigo-600', sub: 'Target Compliance' },
           { label: 'Valuation', val: `₹${(stats.totalValue / 100000).toFixed(2)}L`, color: 'text-emerald-600', sub: 'Stock Assets' }
@@ -759,7 +760,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 text-left">
         <div className="lg:col-span-2 bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden text-left">
           <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center text-left">
-            <h3 className="font-black text-slate-900 text-xs uppercase tracking-widest text-left">Performance Ledger - {activeCustomer}</h3>
+            <h3 className="font-black text-slate-900 text-xs uppercase tracking-widest text-left">Performance Ledger - {getCustomerDisplayName(activeCustomer)}</h3>
             <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase text-left ${isHistorical ? 'bg-slate-100 text-slate-600' : 'bg-indigo-50 text-indigo-700'}`}>
               {isHistorical ? 'Archive Data' : 'Live Stats'}
             </span>
@@ -831,7 +832,15 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
               const isExpanded = expandedInvoices[invoiceKey];
               const firstSale = invoiceItems[0];
               const displayInvoice = firstSale.invoiceNumber || 'Manual';
-              const displayCustomer = firstSale.customer.split(' ')[0];
+              // 24-Oct-26 fix — this used to be a blind `.split(' ')[0]`,
+              // which collapsed both SIAC-SKH plants down to the same
+              // "SIAC-SKH" label with no way to tell Palwal and Jaipur
+              // dispatches apart in this feed. Routes through the shared
+              // short-name map first (so SIAC-SKH's two plants render
+              // distinctly), falling back to the old first-word behaviour
+              // for every other customer so this feed stays just as terse
+              // as before for everyone else.
+              const displayCustomer = getCustomerDisplayName(firstSale.customer, true);
               const totalQty = invoiceItems.reduce((sum, s) => sum + s.quantity, 0);
 
               return (
