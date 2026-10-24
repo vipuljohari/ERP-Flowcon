@@ -1,7 +1,10 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, Customer } from '../types';
-import * as XLSX from 'xlsx';
+// Loaded on demand inside exportToExcel (below), not statically here —
+// exceljs is a large library and a static import put it in every user's
+// initial page load, nearly doubling the app's main JS bundle, even for
+// users who never click "Download Excel" on this one screen.
 
 // Fix: Made onAddSale optional as it's currently unused within the component
 interface SalesLogProps {
@@ -17,12 +20,25 @@ interface SalesLogProps {
   customers: Customer[];
 }
 
-const SalesLog: React.FC<SalesLogProps> = ({ 
-  parts, 
-  sales, 
-  onAddSale, 
-  readOnly = false, 
-  activeCustomer, 
+// 24-Oct-26, Vipul's ask — an "All Customers" option on this screen's
+// Consignee Filter, so dispatches of the same part across multiple
+// customers can be seen (and totalled) together. `activeCustomer` is the
+// app-wide selected customer shared with Dashboard/Inventory/Schedules/
+// etc, so it can never itself become "All" without risking every other
+// screen that assumes it's one real customer name. Instead this sentinel
+// only lives in this component's own local filter state (see
+// `consigneeFilter` below) — picking a real customer here still also
+// updates the shared `activeCustomer` exactly as before (so the rest of
+// the app keeps following along), but "All Customers" stays local to this
+// report and touches nothing else.
+const ALL_CUSTOMERS_VALUE = '__ALL_CUSTOMERS__';
+
+const SalesLog: React.FC<SalesLogProps> = ({
+  parts,
+  sales,
+  onAddSale,
+  readOnly = false,
+  activeCustomer,
   onCustomerChange,
   auditDate = new Date(),
   isAdmin = false,
@@ -33,7 +49,15 @@ const SalesLog: React.FC<SalesLogProps> = ({
   const [selectedPartId, setSelectedPartId] = useState('');
   const [selectedFilterPartId, setSelectedFilterPartId] = useState('All');
   const [quantity, setQuantity] = useState(1);
-  const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
+  const [consigneeFilter, setConsigneeFilter] = useState<string>(activeCustomer);
+
+  // Keep this screen's local filter following the app-wide active customer
+  // whenever it changes from elsewhere (another screen, or the Consignee
+  // dropdown below picking a real customer) — same behaviour as before
+  // "All Customers" existed, just moved into local state.
+  useEffect(() => {
+    setConsigneeFilter(activeCustomer);
+  }, [activeCustomer]);
 
   const toLocalISO = (date: Date) => {
     const y = date.getFullYear();
@@ -46,7 +70,7 @@ const SalesLog: React.FC<SalesLogProps> = ({
     const d = new Date(auditDate);
     return toLocalISO(new Date(d.getFullYear(), d.getMonth(), 1));
   }, [auditDate]);
-  
+
   const defaultEnd = useMemo(() => {
     return toLocalISO(auditDate);
   }, [auditDate]);
@@ -59,47 +83,78 @@ const SalesLog: React.FC<SalesLogProps> = ({
     setEndDate(defaultEnd);
   }, [defaultStart, defaultEnd]);
 
+  // 24-Oct-26, Vipul's ask — the Parts dropdowns below should only list
+  // parts actually mapped (Item Master's `mappedCustomers`) to whichever
+  // consignee is selected, instead of every part in the app regardless of
+  // customer. Falls back to every part when "All Customers" is selected,
+  // since there's no single customer left to scope by.
+  const customerScopedParts = useMemo(() => {
+    if (consigneeFilter === ALL_CUSTOMERS_VALUE) return parts;
+    return parts.filter(p => p.mappedCustomers?.includes(consigneeFilter));
+  }, [parts, consigneeFilter]);
+
+  // If the previously-selected part filter doesn't belong to the newly
+  // selected consignee anymore, fall back to "All" rather than silently
+  // filtering against a part that's no longer a valid option.
+  useEffect(() => {
+    if (selectedFilterPartId !== 'All' && !customerScopedParts.some(p => p.id === selectedFilterPartId)) {
+      setSelectedFilterPartId('All');
+    }
+  }, [customerScopedParts, selectedFilterPartId]);
+
   const filteredSalesData = useMemo(() => {
     const start = new Date(startDate);
     start.setHours(0,0,0,0);
     const end = new Date(endDate);
     end.setHours(23,59,59,999);
 
-    return sales.filter(s => {
-      const matchesCustomer = s.customer && activeCustomer && s.customer.toUpperCase().trim() === activeCustomer.toUpperCase().trim();
+    const rows = sales.filter(s => {
+      const matchesCustomer = consigneeFilter === ALL_CUSTOMERS_VALUE
+        ? true
+        : (s.customer && consigneeFilter && s.customer.toUpperCase().trim() === consigneeFilter.toUpperCase().trim());
       const matchesPart = selectedFilterPartId === 'All' || s.partId === selectedFilterPartId;
       const d = new Date(s.timestamp);
       const matchesDate = d >= start && d <= end;
       return matchesCustomer && matchesPart && matchesDate;
     });
-  }, [sales, activeCustomer, selectedFilterPartId, startDate, endDate]);
 
-  const groupedSales = useMemo(() => {
-    const groups: Record<string, Sale[]> = {};
-    filteredSalesData.forEach(sale => {
-      const dateKey = new Date(sale.timestamp).toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      });
-      if (!groups[dateKey]) {
-        groups[dateKey] = [];
-      }
-      groups[dateKey] = [...groups[dateKey], sale];
+    // 24-Oct-26, Vipul's ask — date ascending, invoice number ascending
+    // within the same date (the previous "newest first" grouping is gone
+    // along with the accordion it supported).
+    return rows.sort((a, b) => {
+      const dA = new Date(a.timestamp).getTime();
+      const dB = new Date(b.timestamp).getTime();
+      if (dA !== dB) return dA - dB;
+      return (a.invoiceNumber || '').localeCompare(b.invoiceNumber || '');
     });
-    
-    return Object.entries(groups).sort((a, b) => {
-      return new Date(b[1][0].timestamp).getTime() - new Date(a[1][0].timestamp).getTime();
+  }, [sales, consigneeFilter, selectedFilterPartId, startDate, endDate]);
+
+  // One row per sale, pre-joined with its Item Master record so the table
+  // and the Excel export both read Size/Specifications and the new Part
+  // Length (mm) column from the same place, the same way.
+  const reportRows = useMemo(() => {
+    return filteredSalesData.map(sale => {
+      const part = parts.find(p => p.id === sale.partId || p.sapCode === sale.sapCode);
+      return {
+        sale,
+        date: new Date(sale.timestamp),
+        sizeSpec: part?.size || '',
+        partLength: part?.itemLength,
+      };
     });
-  }, [filteredSalesData]);
+  }, [filteredSalesData, parts]);
 
   const totalRangeVolume = useMemo(() => {
     return filteredSalesData.reduce((acc, s) => acc + s.quantity, 0);
   }, [filteredSalesData]);
 
-  const toggleDate = (date: string) => {
-    setExpandedDates(prev => ({ ...prev, [date]: !prev[date] }));
-  };
+  const reportTotals = useMemo(() => {
+    return filteredSalesData.reduce((acc, s) => {
+      acc.qty += s.quantity;
+      acc.value += s.totalPrice;
+      return acc;
+    }, { qty: 0, value: 0 });
+  }, [filteredSalesData]);
 
   const formatDateDisplay = (dateStr: string) => {
     if (!dateStr) return '';
@@ -107,29 +162,83 @@ const SalesLog: React.FC<SalesLogProps> = ({
     return `${d}-${m}-${y}`;
   };
 
-  const exportToExcel = () => {
+  // 24-Oct-26 rewrite — the free `xlsx` package can't write cell colors,
+  // fills or borders at all (that's a paid-tier feature of that library),
+  // so the bold wrapped light-blue header + full grid borders Vipul asked
+  // to match from his proposed file needed a different library. Switched
+  // to `exceljs` (new dependency — see package.json), which supports full
+  // cell styling. Column order/removal also matches the proposed file:
+  // Time is gone, Invoice Number moved before Consignee, Part Description
+  // before Size/Specifications, and the new Part Length (mm) column reads
+  // straight from Item Master's `itemLength` (already populated there per
+  // Vipul — see reportRows above).
+  const exportToExcel = async () => {
     if (filteredSalesData.length === 0) return;
-    const worksheetData = filteredSalesData.map(sale => {
-      const date = new Date(sale.timestamp);
-      const part = parts.find(p => p.id === sale.partId || p.sapCode === sale.sapCode);
-      const sizeSpec = part?.size || '';
-      return {
-        'Date': date.toLocaleDateString('en-GB'),
-        'Time': date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        'Consignee': sale.customer,
-        'Invoice Number': sale.invoiceNumber || '-',
-        'SAP Code': sale.sapCode,
-        'Size/Specifications': sizeSpec,
-        'Part Description': sale.partName,
-        'Quantity (Pcs)': sale.quantity,
-        'Total Value (INR)': sale.totalPrice.toFixed(2)
+
+    const { default: ExcelJS } = await import('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Dispatch Logs');
+
+    worksheet.columns = [
+      { width: 10.375 }, // Date
+      { width: 17.375 }, // Invoice Number
+      { width: 33 },     // Consignee
+      { width: 14.875 }, // SAP Code
+      { width: 26.75 },  // Part Description
+      { width: 16.75 },  // Size/Specifications
+      { width: 13.625 }, // Part Length (mm)
+      { width: 12.375 }, // Quantity (Pcs)
+      { width: 14.125 }, // Total Value (INR)
+    ];
+
+    const headerRow = worksheet.addRow([
+      'Date', 'Invoice Number', 'Consignee', 'SAP Code', 'Part Description',
+      'Size/\nSpecifications', 'Part \nLength (mm)', 'Quantity (Pcs)', 'Total Value (INR)',
+    ]);
+    headerRow.height = 33.75;
+    headerRow.eachCell(cell => {
+      cell.font = { bold: true, size: 12 };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+      cell.border = {
+        top: { style: 'thin' }, left: { style: 'thin' },
+        bottom: { style: 'thin' }, right: { style: 'thin' },
       };
     });
-    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Dispatch Logs');
-    worksheet['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 20 }, { wch: 18 }, { wch: 15 }, { wch: 20 }, { wch: 30 }, { wch: 15 }, { wch: 18 }];
-    XLSX.writeFile(workbook, `Dispatch_Report_${activeCustomer}_${startDate}_to_${endDate}.xlsx`);
+
+    reportRows.forEach(r => {
+      const row = worksheet.addRow([
+        r.date.toLocaleDateString('en-GB'),
+        r.sale.invoiceNumber || '-',
+        r.sale.customer,
+        r.sale.sapCode,
+        r.sale.partName,
+        r.sizeSpec,
+        r.partLength ?? '',
+        r.sale.quantity,
+        Number(r.sale.totalPrice.toFixed(2)),
+      ]);
+      row.getCell(8).numFmt = '#,##0';
+      row.getCell(9).numFmt = '#,##0.00';
+      row.eachCell(cell => {
+        cell.border = {
+          top: { style: 'thin' }, left: { style: 'thin' },
+          bottom: { style: 'thin' }, right: { style: 'thin' },
+        };
+      });
+    });
+
+    const consigneeLabel = consigneeFilter === ALL_CUSTOMERS_VALUE ? 'All Customers' : consigneeFilter;
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Dispatch_Report_${consigneeLabel}_${startDate}_to_${endDate}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   const handleDelete = (id: string) => {
@@ -148,19 +257,39 @@ const SalesLog: React.FC<SalesLogProps> = ({
           </div>
           <div className="flex flex-col items-stretch md:items-end gap-2 text-right">
             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Consignee Filter</label>
-            <select className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-slate-800 shadow-sm outline-none w-full md:w-64" value={activeCustomer} onChange={(e) => onCustomerChange(e.target.value)}>
+            <select
+              className="px-6 py-3 bg-white border border-slate-200 rounded-2xl font-black text-slate-800 shadow-sm outline-none w-full md:w-64"
+              value={consigneeFilter}
+              onChange={(e) => {
+                const v = e.target.value;
+                setConsigneeFilter(v);
+                if (v !== ALL_CUSTOMERS_VALUE) {
+                  onCustomerChange(v);
+                }
+              }}
+            >
+              <option value={ALL_CUSTOMERS_VALUE}>All Customers</option>
               {customers.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </div>
         </div>
 
         <div className={`p-8 rounded-[2.5rem] shadow-sm border flex flex-col xl:flex-row gap-8 items-stretch xl:items-end transition-all ${isAdmin ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-100'}`}>
-          <div className="flex-1 space-y-3 text-left">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Audit Item Filter</label>
-            <select className="px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl font-black text-slate-800 focus:border-indigo-500 outline-none w-full transition-all shadow-inner" value={selectedFilterPartId} onChange={(e) => setSelectedFilterPartId(e.target.value)}>
-              <option value="All">All 16 Specialized Parts</option>
-              {parts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+          <div className="flex-1 flex flex-col sm:flex-row gap-4">
+            <div className="flex-1 space-y-3 text-left">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">SAP Code</label>
+              <select className="px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl font-black text-slate-800 focus:border-indigo-500 outline-none w-full transition-all shadow-inner" value={selectedFilterPartId} onChange={(e) => setSelectedFilterPartId(e.target.value)}>
+                <option value="All">All SAP Codes</option>
+                {customerScopedParts.map(p => <option key={p.id} value={p.id}>{p.sapCode}</option>)}
+              </select>
+            </div>
+            <div className="flex-1 space-y-3 text-left">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Part Description</label>
+              <select className="px-6 py-4 bg-white border-2 border-slate-100 rounded-2xl font-black text-slate-800 focus:border-indigo-500 outline-none w-full transition-all shadow-inner" value={selectedFilterPartId} onChange={(e) => setSelectedFilterPartId(e.target.value)}>
+                <option value="All">All Part Descriptions</option>
+                {customerScopedParts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
           </div>
 
           <div className="flex-[1.5] space-y-3 text-left">
@@ -212,66 +341,85 @@ const SalesLog: React.FC<SalesLogProps> = ({
         </div>
       </header>
 
-      <div className="space-y-4 pb-12">
-        {groupedSales.map(([date, dailySales]) => (
-          <div key={date} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden">
-            <button onClick={() => toggleDate(date)} className={`w-full flex items-center justify-between p-8 text-left transition-colors ${expandedDates[date] ? 'bg-indigo-50/30' : 'hover:bg-slate-50'}`}>
-              <div className="flex items-center gap-12 text-left">
-                <div className="flex flex-col items-center">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Items</span>
-                  <span className="text-2xl font-black text-indigo-600 leading-none">{dailySales.length}</span>
-                </div>
-                <div className="flex flex-col border-l border-slate-100 pl-12">
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Audit Point</span>
-                  <span className="text-lg font-black text-slate-900 uppercase tracking-tight leading-none">{date}</span>
-                </div>
-              </div>
-              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-300 ${expandedDates[date] ? 'rotate-180 bg-indigo-600 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7"></path></svg>
-              </div>
-            </button>
-
-            {expandedDates[date] && (
-              <div className="border-t border-slate-100 bg-white">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
-                      <tr>
-                        <th className="px-10 py-6 border-r border-slate-200/40">Part Identity</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Qty</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Price (₹)</th>
-                        {isAdmin && <th className="px-10 py-6 text-center">Admin</th>}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {dailySales.map(sale => (
-                        <tr key={sale.id} className="hover:bg-indigo-50/10 transition-colors group">
-                          <td className="px-10 py-6">
-                            <div className="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5">{sale.sapCode}</div>
-                            <div className="text-sm font-black text-slate-800 uppercase">{sale.partName}</div>
-                          </td>
-                          <td className="px-10 py-6 text-center">
-                            <span className="font-black text-indigo-600 text-base">{sale.quantity}</span>
-                          </td>
-                          <td className="px-10 py-6 text-center">
-                            <div className="font-black text-slate-800 text-sm">₹{sale.totalPrice.toLocaleString()}</div>
-                          </td>
-                          {isAdmin && (
-                            <td className="px-10 py-6 text-center">
-                              <button onClick={() => handleDelete(sale.id)} className="w-10 h-10 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center">
-                                🗑️
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+      {/* 24-Oct-26, Vipul's ask — the date-grouped expand/collapse accordion
+          below replaced with a single flat table, same column set/order as
+          the Excel export, so what's on screen matches what downloads.
+          Column widths are fixed percentages (table-layout: fixed) derived
+          from the proposed file's own Excel column widths, so the table
+          never needs a horizontal scrollbar — anything too long to fit
+          (long Consignee names, Part Descriptions) truncates with an
+          ellipsis; the full value is still available on hover via title. */}
+      <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden pb-2">
+        <div className="max-h-[70vh] overflow-y-auto">
+          <table className="w-full text-left border-collapse table-fixed text-[11px]">
+            <colgroup>
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: isAdmin ? '18%' : '20%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: isAdmin ? '15%' : '16%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: isAdmin ? '8%' : '10%' }} />
+              {isAdmin && <col style={{ width: '5%' }} />}
+            </colgroup>
+            <thead className="bg-slate-50 sticky top-0 z-10">
+              <tr className="text-slate-900 uppercase font-black tracking-widest border-b-2 border-slate-200">
+                <th className="px-3 py-3">Date</th>
+                <th className="px-3 py-3">Invoice No.</th>
+                <th className="px-3 py-3">Consignee</th>
+                <th className="px-3 py-3">SAP Code</th>
+                <th className="px-3 py-3">Part Description</th>
+                <th className="px-3 py-3">Size/Spec</th>
+                <th className="px-3 py-3 text-right">Length (mm)</th>
+                <th className="px-3 py-3 text-right">Qty (Pcs)</th>
+                <th className="px-3 py-3 text-right">Value (INR)</th>
+                {isAdmin && <th className="px-3 py-3 text-center">Admin</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {reportRows.map(r => (
+                <tr key={r.sale.id} className="hover:bg-indigo-50/20 transition-colors">
+                  <td className="px-3 py-2.5 truncate" title={r.date.toLocaleDateString('en-GB')}>{r.date.toLocaleDateString('en-GB')}</td>
+                  <td className="px-3 py-2.5 truncate" title={r.sale.invoiceNumber || '-'}>{r.sale.invoiceNumber || '-'}</td>
+                  <td className="px-3 py-2.5 truncate font-bold text-indigo-700" title={r.sale.customer}>{r.sale.customer}</td>
+                  <td className="px-3 py-2.5 truncate font-mono" title={r.sale.sapCode}>{r.sale.sapCode}</td>
+                  <td className="px-3 py-2.5 truncate" title={r.sale.partName}>{r.sale.partName}</td>
+                  <td className="px-3 py-2.5 truncate" title={r.sizeSpec}>{r.sizeSpec}</td>
+                  <td className="px-3 py-2.5 text-right truncate">{r.partLength ?? ''}</td>
+                  <td className="px-3 py-2.5 text-right font-bold">{r.sale.quantity.toLocaleString()}</td>
+                  <td className="px-3 py-2.5 text-right font-bold">{r.sale.totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  {isAdmin && (
+                    <td className="px-3 py-2.5 text-center">
+                      <button onClick={() => handleDelete(r.sale.id)} className="w-7 h-7 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all flex items-center justify-center mx-auto">
+                        🗑️
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {reportRows.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 10 : 9} className="px-3 py-10 text-center text-slate-400 font-bold">
+                    No dispatch entries match this filter.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {reportRows.length > 0 && (
+              <tfoot className="sticky bottom-0 z-10">
+                <tr className="bg-amber-50 border-t-2 border-amber-200 font-black text-slate-900">
+                  <td className="px-3 py-3" colSpan={6}>TOTAL</td>
+                  <td className="px-3 py-3 text-right"></td>
+                  <td className="px-3 py-3 text-right">{reportTotals.qty.toLocaleString()}</td>
+                  <td className="px-3 py-3 text-right">{reportTotals.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  {isAdmin && <td className="px-3 py-3"></td>}
+                </tr>
+              </tfoot>
             )}
-          </div>
-        ))}
+          </table>
+        </div>
       </div>
     </div>
   );
