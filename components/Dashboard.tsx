@@ -20,6 +20,14 @@ const getCustomerRate = (p: Part, customerName: string) => {
 
 interface DashboardProps {
   parts: Part[];
+  // 29-Oct-26 fix — same parts as `parts` but NEVER narrowed by the active
+  // Model filter (see App.tsx's allPartsAtDate). `parts` decides which
+  // part-wise rows this screen shows; this is for the RM-consumption
+  // calcs below (Available Stock / RM shortage), which need to tally a
+  // shared RM's dispatches across EVERY part cut from it, not just
+  // whichever Model is currently selected. Defaults to `parts` so this
+  // component still works if a caller doesn't pass it.
+  allParts?: Part[];
   sales: Sale[];
   allSales?: Sale[];
   forcedMonthDisplay?: string;
@@ -48,7 +56,11 @@ interface DashboardProps {
 const isAuditDeltaRemark = (remarks?: string) =>
   !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
 
-const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMonthDisplay, activeCustomer, onCustomerChange, customers, selectedDate, rawMaterials, localRMOpeningBalances, rmInwardLogs, inwardLogs }) => {
+const Dashboard: React.FC<DashboardProps> = ({ parts, allParts, sales, allSales, forcedMonthDisplay, activeCustomer, onCustomerChange, customers, selectedDate, rawMaterials, localRMOpeningBalances, rmInwardLogs, inwardLogs }) => {
+  // 29-Oct-26 fix — see the comment on `allParts` above. Everywhere below
+  // that tallies a shared RM's consumption (not just deciding which rows
+  // to show) reads from this, not `parts` directly.
+  const rmConsumptionParts = allParts ?? parts;
   const brandName = useBrandName();
   const [triggerReport, setTriggerReport] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
@@ -168,7 +180,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
     parts.forEach(p => {
       const rm = rawMaterials.find(r => r.partId === p.id || (r.partIds && r.partIds.includes(p.id)));
       if (!rm) return;
-      const siblings = partsSharingRM(rm, parts);
+      const siblings = partsSharingRM(rm, rmConsumptionParts);
       if (siblings.length === 0) return;
       // Only pool-and-split when every part mapped to this RM is a true,
       // mutually-declared sibling of every other one (e.g. LH/RH cut in
@@ -215,7 +227,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       map.set(p.id, Math.round((closingBalancePipes * yieldFactor) / siblings.length));
     });
     return map;
-  }, [parts, rawMaterials, rmInwardLogs, sales, localRMOpeningBalances, inwardLogs]);
+  }, [parts, rmConsumptionParts, rawMaterials, rmInwardLogs, sales, localRMOpeningBalances, inwardLogs]);
 
   // --- BUSINESS LOGIC: Commitment-Based Shortage Alerts ---
   const shortageAnalysis = useMemo(() => {
@@ -326,7 +338,10 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
     return activeRMs.map(rm => {
       // Parts linked to this RM — same lookup regardless of Tube/Sheet, so
       // it's computed once here and shared by both branches below.
-      const linkedParts = parts.filter(p =>
+      // rmConsumptionParts, not `parts` — a shared RM's shortage/stock math
+      // must count every part cut from it, regardless of Model filter
+      // (29-Oct-26 fix).
+      const linkedParts = rmConsumptionParts.filter(p =>
         (p.customerRMMappings?.[activeCustomer] === rm.id) ||
         (rm.partId === p.id) ||
         (rm.partIds && rm.partIds.includes(p.id)) ||
@@ -541,7 +556,7 @@ const Dashboard: React.FC<DashboardProps> = ({ parts, sales, allSales, forcedMon
       // Sorted by Kg short (not meters) so Tube and Sheet Metal deficits —
       // which don't share a meters/pipes unit — rank together sensibly.
     }).sort((a, b) => b.totalKgShort - a.totalKgShort);
-  }, [parts, rawMaterials, activeCustomer, filteredSales, sales, rmInwardLogs, localRMOpeningBalances]);
+  }, [parts, rmConsumptionParts, rawMaterials, activeCustomer, filteredSales, sales, rmInwardLogs, localRMOpeningBalances]);
 
   const stats: InventoryStats = {
     totalValue: parts.reduce((acc, p) => acc + (p.stock * p.rate), 0),

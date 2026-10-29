@@ -19,6 +19,15 @@ const getCustomerSchedule = (p: Part, customerName: string) => {
 
 interface InventoryProps {
   parts: Part[];
+  // 29-Oct-26 fix — same parts as `parts` but NEVER narrowed by the active
+  // Model filter (see App.tsx's allPartsAtDate). `parts` decides which
+  // Item/RM rows this screen actually displays (correctly Model-scoped);
+  // this is for the handful of places below that instead need to tally a
+  // shared RM's real consumption across EVERY part cut from it — the RM's
+  // physical stock doesn't care which Model is currently selected.
+  // Defaults to `parts` so this component still works if a caller doesn't
+  // pass it.
+  allParts?: Part[];
   sales: Sale[];
   inwardLogs: InwardLog[];
   onAddInward: (partId: string, quantity: number, supplier: string, remarks?: string, timestamp?: string, invoiceNumber?: string) => void;
@@ -95,9 +104,10 @@ interface InventoryProps {
 const isAuditDeltaRemark = (remarks?: string) =>
   !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
 
-const Inventory: React.FC<InventoryProps> = ({ 
-  parts, 
-  sales, 
+const Inventory: React.FC<InventoryProps> = ({
+  parts,
+  allParts,
+  sales,
   inwardLogs,
   onAddInward, 
   readOnly = false, 
@@ -130,6 +140,10 @@ const Inventory: React.FC<InventoryProps> = ({
   onGateSeedCancelled,
   onInventoryCorrection,
 }) => {
+  // 29-Oct-26 fix — see the comment on `allParts` above. Everywhere below
+  // that tallies a shared RM's consumption (not just deciding which rows
+  // to show) reads from this, not `parts` directly.
+  const rmConsumptionParts = allParts ?? parts;
   // Dropdown 1: Inventory Mode (Item Inventory vs RM Inventory)
   const [inventoryMode, setInventoryMode] = useState<'item' | 'rm'>('item');
   // Material Entry (RM Receiving) — tubular parts only; sheet-metal parts
@@ -811,7 +825,12 @@ const Inventory: React.FC<InventoryProps> = ({
       });
 
       const hasCommonRM = allMappedRMsForPart.some(rm => {
-        const partsLinkedToRM = parts.filter(otherPart => {
+        // rmConsumptionParts, not `parts` — whether an RM is genuinely
+        // shared with another part can't depend on the active Model
+        // filter, or a real shared-RM row could wrongly stop showing
+        // "Refer RM Inventory" just because the OTHER part sharing it
+        // belongs to a different Model (29-Oct-26 fix).
+        const partsLinkedToRM = rmConsumptionParts.filter(otherPart => {
           return (otherPart.customerRMMappings?.[rm.customerName] === rm.id) ||
                  (rm.partId === otherPart.id) ||
                  (rm.partIds && rm.partIds.includes(otherPart.id));
@@ -842,7 +861,7 @@ const Inventory: React.FC<InventoryProps> = ({
           // different parts/lengths) is left undivided here, same as before
           // — that ambiguous case is what "Refer RM Inventory" (below) is
           // for.
-          const siblings = partsSharingRM(rm, parts);
+          const siblings = partsSharingRM(rm, rmConsumptionParts);
           const isSiblingSplit = siblings.length > 1 && siblings.every(sp => sp.id === p.id || (p.siblingIds || []).includes(sp.id));
           const splitValue = isSiblingSplit ? rawValue / siblings.length : rawValue;
           return sum + Math.round(splitValue);
@@ -869,7 +888,7 @@ const Inventory: React.FC<InventoryProps> = ({
       // never meant to represent one physically shared pool.
       let siblingSplitPlantBalance: number | undefined;
       mappedRMs.forEach(rm => {
-        const siblings = partsSharingRM(rm, parts);
+        const siblings = partsSharingRM(rm, rmConsumptionParts);
         const isSiblingSplit = siblings.length > 1 && siblings.every(sp => sp.id === p.id || (p.siblingIds || []).includes(sp.id));
         if (!isSiblingSplit) return;
         const { closingBalancePipes } = computeRMStockAsOnDate(rm, siblings, rmInwardLogs, sales, localRMOpeningBalances[rm.id] || '0');
@@ -881,7 +900,7 @@ const Inventory: React.FC<InventoryProps> = ({
     });
 
     return map;
-  }, [parts, inwardLogs, sales, rawMaterials, selectedCustomer, localRMOpeningBalances, localPartOpeningBalances, isAdmin, rmInwardLogs]);
+  }, [parts, rmConsumptionParts, inwardLogs, sales, rawMaterials, selectedCustomer, localRMOpeningBalances, localPartOpeningBalances, isAdmin, rmInwardLogs]);
 
   // One-time correction: parts.stock is a running total, incremented and
   // decremented over time by every inward entry and every Tally-synced
@@ -1483,8 +1502,11 @@ const Inventory: React.FC<InventoryProps> = ({
                 const monthRMInwardKg = parseFloat((monthRMInwardPipes * pipeWeight).toFixed(2));
                 const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
 
-                // 2. Map RM to Part / Finished Item
-                const mappedItems = parts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
+                // 2. Map RM to Part / Finished Item — rmConsumptionParts, not
+                // `parts`, so a shared RM's Dispatches/Stock-as-on-date here
+                // always reflect EVERY part cut from it, regardless of the
+                // active Model filter (29-Oct-26 fix).
+                const mappedItems = rmConsumptionParts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
                 const mappedItem = mappedItems[0]; // For fallback calculations
 
                 let rmConsumedDispatch = 0;
@@ -1975,7 +1997,9 @@ const Inventory: React.FC<InventoryProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-200/60 bg-white">
               {filteredRawMaterials.map(rm => {
-                const mappedItems = parts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
+                // rmConsumptionParts, not `parts` — see the Tube table's
+                // identical comment above (29-Oct-26 fix).
+                const mappedItems = rmConsumptionParts.filter(p => p.id === rm.partId || (rm.partIds && rm.partIds.includes(p.id)));
 
                 let dispatchKg = 0;
                 let scrapKg = 0;

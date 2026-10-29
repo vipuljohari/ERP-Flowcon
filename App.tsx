@@ -30,7 +30,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CompanyProvider, useBrandName } from './contexts/CompanyContext';
 import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
-import { useFirestoreArray, setFirestoreWriteErrorHandler } from './hooks/useFirestoreArray';
+import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
 import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, UnmatchedDharamkantaSlip, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole } from './types';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
@@ -186,28 +186,6 @@ const MainApp: React.FC = () => {
       stopAutoFlush();
       unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 10-Oct-26 — registers the one handler every useFirestoreArray instance
-  // in the app calls when its batch.commit() fails outright (not merely
-  // offline — a write that will keep failing on retry too, e.g. a document
-  // over Firestore's 1 MiB limit). Until this existed, that failure only
-  // hit console.error: invisible to anyone not already staring at that
-  // exact browser's DevTools. That's exactly how a real gate-photo entry's
-  // invoice/dharamkanta photos silently vanished (Banke Bihari Steel
-  // Traders, 9-Oct-26 — see services/apiHandlers.ts's
-  // GATE_PHOTO_MAX_RAW_BYTES). Routing it through pushAdminAlert means it
-  // now shows up in Notifications for Admin on any device, same as any
-  // other alert, instead of depending on Store or Admin happening to notice
-  // something looked wrong.
-  useEffect(() => {
-    setFirestoreWriteErrorHandler((collectionName, err) => {
-      pushAdminAlert({
-        type: 'data_save_failed',
-        remarks: `An entry in "${collectionName}" failed to save to the server (${err?.message || err}). It may still show on this device, but it has NOT reached the cloud — please check this with the person who entered it and have them re-submit if needed.`,
-      });
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1416,7 +1394,21 @@ const MainApp: React.FC = () => {
     });
   }, [rmInwardLogs, sD]);
 
-  const cDP = useMemo(() => {
+  // Shared "stock as of the selected date" calc for one list of parts —
+  // factored out of cDP (29-Oct-26) so the Model-filtered list (cDP, used
+  // to decide which Item rows actually show) and an always-unfiltered list
+  // (allPartsAtDate) can share the exact same math. allPartsAtDate exists
+  // because a shared RM's real consumption has to count every part cut
+  // from it regardless of which Model tag happens to be selected right
+  // now — Inventory.tsx's RM-wise ledger, its Item-wise sibling-split
+  // Plant Balance, and Dashboard's Available Stock/shortage widgets all
+  // read RM consumption from whatever `parts` list they're given, so
+  // feeding them the Model-filtered one made a shared RM's "Stock as on
+  // date" silently change with an unrelated Model filter (bug: the same
+  // physical RM showing different Pipes stock under All models / 2DX /
+  // 3DX). Those call sites now take `allParts` instead; cDP itself (which
+  // rows to DISPLAY) is unaffected.
+  const partsAtDateFor = (list: Part[]) => {
     const mK = `${sD.getFullYear()}-${String(sD.getMonth()+1).padStart(2,'0')}`;
     const arc = archives.find(a => a.monthKey === mK);
     const now = new Date();
@@ -1427,7 +1419,7 @@ const MainApp: React.FC = () => {
     const sMonth = sD.getMonth();
     const sDay = sD.getDate();
 
-    return modelFilteredParts.map(p => {
+    return list.map(p => {
       const aP = arc?.parts.find(ap => ap.id === p.id);
       
       const mappedRMs = rawMaterials.filter(rm => {
@@ -1543,7 +1535,15 @@ const MainApp: React.FC = () => {
         status: (stockAtDate < 0 ? 'Out of Stock' : stockAtDate === 0 ? 'Out of Stock' : stockAtDate <= p.minThreshold ? 'Low Stock' : 'In Stock') as StockStatus
       };
     });
-  }, [sD, modelFilteredParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
+  };
+
+  const cDP = useMemo(() => partsAtDateFor(modelFilteredParts), [sD, modelFilteredParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
+
+  // 29-Oct-26 fix — unfiltered-by-Model counterpart of cDP (see the
+  // comment on partsAtDateFor above). Pass this, not cDP/`parts`, wherever
+  // a shared RM's own consumption needs to be tallied across every part
+  // cut from it, regardless of the active Model filter.
+  const allPartsAtDate = useMemo(() => partsAtDateFor(sortedParts), [sD, sortedParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
 
   return (
     <div className={`min-h-screen flex ${isH ? 'bg-slate-100' : 'bg-slate-50'}`}>
@@ -1584,15 +1584,16 @@ const MainApp: React.FC = () => {
             </div>
           ) : null}
           {canAccessView(role, currentView) && currentView === 'dashboard' && (
-            <Dashboard 
-              parts={cDP} 
-              sales={contextSales} 
-              allSales={sales} 
-              activeCustomer={activeCustomer} 
+            <Dashboard
+              parts={cDP}
+              allParts={allPartsAtDate}
+              sales={contextSales}
+              allSales={sales}
+              activeCustomer={activeCustomer}
               onCustomerChange={setActiveCustomer}
               customers={customersWithItems}
               forcedMonthDisplay={sD.toLocaleDateString('en-GB',{month:'short',year:'numeric'})}
-              selectedDate={sD} 
+              selectedDate={sD}
               rawMaterials={modelFilteredRawMaterials}
               localRMOpeningBalances={resolvedRMOpeningBalances}
               rmInwardLogs={contextRmInwardLogs}
@@ -1602,6 +1603,7 @@ const MainApp: React.FC = () => {
           {canAccessView(role, currentView) && currentView === 'inventory' && (
             <Inventory
               parts={cDP}
+              allParts={allPartsAtDate}
               sales={contextSales}
               inwardLogs={contextInwardLogs}
               onAddInward={handleAddInward}
