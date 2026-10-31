@@ -364,6 +364,84 @@ export interface Sale {
   timestamp: string;
   customer: string;
   invoiceNumber?: string; // New field for duplicate prevention
+  // Credit Note Approval feature (30-Oct-26) — set only on the negative
+  // correction entry App.tsx's approveCreditNote writes when Admin
+  // approves a CANCELLED/SHORT_QTY/unclassified Credit Note, e.g.
+  // "[CREDIT_NOTE:CANCELLED] orig. invoice IMT/26-27/1030". A normal Sale
+  // (from Tally import or Daily Dispatch) never sets this. Purely a
+  // display/audit label — never read by any stock or dispatch math, which
+  // treats this row like any other Sale (its negative quantity is what
+  // actually nets the double-dispatch/RM-stock effect, through the exact
+  // same Dispatches math every other Sale already flows through).
+  remarks?: string;
+  // Original/cancelled invoice this Credit Note correction is against,
+  // e.g. "IMT/26-27/1030". Tally only ever carries this in free-text
+  // Narration (confirmed 30-Oct-26 — no structured "against ref" field
+  // on the Credit Note voucher), and Narration wording varies CN to CN,
+  // so auto-parsing it risked showing a confidently wrong number. Instead
+  // Admin types it in on the CreditNoteApprovals card right before
+  // clicking Approve (see components/CreditNoteApprovals.tsx) — optional,
+  // purely a traceability label like `remarks` above, never read by any
+  // stock math.
+  againstInvoiceNumber?: string;
+}
+
+// --- Credit Note Approval (30-Oct-26) ---
+// Mirrors how `rmPurchaseVouchers` already works (see RMPurchaseVoucher
+// below): cx412's import-tally.js writes/upserts these directly into
+// Firestore's `creditNoteApprovals` collection on its normal hourly
+// Tally sync, one doc per Credit Note LINE ITEM (same granularity as
+// `sales`), keyed deterministically so a re-run never duplicates one.
+// Unlike the read-only Purchase mirror, the app DOES write back to this
+// collection — only the `status`/`approvedAt`/`approvedBy` fields, when
+// Admin clicks Approve (see App.tsx's approveCreditNote). The script
+// never overwrites an already-`approved` doc.
+export type CreditNoteClassification = 'REJECTION' | 'RATE_DIFF' | 'SHORT_QTY' | 'CANCELLED' | null;
+
+export const CREDIT_NOTE_CLASSIFICATION_LABELS: Record<Exclude<CreditNoteClassification, null>, string> = {
+  REJECTION: 'Rejection',
+  RATE_DIFF: 'Rate Difference',
+  SHORT_QTY: 'Short Qty',
+  CANCELLED: 'Cancelled',
+};
+
+export interface CreditNoteApproval {
+  id: string; // deterministic: `${voucherNumber}::${partId || rawStockItemName}`
+  voucherNumber: string; // Tally's own CN voucher number, e.g. "IMT/S/CR/36"
+  date: string; // ISO, the CN's own voucher date
+  customer: string; // matched Customer Master name, or the raw Tally party name if unmatched
+  partId: string | null; // null if this line's Stock Item couldn't be matched to Item Master
+  partName: string;
+  sapCode: string;
+  rawStockItemName: string; // the raw Tally line text, for reference when partId is null
+  quantity: number; // always positive — the CN's line quantity
+  classification: CreditNoteClassification; // null = no recognizable keyword in Narration ("unclassified")
+  narration: string;
+  // REJECTION/RATE_DIFF need no inventory action (goods genuinely
+  // dispatched) — same convention as the cx412 scripts' own MTD netting.
+  // CANCELLED/SHORT_QTY/unclassified (null) all need Admin's Approve.
+  actionNeeded: boolean;
+  // 'rejected' (30-Oct-26) — Admin dismisses a CN without posting any
+  // correction (e.g. misclassified, or disputed and being handled outside
+  // the app). Purely a status flip in App.tsx's rejectCreditNote — no
+  // Sale or RMInwardLog entry, unlike 'approved'. Terminal, same as
+  // 'approved': once set, cx412's import-tally.js never overwrites it on
+  // a later sync (see that script's upsert-preserves-decided-status logic).
+  status: 'pending' | 'no_action_needed' | 'approved' | 'rejected';
+  approvedAt?: string;
+  approvedBy?: string;
+  rejectedAt?: string;
+  rejectedBy?: string;
+  // The Sale doc id approveCreditNote created, once approved — lets the
+  // UI link straight to it and stops a double-approve from posting twice.
+  approvedSaleId?: string;
+  // Admin-typed original/cancelled invoice this CN is against (see Sale's
+  // own againstInvoiceNumber above for why this is manual, not parsed) —
+  // captured on the input box right before Approve and carried onto both
+  // this doc and the Sale correction, so it's visible here too afterward.
+  againstInvoiceNumber?: string;
+  isDeleted?: boolean; // the CN itself got cancelled/deleted in Tally
+  lastSyncedAt: string;
 }
 
 export interface InwardLog {

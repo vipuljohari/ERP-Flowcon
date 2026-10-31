@@ -22,6 +22,7 @@ import ImportIssues from './components/ImportIssues';
 import RMCrossBillCheck, { MfgInvoiceSubmission } from './components/RMCrossBillCheck';
 import Notifications from './components/Notifications';
 import RMApprovalQueue from './components/RMApprovalQueue';
+import CreditNoteApprovals from './components/CreditNoteApprovals';
 import TrialRMReceiving from './components/TrialRMReceiving';
 import GateDocumentsQueue from './components/GateDocumentsQueue';
 import PartyNameMaster from './components/PartyNameMaster';
@@ -32,7 +33,7 @@ import { writeBatch, doc, collection } from 'firebase/firestore';
 import { db } from './services/firebase';
 import { useFirestoreArray } from './hooks/useFirestoreArray';
 import { useFirestoreDoc } from './hooks/useFirestoreDoc';
-import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, UnmatchedDharamkantaSlip, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole } from './types';
+import { Part, Sale, InwardLog, MonthlyArchive, StockStatus, Customer, RawMaterial, RMInwardLog, RMManufacturerInvoice, RMCustomerCrossInvoice, RMMaterialLength, RMPurchaseVoucher, AdminAlert, DimensionTolerance, PendingRMEntry, PendingRMEntryType, RMEntryModeSettings, canAccessView, GateDocumentForApproval, GateApprovedSuppliersSettings, UnmatchedDharamkantaSlip, PendingInventoryCorrectionPayload, INVENTORY_CORRECTION_REASON_LABELS, UserRole, CreditNoteApproval } from './types';
 import { archivePhotoToDropbox, buildArchiveFileName, buildArchiveMonthFolder } from './services/dropboxArchive';
 import { SEED_DIMENSION_TOLERANCES } from './services/dimensionTolerance';
 import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
@@ -226,6 +227,13 @@ const MainApp: React.FC = () => {
   // Written only by the Tally Connector script on the 24x7 server (Admin
   // SDK, hourly) — never by the app, so the setter is never used here.
   const [tallyPurchaseVouchers] = useFirestoreArray<RMPurchaseVoucher>('rmPurchaseVouchers');
+  // Credit Note Approval feature (30-Oct-26) — cx412's import-tally.js
+  // stages these on its normal hourly Tally sync (same pattern as
+  // rmPurchaseVouchers above). Unlike that read-only mirror, the app DOES
+  // write back here — approveCreditNote below only ever updates
+  // status/approvedAt/approvedBy/approvedSaleId on an existing doc, never
+  // creates or deletes one (the script owns that).
+  const [creditNoteApprovals, setCreditNoteApprovals] = useFirestoreArray<CreditNoteApproval>('creditNoteApprovals');
   // WhatsApp gate-photo intake — see components/GateDocumentsQueue.tsx and
   // services/apiHandlers.ts's handleGateUpload (server-side, via
   // firebase-admin) which is what actually creates docs in this collection.
@@ -1545,6 +1553,31 @@ const MainApp: React.FC = () => {
   // cut from it, regardless of the active Model filter.
   const allPartsAtDate = useMemo(() => partsAtDateFor(sortedParts), [sD, sortedParts, sales, inwardLogs, archives, rawMaterials, resolvedRMOpeningBalances]);
 
+  // 30-Oct-26 — Credit Note Approval sanity check. ERPNext's own return/
+  // credit-note flow caps a return at the originally invoiced quantity
+  // (it "prevents the cumulative returned quantity from exceeding the
+  // original invoiced quantity") — we don't have a structured link from a
+  // Tally Credit Note back to the specific invoice it's crediting (only
+  // free-text Narration, which is why classification itself is Narration-
+  // based — see Credit-Note-Architecture.md §2), so we can't enforce that
+  // precisely. This is the coarse version we CAN do with what's already in
+  // erp-v2: total every positive (real dispatch, not a prior correction)
+  // Sale ever recorded for that customer+part, and warn in the UI — not
+  // block — if a CN's quantity exceeds it. Catches the catastrophic case
+  // (a parsing bug, wrong units, a garbled Tally quantity) before Admin
+  // approves on a quick glance; a legitimate large CN against a long
+  // dispatch history will still show the warning and can be approved
+  // anyway after a second look.
+  const dispatchedQtyByCustomerPart = useMemo(() => {
+    const map = new Map<string, number>();
+    sales.forEach(s => {
+      if (s.quantity <= 0 || !s.partId) return;
+      const key = `${s.customer}::${s.partId}`;
+      map.set(key, (map.get(key) || 0) + s.quantity);
+    });
+    return map;
+  }, [sales]);
+
   return (
     <div className={`min-h-screen flex ${isH ? 'bg-slate-100' : 'bg-slate-50'}`}>
       <div className="fixed top-8 right-8 z-[300] flex flex-col gap-4 pointer-events-none">
@@ -1940,6 +1973,15 @@ const MainApp: React.FC = () => {
           )}
           {isAdmin && currentView === 'notifications' && <Notifications alerts={adminAlerts} onVerify={verifyAdminAlert} onFlag={flagAdminAlert} />}
           {isAdmin && currentView === 'rm_approvals' && (
+            <CreditNoteApprovals
+              entries={creditNoteApprovals}
+              isAdmin={isAdmin}
+              onApprove={approveCreditNote}
+              onReject={rejectCreditNote}
+              dispatchedQtyByCustomerPart={dispatchedQtyByCustomerPart}
+            />
+          )}
+          {isAdmin && currentView === 'rm_approvals' && (
             <RMApprovalQueue
               entries={pendingRMEntries}
               parts={parts}
@@ -2240,6 +2282,103 @@ const MainApp: React.FC = () => {
       inventoryCorrectionPayload: payload,
       summary,
     });
+  }
+
+  // --- Credit Note Approval (30-Oct-26) ---
+  // Approve action for a CANCELLED/SHORT_QTY/unclassified CreditNoteApproval
+  // staged by cx412's import-tally.js. See CreditNoteApprovals.tsx's header
+  // comment and types.ts's CreditNoteApproval for the full design — in
+  // short: a negative Sale entry is the real correction (it alone fixes
+  // the double-dispatch count AND restores RM stock, since Stock as on
+  // date already derives from Dispatches), and the RM Inward Log note
+  // below is audit-visibility only, excluded from real totals via
+  // services/rmYield.ts's isCreditNoteRmNote.
+  async function approveCreditNote(entry: CreditNoteApproval, againstInvoiceNumber?: string) {
+    if (!entry.partId || entry.status !== 'pending' || !entry.actionNeeded) return;
+    const part = parts.find(p => p.id === entry.partId);
+    if (!part) return;
+
+    const approvedBy = appUser?.displayName || userName;
+    const nowIso = getLocalISOString();
+    const tsIso = `${entry.date.slice(0, 10)}T12:00:00.000`;
+    const saleId = Math.random().toString(36).substr(2, 9);
+    // 30-Oct-26 — Tally gives no structured "against ref" on a Credit
+    // Note voucher, only free-text Narration (confirmed with Vipul), so
+    // rather than auto-parse it (risking a confidently wrong invoice
+    // number) Admin types the original/cancelled invoice in on the
+    // approval card itself, right before clicking Approve. Optional —
+    // trimmed to undefined rather than an empty string if left blank.
+    const trimmedAgainstInvoice = againstInvoiceNumber?.trim() || undefined;
+
+    const rate = (part.customerRates && part.customerRates[entry.customer]) ?? part.rate ?? 0;
+    setSales(prev => [
+      {
+        id: saleId,
+        partId: part.id,
+        partName: part.name,
+        sapCode: part.sapCode,
+        quantity: -entry.quantity,
+        totalPrice: -(rate * entry.quantity),
+        timestamp: tsIso,
+        customer: entry.customer,
+        invoiceNumber: entry.voucherNumber,
+        remarks: `[CREDIT_NOTE:${entry.classification || 'UNCLASSIFIED'}]${trimmedAgainstInvoice ? ` Against invoice ${trimmedAgainstInvoice}.` : ''}${entry.narration ? ' ' + entry.narration : ''}`,
+        againstInvoiceNumber: trimmedAgainstInvoice,
+      },
+      ...prev,
+    ]);
+
+    // One audit-only note per RM this part draws from (almost always one).
+    const mappedRMs = rawMaterials.filter(rm => rm.partId === part.id || (rm.partIds && rm.partIds.includes(part.id)));
+    mappedRMs.forEach(rm => {
+      const yieldFactor = partsPerRMUnit(part, rm);
+      const rmEquivalentQty = yieldFactor > 0 ? parseFloat((entry.quantity / yieldFactor).toFixed(2)) : 0;
+      setRmInwardLogs(prev => [
+        {
+          id: Math.random().toString(36).substr(2, 9),
+          rmId: rm.id,
+          rmSize: rm.size,
+          quantity: rmEquivalentQty,
+          supplier: 'Credit Note',
+          timestamp: tsIso,
+          remarks: `[CREDIT_NOTE_RM_NOTE:${entry.voucherNumber}] Stock already restored via the Sale correction — this line is for visibility only, not counted again.`,
+          invoiceNumber: entry.voucherNumber,
+          unit: isSheetRM(rm) ? 'kg' : 'pcs',
+        },
+        ...prev,
+      ]);
+    });
+
+    // Terminal — import-tally.js never overwrites a doc already in this
+    // state (see that script), so this is the one and only write to status.
+    setCreditNoteApprovals(prev => prev.map(e => e.id === entry.id ? { ...e, status: 'approved', approvedAt: nowIso, approvedBy, approvedSaleId: saleId, againstInvoiceNumber: trimmedAgainstInvoice } : e));
+
+    pushAdminAlert({
+      type: 'discrepancy',
+      partId: part.id,
+      partName: part.name,
+      sapCode: part.sapCode,
+      timestamp: tsIso,
+      quantity: -entry.quantity,
+      remarks: `Credit Note ${entry.voucherNumber} approved (${entry.classification || 'unclassified'}) — ${entry.quantity} pcs netted off dispatch.`,
+      responsibleName: approvedBy,
+      createdBy: approvedBy,
+      role,
+    });
+  }
+
+  // Reject action for a CreditNoteApproval — Admin dismisses it (e.g.
+  // misclassified, or already handled outside the app) without posting
+  // any Sale or RM Inward correction. Deliberately a plain status flip:
+  // unlike approveCreditNote, this never touches sales/rawMaterials/
+  // rmInwardLogs, so there's nothing to undo if it was clicked by mistake
+  // beyond re-approving later (status is still checked against 'pending'
+  // below, same guard shape as approveCreditNote).
+  function rejectCreditNote(entry: CreditNoteApproval) {
+    if (entry.status !== 'pending' || !entry.actionNeeded) return;
+    const rejectedBy = appUser?.displayName || userName;
+    const nowIso = getLocalISOString();
+    setCreditNoteApprovals(prev => prev.map(e => e.id === entry.id ? { ...e, status: 'rejected', rejectedAt: nowIso, rejectedBy } : e));
   }
 
   // --- Material Entry (RM Receiving) — Longer Pipe / Finished Pieces ---

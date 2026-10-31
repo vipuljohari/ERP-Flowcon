@@ -66,6 +66,19 @@ export const partsPerRMUnit = (part: Pick<Part, 'itemLength' | 'itemWeight' | 'g
   return 0;
 };
 
+// Credit Note Approval feature (30-Oct-26) — App.tsx's approveCreditNote
+// writes a VISIBLE line onto the RM Inward Log so the ledger shows WHY a
+// Credit Note moved the stock, tagged this way specifically so it's
+// excluded from the real "RM Inward this month" total below. The actual
+// stock restoration happens through the negative Sale entry that same
+// approval posts (which reduces Dispatches, below) — counting this note
+// too would restore the stock twice for one real-world event. Same
+// "audit note that doesn't double as a real receipt" idea as InwardLog's
+// isAuditDeltaRemark (App.tsx/Inventory.tsx/Dashboard.tsx), just on the
+// RM-inward side, which had no such exclusion before this.
+export const isCreditNoteRmNote = (remarks?: string): boolean =>
+  !!remarks && remarks.startsWith('[CREDIT_NOTE_RM_NOTE:');
+
 // Every Part currently cut from `rm` — i.e. every item that would draw down
 // the SAME physical stock pool. Mirrors the RM-wise ledger's own "mapped
 // items" definition (Inventory.tsx) — RM-side partId/partIds only, not the
@@ -98,7 +111,7 @@ export const computeRMStockAsOnDate = (
   const rmStandardMeters = rmLength / 1000;
 
   const monthRMInwardPipes = monthRmInwardLogs
-    .filter(l => l.rmId === rm.id)
+    .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks))
     .reduce((sum, l) => sum + l.quantity, 0);
   const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
 
