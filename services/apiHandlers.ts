@@ -83,16 +83,38 @@ function parseGeminiApiKeys(): string[] {
   return raw.split(/[,\n]/).map((k) => k.trim()).filter(Boolean);
 }
 
-// true only for an error that's specific to THIS key rather than the
-// request itself: 429 (quota exhausted — Gemini free tier is 20 calls/
-// day PER key) or 403 (that particular key disabled/invalid/revoked).
-// Anything else (400 bad request, 404, a 5xx) would fail identically on
-// every key in the pool, so it's rethrown immediately instead of wasting
-// the rest of the keys retrying a failure that has nothing to do with
-// quota.
+// Worth trying the next key for. Originally just 429 (quota exhausted —
+// Gemini free tier is 20 calls/day PER key) or 403 (that key disabled/
+// invalid/revoked) — genuinely key-specific. Broadened 17-Nov-26 after a
+// real production failure (`UNAVAILABLE: This model is currently
+// experiencing high demand...`) came back as neither a plain 429 nor 403:
+// Gemini surfaces an overload/quota condition in different shapes across
+// SDK versions and endpoints — sometimes a numeric status, sometimes only
+// in the error message text — so this also matches on message text for
+// the known retryable classes (RESOURCE_EXHAUSTED/429, PERMISSION_DENIED/
+// UNAUTHENTICATED/403, UNAVAILABLE/503, and plain "quota"/"overloaded"/
+// "high demand" wording). Trying another key costs nothing if this really
+// is a Google-wide overload (every key fails about as fast, and the last
+// real error still surfaces to the caller) — it's a real win if it's
+// actually tied to one specific key/account's capacity instead. Anything
+// clearly unrelated (400 bad request, 404) is NOT matched here, so it
+// still throws immediately rather than burning through every key on a
+// failure that would repeat identically on all of them.
 function isKeySpecificGeminiError(err: any): boolean {
   const status = err?.status ?? err?.response?.status ?? err?.code;
-  return status === 429 || status === 403;
+  if (status === 429 || status === 403) return true;
+  const text = `${status ?? ""} ${err?.message ?? ""}`.toUpperCase();
+  return (
+    text.includes("429") ||
+    text.includes("403") ||
+    text.includes("RESOURCE_EXHAUSTED") ||
+    text.includes("PERMISSION_DENIED") ||
+    text.includes("UNAUTHENTICATED") ||
+    text.includes("UNAVAILABLE") ||
+    text.includes("QUOTA") ||
+    text.includes("HIGH DEMAND") ||
+    text.includes("OVERLOADED")
+  );
 }
 
 // Structural subset of GoogleGenAI actually used anywhere in this file —
