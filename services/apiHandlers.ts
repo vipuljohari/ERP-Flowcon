@@ -66,13 +66,75 @@ async function requireAdmin(req: MinimalRequest, res: MinimalResponse): Promise<
   return decoded.uid;
 }
 
-let genAI: GoogleGenAI | null | undefined;
-function getGenAI(): GoogleGenAI | null {
+// Multi-key Gemini fallback (17-Nov-26) — the same reusable pattern
+// already proven in Flowcon's Payment Advice automation (Code.gs's
+// comma/newline-separated GEMINI_API_KEYS Script Property, built 10-Nov-26
+// after that pipeline hit Gemini free tier's 20-calls/day/key cap).
+// GEMINI_API_KEY can now hold just one key (unchanged, still works exactly
+// as before) OR several keys from different Google accounts separated by
+// a comma or a newline — e.g. "AIzaSy...abc,AIzaSy...xyz" or one per line
+// in the Vercel Secret's value. Every existing Gemini call site in this
+// file is UNCHANGED below — they all just do
+// `const ai = getGenAI(); ... ai.models.generateContent(...)` exactly as
+// before; the fallback-across-keys logic lives entirely inside getGenAI's
+// returned wrapper, so nothing else in this file needed to change.
+function parseGeminiApiKeys(): string[] {
+  const raw = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+  return raw.split(/[,\n]/).map((k) => k.trim()).filter(Boolean);
+}
+
+// true only for an error that's specific to THIS key rather than the
+// request itself: 429 (quota exhausted — Gemini free tier is 20 calls/
+// day PER key) or 403 (that particular key disabled/invalid/revoked).
+// Anything else (400 bad request, 404, a 5xx) would fail identically on
+// every key in the pool, so it's rethrown immediately instead of wasting
+// the rest of the keys retrying a failure that has nothing to do with
+// quota.
+function isKeySpecificGeminiError(err: any): boolean {
+  const status = err?.status ?? err?.response?.status ?? err?.code;
+  return status === 429 || status === 403;
+}
+
+// Structural subset of GoogleGenAI actually used anywhere in this file —
+// every call site below only ever calls `ai.models.generateContent(...)`,
+// so the fallback wrapper only needs to implement that one method.
+interface GenAILike {
+  models: { generateContent: (...args: any[]) => Promise<any> };
+}
+
+let genAI: GenAILike | null | undefined;
+function getGenAI(): GenAILike | null {
   if (genAI !== undefined) return genAI;
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  genAI = apiKey
-    ? new GoogleGenAI({ apiKey, httpOptions: { headers: { "User-Agent": "aistudio-build" } } })
-    : null;
+  const keys = parseGeminiApiKeys();
+  if (keys.length === 0) {
+    genAI = null;
+    return genAI;
+  }
+  const clients = keys.map(
+    (apiKey) => new GoogleGenAI({ apiKey, httpOptions: { headers: { "User-Agent": "aistudio-build" } } })
+  );
+  genAI = {
+    models: {
+      generateContent: async (...args: any[]) => {
+        let lastErr: any;
+        for (let i = 0; i < clients.length; i++) {
+          try {
+            return await (clients[i].models.generateContent as any)(...args);
+          } catch (err: any) {
+            lastErr = err;
+            if (!isKeySpecificGeminiError(err)) throw err;
+            console.warn(
+              `[Gemini] Key #${i + 1}/${clients.length} exhausted or invalid (status ${err?.status ?? err?.response?.status ?? err?.code}) — trying next key.`
+            );
+          }
+        }
+        // Every key failed with a key-specific error — throw the last one
+        // so the caller's existing catch block/error message still shows
+        // a real Gemini error, not a generic "no keys configured" message.
+        throw lastErr;
+      },
+    },
+  };
   return genAI;
 }
 
