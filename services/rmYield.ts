@@ -79,6 +79,21 @@ export const partsPerRMUnit = (part: Pick<Part, 'itemLength' | 'itemWeight' | 'g
 export const isCreditNoteRmNote = (remarks?: string): boolean =>
   !!remarks && remarks.startsWith('[CREDIT_NOTE_RM_NOTE:');
 
+// 19-Nov-26 — the RM-side twin of isAuditDeltaRemark (App.tsx/Inventory.tsx/
+// Dashboard.tsx each keep their own identical copy of that check for the
+// Part side). commitRMOpeningBalance (Inventory.tsx) posts a synthetic
+// `[RM_OPENING_BALANCE_SET:...]` delta onto the RM Inward Log purely to
+// nudge the stored Opening Balance during an audit correction — it's
+// already reflected directly in the new overridden opening value, so if a
+// month's "how much RM actually came in" total also sums this delta, the
+// correction gets counted a second time (the exact double-count shape the
+// Credit Note RM note fix above addresses, just for manual RM corrections
+// instead of Credit Notes). Checked separately from isCreditNoteRmNote
+// (different tag, different real-world event) but excluded the same way,
+// everywhere a month's real RM Inward total is computed.
+export const isRMOpeningBalanceAuditDelta = (remarks?: string): boolean =>
+  !!remarks && (remarks.startsWith('[OPENING_BALANCE_SET:') || remarks.startsWith('[RM_OPENING_BALANCE_SET:') || remarks === '[OPENING_BALANCE_ADJUSTMENT]');
+
 // Every Part currently cut from `rm` — i.e. every item that would draw down
 // the SAME physical stock pool. Mirrors the RM-wise ledger's own "mapped
 // items" definition (Inventory.tsx) — RM-side partId/partIds only, not the
@@ -111,7 +126,7 @@ export const computeRMStockAsOnDate = (
   const rmStandardMeters = rmLength / 1000;
 
   const monthRMInwardPipes = monthRmInwardLogs
-    .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks))
+    .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks) && !isRMOpeningBalanceAuditDelta(l.remarks))
     .reduce((sum, l) => sum + l.quantity, 0);
   const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
 

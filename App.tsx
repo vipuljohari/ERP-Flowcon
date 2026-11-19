@@ -40,7 +40,7 @@ import { INITIAL_PARTS, INITIAL_CUSTOMERS } from './constants';
 import { GoogleDriveService } from './services/googleDrive';
 import { DropboxService } from './services/dropbox';
 import { TallyService } from './services/tally';
-import { isSheetRM, rmKgPerPart, partsPerRMUnit, rmMatchesCustomer, rmAllCustomers } from './services/rmYield';
+import { isSheetRM, rmKgPerPart, partsPerRMUnit, rmMatchesCustomer, rmAllCustomers, isCreditNoteRmNote, isRMOpeningBalanceAuditDelta } from './services/rmYield';
 import { pcsPerBar, computeUnattributedScrapMm, LongerPipeLine, MaterialEntryHeader, FinishedPieceLine } from './services/materialEntry';
 import { applySiblingBorrow } from './services/siblingBorrow';
 // Clock-corrected timestamp helper — see services/time.ts for why a plain
@@ -484,8 +484,24 @@ const MainApp: React.FC = () => {
         }
 
         // 1. Calculate inward for simMonth
+        // 19-Nov-26 fix: this month-by-month rollover is a THIRD place that
+        // sums RM Inward Log entries (alongside Inventory.tsx's two display
+        // columns and rmYield.ts's computeRMStockAsOnDate) — it was missing
+        // the isCreditNoteRmNote exclusion those already have, so a Credit
+        // Note's audit-only RM note (visible-but-excluded everywhere else)
+        // was getting folded into the NEXT month's carried-forward Opening
+        // Balance even though it was correctly excluded from the CURRENT
+        // month's own closing stock. Caught via the Belrise 45x3x5640mm
+        // case: Oct 31 closing was correctly 188 Pipes (the +46 CR/36 note
+        // excluded), but Nov 1 Opening Balance was coming out as 234
+        // (188 + the same +46 note, counted a second time here). Also
+        // excludes isRMOpeningBalanceAuditDelta — the same double-count
+        // shape for a manual RM Opening Balance pencil-edit correction
+        // (commitRMOpeningBalance's own `[RM_OPENING_BALANCE_SET:...]`
+        // delta), which had the identical gap here.
         const monthInwardPipes = rmInwardLogs
           .filter(l => {
+            if (l.rmId !== rm.id || isCreditNoteRmNote(l.remarks) || isRMOpeningBalanceAuditDelta(l.remarks)) return false;
             let y: number, m: number;
             if (l.timestamp && l.timestamp.includes('T')) {
               const dateParts = l.timestamp.split('T')[0].split('-');
@@ -496,7 +512,7 @@ const MainApp: React.FC = () => {
               y = d.getFullYear();
               m = d.getMonth();
             }
-            return l.rmId === rm.id && y === simYear && m === simMonth;
+            return y === simYear && m === simMonth;
           })
           .reduce((sum, l) => sum + l.quantity, 0);
 

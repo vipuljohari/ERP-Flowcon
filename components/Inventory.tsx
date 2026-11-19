@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Part, Sale, InwardLog, RawMaterial, RMInwardLog, Customer, AdminAlert, RMManufacturerInvoice, RMMaterialLength, DimensionTolerance, GateDocumentForApproval, PendingInventoryCorrectionPayload, InventoryCorrectionReason, INVENTORY_CORRECTION_REASON_LABELS } from '../types';
 import { CATEGORIES } from '../constants';
-import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate, isCreditNoteRmNote } from '../services/rmYield';
+import { isSheetRM, partsPerRMUnit, rmKgPerPart, rmMatchesCustomer, rmAllCustomers, partsSharingRM, computeRMStockAsOnDate, isCreditNoteRmNote, isRMOpeningBalanceAuditDelta } from '../services/rmYield';
 import { getCustomerDisplayName } from '../services/customerDisplay';
 // Clock-corrected "now" — see services/time.ts. Entry Date's min/max bounds
 // used to be computed from a raw `new Date()`, so a device with a badly
@@ -1497,10 +1497,13 @@ const Inventory: React.FC<InventoryProps> = ({
 
                 // 1. RM Inward matching this month — excludes Credit Note
                 // audit notes (see services/rmYield.ts's isCreditNoteRmNote;
-                // 30-Oct-26), same reasoning as computeRMStockAsOnDate,
-                // kept in lockstep with it.
+                // 30-Oct-26) and RM Opening Balance audit-correction deltas
+                // (isRMOpeningBalanceAuditDelta; 19-Nov-26 — same double-
+                // count shape, just for a manual pencil-edit correction
+                // instead of a Credit Note), same reasoning as
+                // computeRMStockAsOnDate, kept in lockstep with it.
                 const monthRMInwardPipes = rmInwardLogs
-                  .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks))
+                  .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks) && !isRMOpeningBalanceAuditDelta(l.remarks))
                   .reduce((sum, l) => sum + l.quantity, 0);
                 const monthRMInwardKg = parseFloat((monthRMInwardPipes * pipeWeight).toFixed(2));
                 const monthRMInwardMeters = monthRMInwardPipes * rmStandardMeters;
@@ -2030,10 +2033,11 @@ const Inventory: React.FC<InventoryProps> = ({
                 dispatchKg = parseFloat(dispatchKg.toFixed(2));
                 scrapKg = parseFloat(scrapKg.toFixed(2));
 
-                // Excludes Credit Note audit notes — see the Tube table's
-                // identical comment above (30-Oct-26).
+                // Excludes Credit Note audit notes and RM Opening Balance
+                // audit-correction deltas — see the Tube table's identical
+                // comment above (30-Oct-26 / 19-Nov-26).
                 const monthRMInwardKg = parseFloat(rmInwardLogs
-                  .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks))
+                  .filter(l => l.rmId === rm.id && !isCreditNoteRmNote(l.remarks) && !isRMOpeningBalanceAuditDelta(l.remarks))
                   .reduce((sum, l) => sum + l.quantity, 0)
                   .toFixed(2));
 
