@@ -41,7 +41,6 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
   rawMaterials = [],
   localRMOpeningBalances = {}
 }) => {
-  const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
   const [selectedSize, setSelectedSize] = useState<string>('All');
   // 12-Oct-26, Vipul's ask — this report mixes two different units in the
   // same list (Part-allotted rows are always Pcs; RM-only rows are Pipes,
@@ -281,38 +280,20 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
     ...filteredRmLogs.map((log): LedgerRow => ({ kind: 'rm', log })),
   ], [filteredLogs, filteredRmLogs]);
 
-  const groupedLogs = useMemo(() => {
-    const groups: Record<string, LedgerRow[]> = {};
-    combinedRows.forEach(row => {
-      const dateKey = new Date(row.log.timestamp).toLocaleDateString('en-GB', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric'
-      });
-      if (!groups[dateKey]) {
-        groups[dateKey] = [];
-      }
-      groups[dateKey] = [...groups[dateKey], row];
-    });
-
-    Object.keys(groups).forEach(k => {
-      groups[k].sort((a, b) => new Date(b.log.timestamp).getTime() - new Date(a.log.timestamp).getTime());
-    });
-
-    return Object.entries(groups).sort((a, b) => {
-      return new Date(b[1][0].log.timestamp).getTime() - new Date(a[1][0].log.timestamp).getTime();
-    });
-  }, [combinedRows]);
+  // 20-Nov-26 — flat, ungrouped ledger (Vipul's ask: "like Dispatch Report"
+  // — one continuous table, Date as its own column per row) instead of the
+  // earlier per-date collapsible-card layout. Every row sorted newest
+  // first; no click-to-expand step.
+  const sortedRows = useMemo(
+    () => [...combinedRows].sort((a, b) => new Date(b.log.timestamp).getTime() - new Date(a.log.timestamp).getTime()),
+    [combinedRows]
+  );
 
   const totalRangeInward = useMemo(() => {
     return filteredLogs.reduce((acc, l) => acc + l.quantity, 0);
   }, [filteredLogs]);
 
-  const toggleDate = (date: string) => {
-    setExpandedDates(prev => ({ ...prev, [date]: !prev[date] }));
-  };
-
-  const formatDateDisplay = (dateStr: string) => {
+const formatDateDisplay = (dateStr: string) => {
     if (!dateStr) return '';
     const [y, m, d] = dateStr.split('-');
     return `${d}-${m}-${y}`;
@@ -556,43 +537,30 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
          )}
       </div>
 
-      <div className="space-y-4 pb-12 text-left">
-        {groupedLogs.map(([date, dailyLogs]) => (
-          <div key={date} className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden text-left">
-            <button onClick={() => toggleDate(date)} className={`w-full flex items-center justify-between p-8 text-left transition-colors ${expandedDates[date] ? 'bg-emerald-50/30' : 'hover:bg-slate-50'}`}>
-              <div className="flex items-center gap-12 text-left">
-                <div className="flex flex-col items-center text-center">
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Entries</span>
-                    <span className="text-2xl font-black text-emerald-600 leading-none">{dailyLogs.length}</span>
-                </div>
-                <div className="flex flex-col border-l border-slate-100 pl-12 text-left">
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 text-left">Receipt Date</span>
-                  <span className="text-lg font-black text-slate-900 uppercase tracking-tight leading-none text-left">{date}</span>
-                </div>
-              </div>
-              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-300 ${expandedDates[date] ? 'rotate-180 bg-emerald-600 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7"></path></svg>
-              </div>
-            </button>
-
-            {expandedDates[date] && (
-              <div className="border-t border-slate-100 bg-white text-left">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
-                      <tr>
-                        <th className="px-10 py-6 text-left border-r border-slate-200/40">Part / RM & Size</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Customer Name</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Invoice No.</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Responsible</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Qty</th>
-                        <th className="px-10 py-6 text-center border-r border-slate-200/40">Type / Remark</th>
-                        <th className="px-10 py-6 text-center">Time</th>
-                        {isAdmin && <th className="px-10 py-6 text-center">Admin</th>}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {dailyLogs.map(row => {
+      <div className="bg-white rounded-[2.5rem] border border-slate-100 shadow-sm overflow-hidden text-left">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead className="bg-slate-50 border-b border-slate-200 text-slate-900 text-[10px] uppercase font-black tracking-widest">
+              <tr>
+                <th className="px-10 py-6 text-left border-r border-slate-200/40">Date</th>
+                <th className="px-10 py-6 text-left border-r border-slate-200/40">Part / RM & Size</th>
+                <th className="px-10 py-6 text-center border-r border-slate-200/40">Customer Name</th>
+                <th className="px-10 py-6 text-center border-r border-slate-200/40">Invoice No.</th>
+                <th className="px-10 py-6 text-center border-r border-slate-200/40">Responsible</th>
+                <th className="px-10 py-6 text-center border-r border-slate-200/40">Qty</th>
+                <th className="px-10 py-6 text-center border-r border-slate-200/40">Type / Remark</th>
+                <th className="px-10 py-6 text-center">Time</th>
+                {isAdmin && <th className="px-10 py-6 text-center">Admin</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {sortedRows.length === 0 ? (
+                <tr>
+                  <td colSpan={isAdmin ? 9 : 8} className="px-10 py-16 text-center text-sm font-bold text-slate-300">
+                    No entries in this range.
+                  </td>
+                </tr>
+              ) : sortedRows.map(row => {
                         if (row.kind === 'rm') {
                           const log = row.log;
                           const isAdj = log.quantity < 0;
@@ -601,6 +569,9 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
 
                           return (
                             <tr key={log.id} className={`${isAdj ? 'bg-rose-50/30' : 'bg-indigo-50/30'} hover:bg-indigo-100/30 border-l-4 border-l-indigo-400 transition-colors group`}>
+                              <td className="px-10 py-6 text-left border-r border-slate-200/40">
+                                <div className="text-xs font-black text-slate-600 font-mono">{new Date(log.timestamp).toLocaleDateString('en-GB')}</div>
+                              </td>
                               <td className="px-10 py-6 text-left border-r border-slate-200/40">
                                 <div className="text-[10px] text-indigo-500 font-mono tracking-tighter uppercase mb-0.5 text-left">RM Receipt</div>
                                 <div className="text-sm font-black text-slate-800 uppercase text-left">{rm?.size || log.rmSize}</div>
@@ -673,6 +644,9 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                         return (
                           <tr key={log.id} className={`${isAudit ? 'bg-amber-50/50 hover:bg-amber-100/50 border-l-4 border-l-amber-500' : (isAdj ? 'bg-rose-50/30' : 'hover:bg-emerald-50/10')} transition-colors group`}>
                             <td className="px-10 py-6 text-left border-r border-slate-200/40">
+                              <div className="text-xs font-black text-slate-600 font-mono">{new Date(log.timestamp).toLocaleDateString('en-GB')}</div>
+                            </td>
+                            <td className="px-10 py-6 text-left border-r border-slate-200/40">
                               <div className="text-[10px] text-slate-400 font-mono tracking-tighter uppercase mb-0.5 text-left">{log.sapCode}</div>
                               <div className="text-sm font-black text-slate-800 uppercase text-left">{log.partName}</div>
                               <div className="text-[9px] text-indigo-500 font-bold uppercase mt-1 text-left">{part?.size || rm?.size || 'N/A'}</div>
@@ -733,14 +707,10 @@ const InwardLogs: React.FC<InwardLogsProps> = ({
                             )}
                           </tr>
                         );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
